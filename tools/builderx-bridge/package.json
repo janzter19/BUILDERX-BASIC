@@ -1,0 +1,9 @@
+{
+  "name": "builderx-bridge",
+  "private": true,
+  "version": "2.0.4",
+  "description": "BuilderX MySQL transport companion for visible VS Code Codex handoffs",
+  "scripts": {
+    "check": "node --check extension/extension.js"
+  }
+}

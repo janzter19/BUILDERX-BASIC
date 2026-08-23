@@ -1,0 +1,22 @@
+[Unit]
+Description=BuilderX local File Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=builderx
+UMask=0007
+WorkingDirectory=__BUILDERX_PROJECT_ROOT__
+Environment=BUILDERX_FILE_ROOT=__BUILDERX_PROJECT_ROOT__
+ExecStart=/usr/bin/php __BUILDERX_PROJECT_ROOT__/bin/builderx-file-service.php
+StandardInput=socket
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=__BUILDERX_PROJECT_ROOT__
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+# Apache 2.4 VirtualHost or server-context configuration.
+# Adjust the paths if the product DocumentRoot changes.
+
+<Directory "__BUILDERX_PROJECT_ROOT__/storage/codex-communication">
+    Options -Indexes
+    Require all denied
+</Directory>
+
+<Directory "__BUILDERX_PROJECT_ROOT__/storage/ai-memory">
+    Options -Indexes
+    Require all denied
+</Directory>
+
+<Directory "__BUILDERX_PROJECT_ROOT__/storage/backups">
+    Options -Indexes
+    Require all denied
+</Directory>
+
+<Directory "__BUILDERX_PROJECT_ROOT__/storage/audit">
+    Options -Indexes
+    Require all denied
+</Directory>
+
+<FilesMatch "(^|/)config\.local\.php$">
+    Require all denied
+</FilesMatch>
