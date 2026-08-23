@@ -21,6 +21,7 @@ require_once __DIR__ . '/AI/CommunicationMessageStore.php';
 require_once __DIR__ . '/AI/AiTaskResultReconciler.php';
 require_once __DIR__ . '/AI/PhaseBuilderNarrativeCleanupStore.php';
 require_once __DIR__ . '/AI/PhaseAiRunStore.php';
+require_once __DIR__ . '/AI/PhaseBuilderPlanningPolicy.php';
 require_once __DIR__ . '/AI/PhaseAiDatabaseTransport.php';
 require_once __DIR__ . '/AI/BuilderXAiBridgeAdapter.php';
 require_once __DIR__ . '/AI/RequirementsAnalysisWorkflow.php';
@@ -1555,6 +1556,194 @@ function bx_user_has_permission(?array $user, string $permissionCode): bool
     ) > 0;
 }
 
+function bx_authorization_list(mixed $value): array
+{
+    if ($value === null || $value === false || $value === '') {
+        return [];
+    }
+    if (!is_array($value)) {
+        $value = [$value];
+    }
+
+    return array_values(array_filter(array_map(static fn (mixed $item): string => trim((string) $item), $value), static fn (string $item): bool => $item !== ''));
+}
+
+function bx_authorization_missing(array $required, array $actual, bool $caseInsensitive = false): ?string
+{
+    if ($required === []) {
+        return null;
+    }
+
+    $actualLookup = [];
+    foreach ($actual as $item) {
+        $key = $caseInsensitive ? strtolower((string) $item) : (string) $item;
+        $actualLookup[$key] = true;
+    }
+
+    foreach ($required as $item) {
+        $key = $caseInsensitive ? strtolower((string) $item) : (string) $item;
+        if (!isset($actualLookup[$key])) {
+            return (string) $item;
+        }
+    }
+
+    return null;
+}
+
+function bx_authorization_result(bool $allowed, string $reasonCode, string $message, ?array $user = null, array $context = []): array
+{
+    return [
+        'allowed' => $allowed,
+        'reasonCode' => $reasonCode,
+        'message' => $message,
+        'user' => $user,
+        'sessionKey' => (string) ($context['sessionKey'] ?? ''),
+        'roleNames' => $context['roleNames'] ?? [],
+        'roleKeys' => $context['roleKeys'] ?? [],
+        'permissionCodes' => $context['permissionCodes'] ?? [],
+        'groupKeys' => $context['groupKeys'] ?? [],
+        'groupNames' => $context['groupNames'] ?? [],
+        'branchKeys' => $context['branchKeys'] ?? [],
+        'projectKeys' => $context['projectKeys'] ?? [],
+        'projectBranchKeys' => $context['projectBranchKeys'] ?? [],
+    ];
+}
+
+function bx_authorization_status_code(array $authorization): int
+{
+    return in_array((string) ($authorization['reasonCode'] ?? ''), ['authentication_required', 'session_required', 'session_invalid', 'account_inactive'], true) ? 401 : 403;
+}
+
+function bx_authorization_guard(array $requirements = []): array
+{
+    $requireAuthenticated = (bool) ($requirements['requireAuthenticated'] ?? true);
+    $userKey = trim((string) ($_SESSION['builderx_user_key'] ?? ''));
+    $sessionKey = trim((string) ($_SESSION['builderx_session_key'] ?? ''));
+    if ($userKey === '' || $sessionKey === '') {
+        return $requireAuthenticated
+            ? bx_authorization_result(false, $userKey === '' ? 'authentication_required' : 'session_required', 'Sign in before continuing.')
+            : bx_authorization_result(true, 'anonymous_allowed', 'Anonymous access allowed.');
+    }
+
+    $user = bx_db()->GetRow(
+        "SELECT u.*
+        FROM builder_user_session s
+        JOIN builder_user u ON u.user_key = s.user_key
+        WHERE s.session_key = ?
+            AND s.user_key = ?
+            AND s.session_token_hash = ?
+            AND s.session_status = 'ACTIVE'
+            AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
+            AND u.user_status = 'ACTIVE'
+            AND u.user_deleted_at IS NULL
+        LIMIT 1",
+        [$sessionKey, $userKey, hash('sha256', session_id())]
+    );
+    if (!$user) {
+        return bx_authorization_result(false, 'session_invalid', 'Sign in before continuing.');
+    }
+
+    $roleRows = bx_db()->GetAll(
+        "SELECT r.role_key, r.role_name
+        FROM builder_user_role ur
+        JOIN builder_role r ON r.role_key = ur.role_key AND r.role_status = 'ACTIVE'
+        WHERE ur.user_key = ?",
+        [$userKey]
+    ) ?: [];
+    $permissionRows = bx_db()->GetAll(
+        "SELECT DISTINCT p.permission_code
+        FROM builder_user_role ur
+        JOIN builder_role r ON r.role_key = ur.role_key AND r.role_status = 'ACTIVE'
+        JOIN builder_role_permission rp ON rp.role_key = r.role_key
+        JOIN builder_permission p ON p.permission_key = rp.permission_key AND p.permission_status = 'ACTIVE'
+        WHERE ur.user_key = ?",
+        [$userKey]
+    ) ?: [];
+    $groupRows = bx_db()->GetAll(
+        "SELECT g.group_key, g.group_name
+        FROM builder_user_group ug
+        JOIN builder_group g ON g.group_key = ug.group_key AND g.group_status = 'ACTIVE'
+        WHERE ug.user_key = ?",
+        [$userKey]
+    ) ?: [];
+    $branchRows = bx_db()->GetAll(
+        "SELECT b.branch_key
+        FROM builder_user_branch ub
+        JOIN builder_branch b ON b.branch_key = ub.branch_key AND b.branch_status = 'ACTIVE'
+        WHERE ub.user_key = ?",
+        [$userKey]
+    ) ?: [];
+    $projectRows = bx_db()->GetAll(
+        "SELECT p.project_key, p.branch_key
+        FROM builder_user_project up
+        JOIN builder_project p ON p.project_key = up.project_key AND p.project_status = 'ACTIVE'
+        JOIN builder_user_branch pb ON pb.user_key = up.user_key AND pb.branch_key = p.branch_key
+        JOIN builder_branch b ON b.branch_key = p.branch_key AND b.branch_status = 'ACTIVE'
+        WHERE up.user_key = ?",
+        [$userKey]
+    ) ?: [];
+
+    $context = [
+        'sessionKey' => $sessionKey,
+        'roleNames' => array_values(array_map(static fn (array $row): string => (string) $row['role_name'], $roleRows)),
+        'roleKeys' => array_values(array_map(static fn (array $row): string => (string) $row['role_key'], $roleRows)),
+        'permissionCodes' => array_values(array_map(static fn (array $row): string => (string) $row['permission_code'], $permissionRows)),
+        'groupKeys' => array_values(array_map(static fn (array $row): string => (string) $row['group_key'], $groupRows)),
+        'groupNames' => array_values(array_map(static fn (array $row): string => (string) $row['group_name'], $groupRows)),
+        'branchKeys' => array_values(array_map(static fn (array $row): string => (string) $row['branch_key'], $branchRows)),
+        'projectKeys' => array_values(array_map(static fn (array $row): string => (string) $row['project_key'], $projectRows)),
+        'projectBranchKeys' => array_values(array_unique(array_map(static fn (array $row): string => (string) $row['branch_key'], $projectRows))),
+    ];
+
+    $requireTenant = (bool) ($requirements['requireTenant'] ?? $requireAuthenticated);
+    if ($requireTenant && ($context['branchKeys'] === [] || $context['projectKeys'] === [])) {
+        return bx_authorization_result(false, 'tenant_required', 'Request not authorized.', $user, $context);
+    }
+
+    if (!empty($requirements['requireAdmin']) && bx_authorization_missing(['Administrator'], $context['roleNames'], true) !== null) {
+        return bx_authorization_result(false, 'administrator_required', 'Administrator access is required.', $user, $context);
+    }
+
+    foreach ([
+        'roleNames' => ['values' => $context['roleNames'], 'reason' => 'role_required'],
+        'roleKeys' => ['values' => $context['roleKeys'], 'reason' => 'role_required'],
+        'permissions' => ['values' => $context['permissionCodes'], 'reason' => 'permission_required'],
+        'permissionCodes' => ['values' => $context['permissionCodes'], 'reason' => 'permission_required'],
+        'groupKeys' => ['values' => $context['groupKeys'], 'reason' => 'group_required'],
+        'groupNames' => ['values' => $context['groupNames'], 'reason' => 'group_required'],
+        'branchKeys' => ['values' => $context['branchKeys'], 'reason' => 'branch_required'],
+        'projectKeys' => ['values' => $context['projectKeys'], 'reason' => 'project_required'],
+    ] as $key => $constraint) {
+        $missing = bx_authorization_missing(bx_authorization_list($requirements[$key] ?? []), $constraint['values'], $key !== 'permissions' && $key !== 'permissionCodes');
+        if ($missing !== null) {
+            return bx_authorization_result(false, $constraint['reason'], 'Request not authorized.', $user, $context);
+        }
+    }
+
+    foreach ([
+        'floor' => 'requireFloor',
+        'taskStage' => 'requireTaskStage',
+        'trigger' => 'requireTrigger',
+        'bypass' => 'requireBypass',
+    ] as $key => $requiredKey) {
+        $expected = bx_authorization_list($requirements[$key] ?? []);
+        $required = !empty($requirements[$requiredKey]) || $expected !== [];
+        if (!$required) {
+            continue;
+        }
+        $trustedValues = is_array($requirements['trustedValues'] ?? null) ? $requirements['trustedValues'] : [];
+        $actual = bx_authorization_list($trustedValues[$key] ?? $requirements['trusted' . ucfirst($key)] ?? []);
+        if ($actual === []) {
+            return bx_authorization_result(false, $key . '_untrusted', 'Request not authorized.', $user, $context);
+        }
+        if ($expected !== [] && bx_authorization_missing($expected, $actual, true) !== null) {
+            return bx_authorization_result(false, $key . '_required', 'Request not authorized.', $user, $context);
+        }
+    }
+
+    return bx_authorization_result(true, 'authorized', 'Authorized.', $user, $context);
+}
+
 function bx_mask_email(?string $email): string
 {
     $email = trim((string) $email);
@@ -1590,16 +1779,9 @@ function bx_count(string $table, string $where = '1=1'): int
 
 function bx_current_user(): ?array
 {
-    if (empty($_SESSION['builderx_user_key'])) {
-        return null;
-    }
+    $authorization = bx_authorization_guard(['requireAuthenticated' => false]);
 
-    $user = bx_db()->GetRow(
-        "SELECT * FROM builder_user WHERE user_key = ? AND user_status = 'ACTIVE'",
-        [$_SESSION['builderx_user_key']]
-    );
-
-    return $user ?: null;
+    return $authorization['allowed'] && is_array($authorization['user'] ?? null) ? $authorization['user'] : null;
 }
 
 /**

@@ -14,13 +14,11 @@ $respond = static function (array $payload, int $status = 200): never {
     exit;
 };
 
-$user = bx_current_user();
-if ($user === null) {
-    $respond(['ok' => false, 'message' => 'Authentication is required for the BuilderX AI Bridge.'], 401);
+$authorization = bx_authorization_guard(['requireAdmin' => true]);
+if (!$authorization['allowed']) {
+    $respond(['ok' => false, 'message' => (string) $authorization['message']], bx_authorization_status_code($authorization));
 }
-if (!bx_is_admin($user)) {
-    $respond(['ok' => false, 'message' => 'Administrator access is required for the BuilderX AI Bridge.'], 403);
-}
+$user = $authorization['user'];
 
 $projectRoot = realpath(dirname(__DIR__));
 if (!is_string($projectRoot)) {

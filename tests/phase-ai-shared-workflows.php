@@ -27,7 +27,10 @@ final class SharedWorkflowBridgeTransport implements BuilderXAiBridgeTransport
             return [
                 'ok' => true,
                 'bridge' => 'BuilderX',
+                'version' => '2.0.5',
+                'companion_extension_version' => '2.0.5',
                 'workspace' => $this->workspace,
+                'extension_version_ready' => true,
                 'ready_to_send' => true,
                 'active_thread_ready' => true,
                 'active_thread_busy' => false,
@@ -157,11 +160,24 @@ try {
     $architecture = $orchestrator->complete((string) $architecture['run_key'], $projectIdentity, 'analysis', $architectureResult);
     $architecture = $completeStage($architecture, 'integration_review', [
         'schemaVersion' => 'builderx.ai-integration-review.v1',
-        'workflowKey' => 'system_architecture',
-        'artifactHash' => PhaseAiWorkflowContract::hash($architectureResult),
+        'contractType' => 'builderx.ai-integration-review',
         'status' => 'approved',
         'findings' => [],
     ]);
+    $canonicalArchitectureReview = null;
+    foreach ($architecture['stages'] as $architectureStage) {
+        if (($architectureStage['stage_key'] ?? '') === 'integration_review') {
+            $canonicalArchitectureReview = $architectureStage['result'] ?? null;
+            break;
+        }
+    }
+    if (
+        ($canonicalArchitectureReview['workflowKey'] ?? '') !== 'system_architecture'
+        || ($canonicalArchitectureReview['artifactHash'] ?? '') !== PhaseAiWorkflowContract::hash($architectureResult)
+        || array_key_exists('contractType', is_array($canonicalArchitectureReview) ? $canonicalArchitectureReview : [])
+    ) {
+        throw new RuntimeException('The server did not canonicalize integration-review identity from the persisted run.');
+    }
     $architecture = $completeStage($architecture, 'persistence', [
         'schemaVersion' => 'builderx.ai-persistence.v1',
         'workflowKey' => 'system_architecture',
@@ -170,6 +186,112 @@ try {
         'recordKey' => bx_uuid(),
         'readBackVerified' => true,
     ]);
+
+    $blockedArchitecture = $start('PLANNING', 'system_architecture', 'phases:builder', 'blocked-system-boundaries', ['requirements_hash' => $requirementsHash]);
+    $blockedArchitecture = $completeContext($blockedArchitecture);
+    $blockedArchitectureResult = [
+        'schemaVersion' => 'builderx.system-architecture.v1',
+        'contractType' => 'builderx.system-architecture',
+        'source' => ['draftKey' => $blockedArchitecture['draft_key'], 'requirementsHash' => $requirementsHash],
+        'projectBlueprint' => ['boundaries' => [], 'dataFlow' => []],
+        'systemInventory' => ['surfaces' => []],
+        'fileManifest' => [],
+        'implementationChecklist' => [],
+        'assumptionsOrRisks' => [],
+        'orchestration' => ['mode' => 'single_chat'],
+    ];
+    $blockedArchitecture = $completeStage($blockedArchitecture, 'analysis', $blockedArchitectureResult);
+    $blockedArchitecture = $completeStage($blockedArchitecture, 'integration_review', [
+        'schemaVersion' => 'builderx.ai-integration-review.v1',
+        'workflowKey' => 'system_architecture',
+        'artifactHash' => PhaseAiWorkflowContract::hash($blockedArchitectureResult),
+        'status' => 'blocked',
+        'findings' => [[
+            'code' => 'CORE_DATA_OWNERSHIP_CONFLICT',
+            'summary' => 'A required API boundary has no declared owner.',
+            'requiredResolution' => 'Assign the boundary to one system component before persistence.',
+        ]],
+    ]);
+    $blockedArchitecture = $completeStage($blockedArchitecture, 'persistence', [
+        'schemaVersion' => 'builderx.ai-persistence.v1',
+        'workflowKey' => 'system_architecture',
+        'status' => 'blocked',
+        'artifactHash' => PhaseAiWorkflowContract::hash($blockedArchitectureResult),
+        'recordKey' => (string) $blockedArchitecture['run_key'],
+        'readBackVerified' => true,
+    ]);
+    $blockedReview = null;
+    foreach ($blockedArchitecture['stages'] as $blockedArchitectureStage) {
+        if (($blockedArchitectureStage['stage_key'] ?? '') === 'integration_review') {
+            $blockedReview = $blockedArchitectureStage['result'] ?? null;
+            break;
+        }
+    }
+    if (($blockedArchitecture['status'] ?? '') !== 'SUCCEEDED' || ($blockedReview['status'] ?? '') !== 'blocked' || count($blockedReview['findings'] ?? []) !== 1) {
+        throw new RuntimeException('A valid blocked Planning integration review was not retained as a durable terminal checkpoint.');
+    }
+
+    $optionalReview = PhaseAiWorkflowContract::validate($architecture, 'integration_review', [
+        'schemaVersion' => 'builderx.ai-integration-review.v1',
+        'status' => 'blocked',
+        'findings' => [[
+            'code' => 'TRACEABILITY_CHECKLIST_GAP',
+            'summary' => 'A more exhaustive file-to-requirement checklist could be added later.',
+            'requiredResolution' => 'Expand every requirement into a file-level checklist.',
+            'relatedArea' => 'System Architecture',
+        ]],
+    ]);
+    if (($optionalReview['status'] ?? '') !== 'approved' || ($optionalReview['findings'] ?? null) !== [] || count($optionalReview['suggestions'] ?? []) !== 1 || ($optionalReview['suggestions'][0]['status'] ?? '') !== 'non_blocking_coding_time') {
+        throw new RuntimeException('An optional Planning review finding was not demoted to a coding-time suggestion.');
+    }
+
+    $alternateReview = PhaseAiWorkflowContract::validate($architecture, 'integration_review', [
+        'schemaVersion' => 'builderx.ai-integration-review.v1',
+        'status' => 'approved',
+        'approved' => true,
+        'blockingFindings' => [],
+        'nonBlockingSuggestions' => [[
+            'title' => 'Confirm retry timing during implementation',
+            'relatedArea' => 'Synchronization',
+            'reason' => 'The exact retry interval can be selected when the synchronization worker is implemented.',
+            'status' => 'non_blocking_coding_time',
+        ]],
+    ]);
+    if (($alternateReview['status'] ?? '') !== 'approved' || ($alternateReview['findings'] ?? null) !== [] || count($alternateReview['suggestions'] ?? []) !== 1 || ($alternateReview['suggestions'][0]['relatedArea'] ?? '') !== 'Synchronization') {
+        throw new RuntimeException('An equivalent minimum-guide integration review shape was not normalized.');
+    }
+
+    $blockedReviewWithoutFindingsRejected = false;
+    try {
+        PhaseAiWorkflowContract::validate($blockedArchitecture, 'integration_review', [
+            'schemaVersion' => 'builderx.ai-integration-review.v1',
+            'workflowKey' => 'system_architecture',
+            'artifactHash' => PhaseAiWorkflowContract::hash($blockedArchitectureResult),
+            'status' => 'blocked',
+            'findings' => [],
+        ]);
+    } catch (RuntimeException) {
+        $blockedReviewWithoutFindingsRejected = true;
+    }
+    if (!$blockedReviewWithoutFindingsRejected) {
+        throw new RuntimeException('A blocked Planning integration review without findings was accepted.');
+    }
+    $blockedReviewWriteStatusRejected = false;
+    try {
+        PhaseAiWorkflowContract::validate($blockedArchitecture, 'persistence', [
+            'schemaVersion' => 'builderx.ai-persistence.v1',
+            'workflowKey' => 'system_architecture',
+            'status' => 'updated',
+            'artifactHash' => PhaseAiWorkflowContract::hash($blockedArchitectureResult),
+            'recordKey' => bx_uuid(),
+            'readBackVerified' => true,
+        ]);
+    } catch (RuntimeException) {
+        $blockedReviewWriteStatusRejected = true;
+    }
+    if (!$blockedReviewWriteStatusRejected) {
+        throw new RuntimeException('A blocked Planning integration review was allowed to claim a product write.');
+    }
 
     $architectureHash = hash('sha256', 'architecture');
     $ui = $start('PLANNING', 'ui_ux_design', 'phases:builder', 'product-surfaces', ['architecture_hash' => $architectureHash]);
@@ -196,9 +318,103 @@ try {
         'contractType' => 'builderx.execution-roadmap-stage',
         'stage' => 'modules',
         'source' => ['draftKey' => $roadmap['draft_key'], 'architectureHash' => $architectureHash],
-        'modules' => [['moduleId' => 'MOD-001', 'moduleTitle' => 'Core']],
+        'modules' => [[
+            'moduleId' => 'MOD-001',
+            'moduleKey' => 'core_operations',
+            'moduleTitle' => 'Core Operations',
+            'moduleDescription' => 'Verified bounded product module.',
+            'moduleType' => 'product_boundary',
+            'order' => 1,
+            'dependsOn' => [],
+            'provides' => [[
+                'interfaceId' => 'core-ui',
+                'kind' => 'ui_surface',
+                'contractSummary' => 'Provides the core authenticated RBMS screens.',
+            ]],
+            'consumes' => [[
+                'interfaceId' => 'tenant-session',
+                'kind' => 'session',
+                'contractSummary' => 'Consumes the verified tenant and user session context.',
+            ]],
+            'uiUxScope' => ['routes' => ['administrator'], 'screens' => ['dashboard'], 'sharedComponents' => []],
+            'phaseCountHint' => 1,
+        ]],
     ];
+    $canonicalBareModules = PhaseAiWorkflowContract::validate($roadmap, 'analysis', ['modules' => $roadmapResult['modules']]);
+    if (
+        ($canonicalBareModules['schemaVersion'] ?? '') !== 'builderx.execution-roadmap.stage.modules.v1'
+        || ($canonicalBareModules['source']['draftKey'] ?? '') !== ($roadmap['draft_key'] ?? '')
+        || ($canonicalBareModules['source']['architectureHash'] ?? '') !== $architectureHash
+    ) {
+        throw new RuntimeException('A bare Execution Roadmap modules payload was not canonicalized to the bound stage contract.');
+    }
+    foreach ([
+        'phases' => ['payload' => ['phases' => [['phaseId' => 'PHASE-001']]], 'schema' => 'builderx.execution-roadmap.stage.phases.v1'],
+        'tasks' => ['payload' => ['phases' => [['phaseId' => 'PHASE-001', 'tasks' => [['taskId' => 'TASK-001']]]]], 'schema' => 'builderx.execution-roadmap.stage.tasks.v1'],
+        'subtasks' => ['payload' => ['phases' => [['phaseId' => 'PHASE-001', 'tasks' => [['taskId' => 'TASK-001', 'subTasks' => [['subtaskId' => 'SUB-001']]]]]]], 'schema' => 'builderx.execution-roadmap.stage.subtasks.v1'],
+        'resources' => ['payload' => ['resourcePatches' => [['phaseId' => 'PHASE-001', 'proposedResources' => ['forms' => [], 'tables' => [], 'apis' => [], 'backgroundProcesses' => [], 'reports' => [], 'analytics' => []]]]], 'schema' => 'builderx.execution-roadmap.stage.resources.v1'],
+    ] as $chunkKey => $case) {
+        $chunkRun = $start('PLANNING', 'execution_roadmap', 'phases:builder', $chunkKey, ['architecture_hash' => $architectureHash]);
+        $chunkRun = $completeContext($chunkRun);
+        $canonicalChunk = PhaseAiWorkflowContract::validate($chunkRun, 'analysis', $case['payload']);
+        if (
+            ($canonicalChunk['schemaVersion'] ?? '') !== $case['schema']
+            || ($canonicalChunk['stage'] ?? '') !== $chunkKey
+            || ($canonicalChunk['source']['draftKey'] ?? '') !== ($chunkRun['draft_key'] ?? '')
+            || ($canonicalChunk['source']['architectureHash'] ?? '') !== $architectureHash
+        ) {
+            throw new RuntimeException('A bare Execution Roadmap ' . $chunkKey . ' payload was not canonicalized to the bound stage contract.');
+        }
+    }
+    $phaseAliasRun = $start('PLANNING', 'execution_roadmap', 'phases:builder', 'phases', ['architecture_hash' => $architectureHash]);
+    $phaseAliasRun = $completeContext($phaseAliasRun);
+    $canonicalPhaseAliases = PhaseAiWorkflowContract::validate($phaseAliasRun, 'analysis', [
+        'schemaVersion' => 'builderx.execution-roadmap.stage.phases.v1',
+        'contractType' => 'builderx.execution-roadmap-stage',
+        'stage' => 'phases',
+        'source' => ['draftKey' => $phaseAliasRun['draft_key'], 'architectureHash' => $architectureHash],
+        'phases' => [[
+            'phaseId' => 'PHASE-001',
+            'moduleIds' => ['MOD-001'],
+            'phaseTitle' => 'Verified phase',
+            'phaseDescription' => 'Verified phase description.',
+            'systemFlowNodes' => [['nodeId' => 'NODE-001']],
+        ]],
+    ]);
+    if (
+        ($canonicalPhaseAliases['phases'][0]['moduleId'] ?? '') !== 'MOD-001'
+        || ($canonicalPhaseAliases['phases'][0]['status'] ?? '') !== 'Pending'
+        || !is_array($canonicalPhaseAliases['phases'][0]['systemFlow'] ?? null)
+    ) {
+        throw new RuntimeException('Execution Roadmap phase aliases were not normalized before browser validation.');
+    }
     $roadmap = $completeStage($roadmap, 'analysis', $roadmapResult);
+    try {
+        PhaseAiWorkflowContract::validate($roadmap, 'analysis', [
+            'schemaVersion' => 'builderx.execution-roadmap.stage.modules.v1',
+            'contractType' => 'builderx.execution-roadmap-stage',
+            'stage' => 'modules',
+            'source' => ['draftKey' => $roadmap['draft_key'], 'architectureHash' => $architectureHash],
+            'moduleCatalog' => [[
+                'moduleId' => 'MOD-001',
+                'moduleKey' => 'core_operations',
+                'moduleTitle' => 'Core Operations',
+                'moduleDescription' => 'Verified bounded product module.',
+                'moduleType' => 'product_boundary',
+                'order' => 1,
+                'dependsOn' => [],
+                'provides' => ['Core UI'],
+                'consumes' => ['Tenant session'],
+                'uiUxScope' => ['routes' => ['administrator'], 'screens' => ['dashboard'], 'sharedComponents' => []],
+                'phaseCountHint' => 1,
+            ]],
+        ]);
+        throw new RuntimeException('The Execution Roadmap moduleCatalog alias was accepted.');
+    } catch (RuntimeException $expected) {
+        if (!str_contains($expected->getMessage(), 'modules')) {
+            throw $expected;
+        }
+    }
     $roadmap = $completeStage($roadmap, 'integration_review', ['schemaVersion' => 'builderx.ai-integration-review.v1', 'workflowKey' => 'execution_roadmap', 'artifactHash' => PhaseAiWorkflowContract::hash($roadmapResult), 'status' => 'approved', 'findings' => []]);
     $roadmap = $completeStage($roadmap, 'persistence', ['schemaVersion' => 'builderx.ai-persistence.v1', 'workflowKey' => 'execution_roadmap', 'status' => 'updated', 'artifactHash' => PhaseAiWorkflowContract::hash($roadmapResult), 'recordKey' => bx_uuid(), 'readBackVerified' => true]);
 
@@ -222,7 +438,14 @@ try {
             if ($stageKey === 'inspection' && $workflowKey === 'todo_execution') {
                 $dispatch = $orchestrator->dispatch((string) $coding['run_key'], $projectIdentity, $stageKey, ['context_id' => $context['context_id']], 'Return the bounded Coding checkpoint.', true);
                 if (($dispatch['delivery']['provider_key'] ?? '') !== BuilderXAiBridgeAdapter::PROVIDER_KEY) throw new RuntimeException('The Coding workflow did not use the shared Bridge adapter.');
-                $coding = $orchestrator->complete((string) $coding['run_key'], $projectIdentity, $stageKey, ['schemaVersion' => 'builderx.coding-checkpoint.v1', 'workflowKey' => $workflowKey, 'stage' => $stageKey, 'status' => 'completed', 'evidence' => ['Current project inspected.']]);
+                $coding = $orchestrator->complete((string) $coding['run_key'], $projectIdentity, $stageKey, ['schema_version' => 'builderx.coding-checkpoint.v1', 'stage' => $stageKey, 'status' => 'completed', 'evidence' => ['Current project inspected.'], 'tests_run' => []]);
+                $inspectionStage = array_values(array_filter(
+                    $coding['stages'] ?? [],
+                    static fn(mixed $stage): bool => is_array($stage) && ($stage['stage_key'] ?? '') === 'inspection'
+                ))[0] ?? null;
+                if (!is_array($inspectionStage) || ($inspectionStage['result']['schemaVersion'] ?? '') !== 'builderx.coding-checkpoint.v1' || ($inspectionStage['result']['workflowKey'] ?? '') !== $workflowKey) {
+                    throw new RuntimeException('The Coding Engine checkpoint alias payload was not normalized before persistence.');
+                }
                 continue;
             }
             $coding = $completeStage($coding, $stageKey, ['schemaVersion' => 'builderx.coding-checkpoint.v1', 'workflowKey' => $workflowKey, 'stage' => $stageKey, 'status' => 'completed', 'evidence' => ['Bounded checkpoint verified.']]);
@@ -242,6 +465,58 @@ try {
         ) {
             throw new RuntimeException('The server source checkpoint was not persisted and read back across both bindings.');
         }
+        $blockedAliasEvidence = [
+            'status' => 'blocked',
+            'summary' => 'Blocked implementation report with aliased server checkpoint evidence.',
+            'recoveryCheckpoints' => [[
+                'type' => 'server_source',
+                'checkpointKey' => (string) ($serverSourceCheckpoint['checkpoint_key'] ?? ''),
+                'manifestPath' => (string) ($serverSourceCheckpoint['manifest_path'] ?? ''),
+                'manifestSha256' => (string) ($serverSourceCheckpoint['manifest_sha256'] ?? ''),
+                'createdBeforeWrite' => true,
+                'databaseRollbackProtected' => false,
+            ]],
+            'changedFiles' => [],
+            'databaseChanges' => [],
+            'androidChanges' => [],
+            'tests' => [['type' => 'checkpointVerification', 'status' => 'passed']],
+            'blockers' => ['Prior inspection or plan recorded a blocker.'],
+            'nextSteps' => ['Retry after blocker resolution.'],
+        ];
+        $normalizedBlockedEvidence = PhaseAiWorkflowContract::validate($coding, 'implementation', $blockedAliasEvidence);
+        if (($normalizedBlockedEvidence['recoveryCheckpoints'][0]['reference'] ?? '') !== (string) ($serverSourceCheckpoint['checkpoint_key'] ?? '') || ($normalizedBlockedEvidence['recoveryCheckpoints'][0]['scope'] ?? '') !== 'project_source_files') {
+            throw new RuntimeException('Aliased blocked implementation checkpoint evidence was not normalized.');
+        }
+        $objectShapedChangeEvidence = [
+            'status' => 'completed',
+            'summary' => 'Completed source-only implementation with object-shaped change summaries.',
+            'recoveryCheckpoints' => [PhaseAiSourceCheckpoint::modelEvidence($serverSourceCheckpoint)],
+            'changedFiles' => ['app/foundation.php'],
+            'databaseChanges' => ['schemaChanges' => false, 'dataChanges' => false, 'writesMade' => false, 'rollbackProtected' => false],
+            'androidChanges' => ['changed' => false, 'files' => []],
+            'tests' => [['command' => 'php -l app/foundation.php', 'status' => 'passed']],
+            'blockers' => [],
+            'nextSteps' => [],
+        ];
+        $normalizedObjectShapedChangeEvidence = PhaseAiWorkflowContract::validate($coding, 'implementation', $objectShapedChangeEvidence);
+        if (!array_is_list($normalizedObjectShapedChangeEvidence['databaseChanges'] ?? null) || !array_is_list($normalizedObjectShapedChangeEvidence['androidChanges'] ?? null)) {
+            throw new RuntimeException('Object-shaped Coding Engine change evidence was not normalized.');
+        }
+        $aliasedSourceCheckpointEvidence = $objectShapedChangeEvidence;
+        $aliasedSourceCheckpointEvidence['recoveryCheckpoints'] = [[
+            'type' => 'server_source_checkpoint',
+            'checkpointKey' => (string) ($serverSourceCheckpoint['checkpoint_key'] ?? ''),
+            'manifestSha256' => (string) ($serverSourceCheckpoint['manifest_sha256'] ?? ''),
+            'createdBeforeWrite' => true,
+            'databaseRollbackProtected' => false,
+        ]];
+        $normalizedAliasedSourceCheckpointEvidence = PhaseAiWorkflowContract::validate($coding, 'implementation', $aliasedSourceCheckpointEvidence);
+        if (($normalizedAliasedSourceCheckpointEvidence['recoveryCheckpoints'][0]['type'] ?? '') !== 'server_source') {
+            throw new RuntimeException('Server source checkpoint type aliases were not normalized.');
+        }
+        $requiredFalseDatabaseEvidence = $objectShapedChangeEvidence;
+        $requiredFalseDatabaseEvidence['databaseChanges'] = ['required' => false, 'writesMade' => false, 'rollbackProtected' => false];
+        PhaseAiWorkflowContract::validate($coding, 'implementation', $requiredFalseDatabaseEvidence);
         $implementation = ['status' => 'completed', 'summary' => 'Bounded implementation verified.', 'recoveryCheckpoints' => [PhaseAiSourceCheckpoint::modelEvidence($serverSourceCheckpoint)], 'changedFiles' => ['app/example.php'], 'databaseChanges' => [], 'androidChanges' => [], 'tests' => ['php -l passed'], 'blockers' => [], 'nextSteps' => []];
         $coding = $completeStage($coding, 'implementation', $implementation);
         foreach (['verification', 'evidence'] as $stageKey) {
@@ -377,6 +652,10 @@ try {
         'same_bridge_adapter_verified' => true,
         'reload_resumed_existing_bridge_request' => true,
         'semantic_event_key_verified' => true,
+        'blocked_integration_review_checkpointed_without_product_write' => true,
+        'blocked_integration_review_requires_findings' => true,
+        'blocked_integration_review_cannot_claim_product_write' => true,
+        'alternate_integration_review_shape_normalized' => true,
         'git_without_approval_skipped' => true,
         'server_source_checkpoint_bound_and_read_back' => true,
         'missing_recovery_checkpoint_rejected' => true,

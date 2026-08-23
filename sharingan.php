@@ -31,10 +31,10 @@ function bx_sharingan_normalize_route(string $value): string
 }
 
 /** @return array{surface_key: string, workflow_key: string, route_key: string, draft_key: string, label: string, administrator_required: bool, route_path: string} */
-function bx_sharingan_authorized_surface(array $source, ?array $user): array
+function bx_sharingan_authorized_surface(array $source, array $authorization): array
 {
-    if ($user === null) {
-        bx_sharingan_json(['ok' => false, 'message' => 'Sign in before using Sharingan.'], 403);
+    if (!$authorization['allowed']) {
+        bx_sharingan_json(['ok' => false, 'message' => (string) $authorization['message']], bx_authorization_status_code($authorization));
     }
     $surfaceKey = strtolower(trim((string) ($source['surface_key'] ?? '')));
     try {
@@ -42,7 +42,8 @@ function bx_sharingan_authorized_surface(array $source, ?array $user): array
     } catch (Throwable $error) {
         bx_sharingan_json(['ok' => false, 'message' => $error->getMessage()], 422);
     }
-    if ($surface['administrator_required'] && !bx_is_admin($user)) {
+    if ($surface['administrator_required']
+        && bx_authorization_missing(['Administrator'], is_array($authorization['roleNames'] ?? null) ? $authorization['roleNames'] : [], true) !== null) {
         bx_sharingan_json(['ok' => false, 'message' => 'Administrator access is required for Sharingan on this surface.'], 403);
     }
     $scriptPath = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? '/sharingan.php'));
@@ -161,11 +162,12 @@ $resolvedWebProjectRoot = realpath($webProjectRoot);
 if (is_string($resolvedWebProjectRoot) && rtrim(str_replace('\\', '/', $resolvedWebProjectRoot), '/') === $projectRoot) {
     $projectWorkspaceRoot = rtrim(str_replace('\\', '/', $webProjectRoot), '/');
 }
-$user = bx_current_user();
+$authorization = bx_authorization_guard(['requireAuthenticated' => true]);
+$user = is_array($authorization['user'] ?? null) ? $authorization['user'] : null;
 $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 if ($method === 'GET') {
-    $surface = bx_sharingan_authorized_surface($_GET, $user);
+    $surface = bx_sharingan_authorized_surface($_GET, $authorization);
     $action = strtolower(trim((string) ($_GET['action'] ?? '')));
     try {
         $adapter = new BuilderXAiBridgeAdapter($projectRoot, null, $projectWorkspaceRoot);
@@ -220,7 +222,7 @@ if ($method !== 'POST') {
 }
 
 bx_sharingan_require_csrf($_POST);
-$surface = bx_sharingan_authorized_surface($_POST, $user);
+$surface = bx_sharingan_authorized_surface($_POST, $authorization);
 $action = strtolower(trim((string) ($_POST['action'] ?? '')));
 $store = new PhaseAiRunStore((string) ($user['user_key'] ?? ''));
 

@@ -23,6 +23,18 @@ function bx_admin_json_response(array $payload, int $status = 200): void
     exit;
 }
 
+function bx_admin_require_authorization(array $requirements = []): array
+{
+    $authorization = bx_authorization_guard($requirements);
+    if ($authorization['allowed']) {
+        return $authorization;
+    }
+
+    bx_flash((string) $authorization['message'], 'error');
+    header('Location: ./');
+    exit;
+}
+
 function bx_project_base_path(): string
 {
     $scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
@@ -1264,8 +1276,8 @@ if ($requestMethod === 'POST') {
 
     if ($action === 'login') {
         if (bx_login(trim((string) $_POST['login']), (string) $_POST['password'])) {
-            $user = bx_current_user();
-            if (!$user || !bx_is_admin($user)) {
+            $authorization = bx_authorization_guard(['requireAdmin' => true]);
+            if (!$authorization['allowed']) {
                 bx_logout();
                 bx_flash('Administrator role is required.', 'error');
             } else {
@@ -1286,12 +1298,7 @@ if ($requestMethod === 'POST') {
     }
 
     if (in_array($action, ['save_branch', 'set_branch_status', 'save_project', 'set_project_status', 'save_user', 'set_user_status', 'reset_user_password', 'save_group', 'set_group_status', 'save_role', 'set_role_status', 'set_permission_status', 'save_permission_matrix', 'save_form', 'set_form_status', 'clone_form', 'publish_form', 'unpublish_form', 'import_form_json', 'export_form_json', 'save_form_field', 'set_form_field_status', 'move_form_field', 'save_form_layout', 'set_form_layout_status', 'save_system_settings', 'apply_runtime_project_config', 'save_template_preset', 'run_template_command'], true)) {
-        $currentUser = bx_current_user();
-        if (!$currentUser || !bx_is_admin($currentUser)) {
-            bx_flash('Administrator role is required.', 'error');
-            header('Location: ./');
-            exit;
-        }
+        $currentUser = bx_admin_require_authorization(['requireAdmin' => true])['user'];
 
         if ($action === 'save_branch') {
             $branchKey = trim((string) ($_POST['branch_key'] ?? ''));
@@ -2651,7 +2658,11 @@ bx_admin_seed_settings();
 $flash = bx_take_flash();
 $user = bx_current_user();
 $hasUsers = bx_count('builder_user') > 0;
-$isAdmin = $user ? bx_is_admin($user) : false;
+$adminAuthorization = bx_authorization_guard(['requireAdmin' => true]);
+$isAdmin = $adminAuthorization['allowed'];
+if ($isAdmin && is_array($adminAuthorization['user'] ?? null)) {
+    $user = $adminAuthorization['user'];
+}
 $softwareName = bx_setting('software_name', 'BuilderX');
 $manifestPath = dirname(__DIR__) . '/frontend/dist/.vite/manifest.json';
 $manifest = file_exists($manifestPath) ? json_decode((string) file_get_contents($manifestPath), true) : [];
@@ -2682,7 +2693,7 @@ function bx_admin_payload_rows(mixed $rows): array
     return is_array($rows) ? $rows : [];
 }
 
-$settingsForPayload = bx_admin_payload_rows(bx_db()->GetAll("SELECT setting_key, setting_group, setting_name, setting_value, setting_status, is_secret FROM builder_system_setting WHERE setting_status = 'ACTIVE' AND setting_name NOT LIKE 'ui\\_%' AND setting_name <> 'template_presets' ORDER BY setting_group ASC, setting_name ASC"));
+$settingsForPayload = $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("SELECT setting_key, setting_group, setting_name, setting_value, setting_status, is_secret FROM builder_system_setting WHERE setting_status = 'ACTIVE' AND setting_name NOT LIKE 'ui\\_%' AND setting_name <> 'template_presets' ORDER BY setting_group ASC, setting_name ASC")) : [];
 foreach ($settingsForPayload as &$settingForPayload) {
     $settingName = (string) ($settingForPayload['setting_name'] ?? '');
     if ((int) ($settingForPayload['is_secret'] ?? 0) === 1) {
@@ -2696,8 +2707,8 @@ $payload = [
     'csrf' => bx_csrf_token(),
     'softwareName' => $softwareName,
     'projectBasePath' => bx_project_base_path(),
-    'projectRoot' => dirname(__DIR__),
-    'templatePresets' => bx_template_presets(),
+    'projectRoot' => $isAdmin ? dirname(__DIR__) : '',
+    'templatePresets' => $isAdmin ? bx_template_presets() : [],
     'flash' => $flash,
     'hasUsers' => $hasUsers,
     'isSignedIn' => (bool) $user,
@@ -2710,7 +2721,7 @@ $payload = [
         'login' => $user['user_login'],
         'email' => $user['user_email'],
     ] : null,
-    'metrics' => [
+    'metrics' => $isAdmin ? [
         'Users' => bx_count('builder_user', "user_status <> 'DELETED'"),
         'Branches' => bx_count('builder_branch', "branch_status <> 'DELETED'"),
         'Projects' => bx_count('builder_project', "project_status <> 'DELETED'"),
@@ -2718,8 +2729,8 @@ $payload = [
         'Roles' => bx_count('builder_role', "role_status <> 'DELETED'"),
         'Permissions' => bx_count('builder_permission', "permission_status <> 'DELETED'"),
         'Audit Logs' => bx_count('builder_audit_log'),
-    ],
-    'users' => bx_admin_payload_rows(bx_db()->GetAll("
+    ] : [],
+    'users' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             u.user_key,
             u.user_login,
@@ -2738,10 +2749,10 @@ $payload = [
             COALESCE((SELECT GROUP_CONCAT(p.project_code ORDER BY p.project_code SEPARATOR ', ') FROM builder_user_project up JOIN builder_project p ON p.project_key = up.project_key WHERE up.user_key = u.user_key), '') AS project_codes
         FROM builder_user u
         ORDER BY u.user_name ASC
-    ")),
-    'branches' => bx_admin_payload_rows(bx_db()->GetAll('SELECT branch_key, branch_code, branch_name, branch_status, branch_address, branch_contact FROM builder_branch ORDER BY branch_name ASC')),
-    'projects' => bx_admin_payload_rows(bx_db()->GetAll('SELECT p.project_key, p.branch_key, p.project_code, p.project_name, p.project_status, p.project_description, b.branch_code, b.branch_name FROM builder_project p LEFT JOIN builder_branch b ON b.branch_key = p.branch_key ORDER BY b.branch_name ASC, p.project_name ASC')),
-    'forms' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'branches' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll('SELECT branch_key, branch_code, branch_name, branch_status, branch_address, branch_contact FROM builder_branch ORDER BY branch_name ASC')) : [],
+    'projects' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll('SELECT p.project_key, p.branch_key, p.project_code, p.project_name, p.project_status, p.project_description, b.branch_code, b.branch_name FROM builder_project p LEFT JOIN builder_branch b ON b.branch_key = p.branch_key ORDER BY b.branch_name ASC, p.project_name ASC')) : [],
+    'forms' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             f.form_key,
             f.branch_key,
@@ -2764,13 +2775,13 @@ $payload = [
         LEFT JOIN builder_branch b ON b.branch_key = f.branch_key
         LEFT JOIN builder_project p ON p.project_key = f.project_key
         ORDER BY b.branch_name ASC, p.project_name ASC, f.form_name ASC
-    ")),
-    'formVersions' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'formVersions' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT version_key, form_key, version_number, version_status, published_at, created_at
         FROM builder_form_version
         ORDER BY form_key ASC, version_number DESC
-    ")),
-    'formFields' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'formFields' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             field_key,
             form_key,
@@ -2797,8 +2808,8 @@ $payload = [
             JSON_UNQUOTE(JSON_EXTRACT(field_settings, '$.grid_width')) AS grid_width
         FROM builder_form_field
         ORDER BY form_key ASC, field_sort_order ASC, x_id ASC
-    ")),
-    'formLayouts' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'formLayouts' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             l.layout_key,
             l.form_key,
@@ -2817,8 +2828,8 @@ $payload = [
         LEFT JOIN builder_form f ON f.form_key = l.form_key
         LEFT JOIN builder_form_version v ON v.version_key = l.version_key
         ORDER BY f.form_code ASC, l.layout_sort_order ASC, l.x_id ASC
-    ")),
-    'groups' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'groups' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             g.group_key,
             g.group_name,
@@ -2829,8 +2840,8 @@ $payload = [
             (SELECT COUNT(*) FROM builder_user_group ug WHERE ug.group_key = g.group_key) AS member_count
         FROM builder_group g
         ORDER BY g.group_name ASC
-    ")),
-    'roles' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'roles' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             r.role_key,
             r.role_name,
@@ -2842,8 +2853,8 @@ $payload = [
             (SELECT COUNT(*) FROM builder_role_permission rp WHERE rp.role_key = r.role_key) AS permission_count
         FROM builder_role r
         ORDER BY r.role_name ASC
-    ")),
-    'permissions' => bx_admin_payload_rows(bx_db()->GetAll("
+    ")) : [],
+    'permissions' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             p.permission_key,
             p.permission_code,
@@ -2854,11 +2865,11 @@ $payload = [
             COALESCE((SELECT GROUP_CONCAT(r.role_name ORDER BY r.role_name SEPARATOR ', ') FROM builder_role_permission rp JOIN builder_role r ON r.role_key = rp.role_key WHERE rp.permission_key = p.permission_key), '') AS role_names
         FROM builder_permission p
         ORDER BY p.permission_scope ASC, p.permission_code ASC
-    ")),
+    ")) : [],
     'settings' => $settingsForPayload,
     'auditFilters' => $auditFilters,
     'audits' => $audits,
-    'loginHistory' => bx_admin_payload_rows(bx_db()->GetAll('SELECT login_key, user_key, user_login, login_status, ip_address, failure_reason, created_at FROM builder_user_login_history ORDER BY x_id DESC LIMIT 80')),
+    'loginHistory' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll('SELECT login_key, user_key, user_login, login_status, ip_address, failure_reason, created_at FROM builder_user_login_history ORDER BY x_id DESC LIMIT 80')) : [],
     'familyReport' => $familyReport,
     'runtimeHealth' => $isAdmin ? bx_runtime_health_snapshot() : null,
 ];

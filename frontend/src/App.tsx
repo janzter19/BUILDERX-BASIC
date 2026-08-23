@@ -6857,8 +6857,8 @@ function phasePercent(done: number, total: number): number {
 
 function phaseStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
   if (status === 'Completed') return 'default'
-  if (status === 'Blocked') return 'destructive'
-  if (status === 'For Review') return 'outline'
+  if (status === 'Blocked' || status === 'Failed') return 'destructive'
+  if (status === 'For Review' || status === 'Running' || status === 'Rolled back') return 'outline'
 
   return 'secondary'
 }
@@ -25554,10 +25554,10 @@ function ShadcnPhaseBuilderApp() {
       .join('\n\n')
     const taskInstruction: Record<string, string> = {
       'narrative-cleanup': 'Review the complete source narrative for spelling, grammar, clarity, and consistency. Preserve the original meaning and all requirements, URLs, and technical details.',
-      'requirements-analysis': `Analyze the complete source narrative and return the Requirements Analysis contract. Include functional requirements plus every mandatory production-readiness category: ${requirementsAnalysisProductionCategories.map(({ label }) => label).join(', ')}. Keep every category as an array, even when empty; preserve source traceability, separate assumptions and open questions, and treat security, installation, migration, deployment, and rollback as requirements or constraints only. Do not design architecture, APIs, migrations, or roadmap tasks.`,
-      'system-architecture': 'Derive a practical system architecture from the complete source narrative, including application boundaries, data flow, integrations, security boundaries, and synchronization responsibilities.',
-      'ui-ux-design': 'Create a low-fidelity UI/UX design handoff from the approved System Architecture: identify target screens, responsive surfaces, a simple wireframe, and the primary user flow. Do not implement source files or database changes.',
-      'execution-roadmap': 'Use the approved System Architecture and the saved UI/UX screen-and-flow handoff when available to produce an ordered execution roadmap with page-by-page dependencies, milestones, validation points, and clear implementation scope.',
+      'requirements-analysis': 'Extract only confirmed, testable requirements from the narrative. Keep unused categories empty, merge overlap, and record uncertainties as non-blocking coding-time suggestions. Do not invent production-readiness scope.',
+      'system-architecture': 'Derive the smallest coherent architecture guide for the confirmed scope: essential boundaries, owners, primary data flow, and required integrations only. Leave implementation detail to Phase Manager.',
+      'ui-ux-design': 'Create a concise low-fidelity handoff for essential confirmed screens and the primary user flow. Include only relevant states and leave detailed design decisions to coding time.',
+      'execution-roadmap': 'Create the smallest practical starter roadmap for Phase Manager. Use concise work packages and do not invent speculative features, resources, or technical-layer tasks.',
     }
     return [
       `BuilderX Phase Builder workspace: ${workspaceLabel}`,
@@ -25827,7 +25827,7 @@ function ShadcnPhaseBuilderApp() {
         } else {
           const command = [
             'BuilderX persistent Planning Engine Requirements Analysis.',
-            `Read the complete bounded context file: ${contextPath}`,
+            `Use the complete bounded MySQL context reference ${contextPath}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT.`,
             `Process only stage ${semanticStage.stageKey} and semantic chunk ${semanticStage.chunkKey}.`,
             'Use that chunk configuration, allowed categories, source fields, and ID prefix exactly.',
             'Return exactly one JSON object matching chunk_response_contract to the supplied MySQL job result.',
@@ -25866,8 +25866,8 @@ function ShadcnPhaseBuilderApp() {
         } else {
           const reviewCommand = [
             'BuilderX persistent Planning Engine final integration review.',
-            `Read the exact merged-contract review context: ${String(reviewContext.context_path || '')}`,
-            'Check contradictions, duplicates, terminology, dependencies, category placement, and source traceability.',
+            `Use the exact merged-contract MySQL review context ${String(reviewContext.context_path || '')}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT.`,
+            'Confirm that the concise requirements preserve the saved narrative and have no genuine contradiction. Do not demand optional completeness or populate empty categories; report useful extras as non-blocking suggestions.',
             'Preserve every immutable requirement ID and return exactly the required review JSON to the supplied MySQL job result.',
             'Do not edit files, execute SQL, call another provider, or dispatch another agent.',
           ].join('\n')
@@ -25912,7 +25912,7 @@ function ShadcnPhaseBuilderApp() {
     if (!response.ok || result?.ok !== true || typeof result?.context_path !== 'string' || result.context_path.trim() === '') {
       throw new Error(String(result?.message || 'The System Architecture context could not be prepared.'))
     }
-    return result as { ok: true; context_id: string; context_path: string; bytes: number; sha256: string; source_requirements_hash: string; available_specialist_count: number }
+    return result as { ok: true; context_id: string; context_path: string; bytes: number; sha256: string; source_requirements_hash: string; available_specialist_count: number; previous_review_finding_count: number }
   }
   const validateSystemArchitectureResult = (value: unknown): Record<string, any> => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('System Architecture returned an invalid JSON object.')
@@ -25961,13 +25961,16 @@ function ShadcnPhaseBuilderApp() {
       })
       const runKey = String(persistentRun.run_key || '')
       addArchitectureEvent(`Verified Requirements Analysis context saved in persistent run ${runKey}.`, 'complete')
+      if (context.previous_review_finding_count > 0) {
+        addArchitectureEvent(`Refinement run loaded ${context.previous_review_finding_count} blocking integration-review finding${context.previous_review_finding_count === 1 ? '' : 's'} for correction.`, 'complete')
+      }
       setArchitectureWorkflow((current) => ({ ...current, step: 'analysis', message: `Context prepared. Sending System Architecture to the active Codex Chat (${context.available_specialist_count} approved specialists available)…` }))
       const command = [
         'BuilderX Phase Builder System Architecture Coordinator.',
-        'Read the complete context file at:',
-        context.context_path,
-        'Use the saved Requirements Analysis only. Act at project level for the User Portal and Administrator Portal; BuilderX Phase Builder is excluded.',
-        'Produce the required architecture contract. Use durable offline sync and separate local RAG context from transactional data. If a capability is missing, propose it only in orchestration.',
+        `Use the complete MySQL context reference ${context.context_path}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT.`,
+        'Use only the confirmed saved Requirements Analysis. BuilderX Phase Builder itself is excluded from product scope.',
+        'Produce the smallest coherent architecture guide that can start implementation: essential boundaries, owners, primary data flows, and required integrations only.',
+        'Do not invent optional services, APIs, tables, files, infrastructure, hardening, or secondary flows. Keep fileManifest and implementationChecklist concise or empty when detailed mapping belongs in Phase Manager.',
         'Do not edit files, execute SQL, change databases, or modify BuilderX. Write exactly one valid JSON object to the MySQL job result. Stop with {"status":"error","error":"ARCHITECTURE_CONTEXT_UNAVAILABLE"} if the context cannot be read.',
       ].join('\n')
       let parsed = phaseAiStage(persistentRun, 'analysis')?.result as Record<string, any> | undefined
@@ -25982,7 +25985,8 @@ function ShadcnPhaseBuilderApp() {
       }
       parsed = validateSystemArchitectureResult(parsed)
       addArchitectureEvent('System Architecture response passed schema validation.', 'complete')
-      if (phaseAiStage(persistentRun, 'integration_review')?.status !== 'SUCCEEDED') {
+      let reviewResult = phaseAiStage(persistentRun, 'integration_review')?.result as Record<string, any> | undefined
+      if (!reviewResult) {
         const reviewContext = await preparePersistentPhaseAiCheckpointContext(endpoint, phaseData?.csrf || '', runKey, 'integration_review')
         addArchitectureEvent('Bounded integration-review context prepared from the validated architecture.', 'complete')
         const review = await dispatchPersistentPhaseAiStage({
@@ -25990,12 +25994,30 @@ function ShadcnPhaseBuilderApp() {
           csrf: phaseData?.csrf || '',
           runKey,
           stageKey: 'integration_review',
-          command: `BuilderX System Architecture integration review. Read ${reviewContext.context_path}. Review only the validated artifact for contradictions, duplicate boundaries, naming conflicts, missing dependencies, and traceability gaps. Do not replace the artifact or edit files. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`,
+          command: `BuilderX System Architecture integration review. Read ${reviewContext.context_path}. Block only for a genuine confirmed-baseline defect using an exact allowed blocker code. Treat optional completeness, optimization, extra traceability, tables, files, services, or future hardening as short non-blocking coding-time suggestions. Do not replace the artifact or edit files. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`,
           onProgress: (message) => addArchitectureEvent(message, 'active'),
         })
         persistentRun = review.run
-        addArchitectureEvent('Bounded Architecture integration review approved the artifact.', 'complete')
+        reviewResult = review.result
       }
+      if (phaseAiIntegrationReviewStatus(reviewResult) === 'blocked') {
+        persistentRun = await completePersistentPhaseAiPersistence(endpoint, phaseData?.csrf || '', runKey, 'system_architecture', parsed, 'blocked', runKey)
+        const detail = phaseAiIntegrationReviewBlockedDetail(reviewResult)
+        addArchitectureEvent('Integration review findings were checkpointed; no architecture database write was attempted.', 'error')
+        setArchitectureWorkflow((current) => ({
+          ...current,
+          status: 'error',
+          step: 'save',
+          message: 'System Architecture needs corrections before it can be saved.',
+          error: detail,
+          report: JSON.stringify({ status: 'blocked', run_key: runKey, run_status: persistentRun.status, persistence: 'blocked_no_write', integration_review: reviewResult }, null, 2),
+          events: settleOneFlowEvents(current.events, 'error'),
+        }))
+        return
+      }
+      addArchitectureEvent('Bounded Architecture integration review approved the artifact.', 'complete')
+      const architectureCodingSuggestions = phaseAiIntegrationReviewSuggestions(reviewResult)
+      if (architectureCodingSuggestions.length > 0) addArchitectureEvent(`${architectureCodingSuggestions.length} optional suggestion${architectureCodingSuggestions.length === 1 ? '' : 's'} saved for coding time; they did not block this guide.`, 'complete')
       setArchitectureWorkflow((current) => ({ ...current, step: 'save', message: 'Codex completed the architecture. Saving with transaction and read-back verification…', report: JSON.stringify(parsed, null, 2) }))
       const saved = await saveSystemArchitecture(parsed, context.source_requirements_hash)
       if (String(persistentRun.status || '') !== 'SUCCEEDED') {
@@ -26005,7 +26027,7 @@ function ShadcnPhaseBuilderApp() {
       setArchitectureManifest(saved.system_architecture)
       if (phaseData) phaseData.phaseBuilderSystemArchitecture = saved.system_architecture
       const orchestration = saved.system_architecture.orchestration || {}
-      const report = JSON.stringify({ status: 'success', run_key: runKey, run_status: persistentRun.status, architecture_key: saved.architecture_key, draft_key: saved.draft_key, source_requirements_hash: saved.source_requirements_hash, selected_specialists: orchestration.selectedSpecialists || [], additional_specialist_proposals: orchestration.additionalSpecialistProposals || [], persistence: saved.status === 'created' ? 'created_and_read_back' : 'updated_and_read_back' }, null, 2)
+      const report = JSON.stringify({ status: 'success', run_key: runKey, run_status: persistentRun.status, architecture_key: saved.architecture_key, draft_key: saved.draft_key, source_requirements_hash: saved.source_requirements_hash, coding_time_suggestions: architectureCodingSuggestions, selected_specialists: orchestration.selectedSpecialists || [], additional_specialist_proposals: orchestration.additionalSpecialistProposals || [], persistence: saved.status === 'created' ? 'created_and_read_back' : 'updated_and_read_back' }, null, 2)
       setArchitectureWorkflow((current) => ({ ...current, status: 'success', step: 'complete', message: 'System Architecture was validated, saved, and read back successfully.', report, error: '', events: settleOneFlowEvents(appendOneFlowEvent(current.events, 'System Architecture workflow completed.', 'complete'), 'complete') }))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'System Architecture failed.'
@@ -26074,10 +26096,9 @@ function ShadcnPhaseBuilderApp() {
       setUiUxWorkflow((current) => ({ ...current, step: 'analysis', message: `Context prepared. Sending UI/UX Design to the active Codex Chat (${context.available_specialist_count} approved specialists available)…` }))
       const command = [
         'BuilderX Phase Builder UI/UX Design Coordinator.',
-        'Read the complete context file at:',
-        context.context_path,
-        'Use the saved System Architecture as the source of truth. Act only at project level for the User Portal, Administrator Portal, and Android stockroom product surfaces; BuilderX Phase Builder is excluded.',
-        'Produce the required UI/UX design contract with proposed screens, low-fidelity wireframe descriptions, and a renderSpec for every screen. The renderSpec must be structured render data, not prose: include the screen header, sections, and components with explicit types such as heading, text, metric, field, form, table, list, button, status, and divider. Put all generated labels, descriptions, fields, table columns/rows, button labels, and state text inside renderSpec so BuilderX can render the GUI preview directly from the AI result. Also include responsive and accessibility rules and a flowChart that BuilderX can render. Use existing React/shadcn/ui patterns. Include realistic loading, empty, error, success, offline, and recovery states where relevant.',
+        `Use the complete MySQL context reference ${context.context_path}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT.`,
+        'Use the saved System Architecture as the source of truth and include only explicitly confirmed product surfaces; BuilderX Phase Builder is excluded.',
+        'Produce a concise design guide for essential screens and the primary journey. Give each required screen a small structured renderSpec that BuilderX can preview. Include only states relevant to confirmed behavior plus baseline responsive and accessibility guidance. Leave visual polish and optional secondary flows to Phase Manager coding time.',
         'Do not edit files, execute SQL, change databases, or modify BuilderX. Write exactly one valid JSON object to the MySQL job result. Stop with {"status":"error","error":"UI_UX_CONTEXT_UNAVAILABLE"} if the context cannot be read.',
       ].join('\n')
       let parsed = phaseAiStage(persistentRun, 'analysis')?.result as Record<string, any> | undefined
@@ -26092,12 +26113,31 @@ function ShadcnPhaseBuilderApp() {
       }
       parsed = validateUiUxDesignResult(parsed)
       addUiUxEvent('UI/UX Design response passed schema validation.', 'complete')
-      if (phaseAiStage(persistentRun, 'integration_review')?.status !== 'SUCCEEDED') {
+      let reviewResult = phaseAiStage(persistentRun, 'integration_review')?.result as Record<string, any> | undefined
+      if (!reviewResult) {
         const reviewContext = await preparePersistentPhaseAiCheckpointContext(endpoint, phaseData?.csrf || '', runKey, 'integration_review')
-        const review = await dispatchPersistentPhaseAiStage({ endpoint, csrf: phaseData?.csrf || '', runKey, stageKey: 'integration_review', command: `BuilderX UI/UX Design integration review. Read ${reviewContext.context_path}. Review only the validated artifact for route, screen-state, responsive, accessibility, naming, dependency, and upstream traceability conflicts. Do not replace the artifact or edit files. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`, onProgress: (message) => addUiUxEvent(message, 'active') })
+        const review = await dispatchPersistentPhaseAiStage({ endpoint, csrf: phaseData?.csrf || '', runKey, stageKey: 'integration_review', command: `BuilderX UI/UX Design integration review. Read ${reviewContext.context_path}. Block only for a genuine confirmed-baseline defect using an exact allowed blocker code. Treat optional screens, states, polish, accessibility enhancements, and future flows as short non-blocking coding-time suggestions. Do not replace the artifact or edit files. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`, onProgress: (message) => addUiUxEvent(message, 'active') })
         persistentRun = review.run
-        addUiUxEvent('Bounded UI/UX integration review approved the artifact.', 'complete')
+        reviewResult = review.result
       }
+      if (phaseAiIntegrationReviewStatus(reviewResult) === 'blocked') {
+        persistentRun = await completePersistentPhaseAiPersistence(endpoint, phaseData?.csrf || '', runKey, 'ui_ux_design', parsed, 'blocked', runKey)
+        const detail = phaseAiIntegrationReviewBlockedDetail(reviewResult)
+        addUiUxEvent('Integration review findings were checkpointed; no UI/UX database write was attempted.', 'error')
+        setUiUxWorkflow((current) => ({
+          ...current,
+          status: 'error',
+          step: 'save',
+          message: 'UI/UX Design needs corrections before it can be saved.',
+          error: detail,
+          report: JSON.stringify({ status: 'blocked', run_key: runKey, run_status: persistentRun.status, persistence: 'blocked_no_write', integration_review: reviewResult }, null, 2),
+          events: settleOneFlowEvents(current.events, 'error'),
+        }))
+        return
+      }
+      addUiUxEvent('Bounded UI/UX integration review approved the artifact.', 'complete')
+      const uiUxCodingSuggestions = phaseAiIntegrationReviewSuggestions(reviewResult)
+      if (uiUxCodingSuggestions.length > 0) addUiUxEvent(`${uiUxCodingSuggestions.length} optional suggestion${uiUxCodingSuggestions.length === 1 ? '' : 's'} saved for coding time; they did not block this guide.`, 'complete')
       setUiUxWorkflow((current) => ({ ...current, step: 'save', message: 'Codex completed the design. Saving with transaction and read-back verification…', report: JSON.stringify(parsed, null, 2) }))
       const saved = await saveUiUxDesign(parsed, context.source_architecture_hash)
       if (String(persistentRun.status || '') !== 'SUCCEEDED') persistentRun = await completePersistentPhaseAiPersistence(endpoint, phaseData?.csrf || '', runKey, 'ui_ux_design', parsed, saved.status, saved.ui_ux_key)
@@ -26105,7 +26145,7 @@ function ShadcnPhaseBuilderApp() {
       setUiUxDesign(saved.ui_ux_design)
       if (phaseData) phaseData.phaseBuilderUiUxDesign = saved.ui_ux_design
       const orchestration = saved.ui_ux_design.orchestration || {}
-      const report = JSON.stringify({ status: 'success', run_key: runKey, run_status: persistentRun.status, ui_ux_key: saved.ui_ux_key, draft_key: saved.draft_key, source_architecture_hash: saved.source_architecture_hash, selected_specialists: orchestration.selectedSpecialists || [], additional_specialist_proposals: orchestration.additionalSpecialistProposals || [], persistence: saved.status === 'created' ? 'created_and_read_back' : 'updated_and_read_back' }, null, 2)
+      const report = JSON.stringify({ status: 'success', run_key: runKey, run_status: persistentRun.status, ui_ux_key: saved.ui_ux_key, draft_key: saved.draft_key, source_architecture_hash: saved.source_architecture_hash, coding_time_suggestions: uiUxCodingSuggestions, selected_specialists: orchestration.selectedSpecialists || [], additional_specialist_proposals: orchestration.additionalSpecialistProposals || [], persistence: saved.status === 'created' ? 'created_and_read_back' : 'updated_and_read_back' }, null, 2)
       setUiUxWorkflow((current) => ({ ...current, status: 'success', step: 'complete', message: 'UI/UX Design was validated, saved, and read back successfully.', report, error: '', events: settleOneFlowEvents(appendOneFlowEvent(current.events, 'UI/UX Design workflow completed.', 'complete'), 'complete') }))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'UI/UX Design failed.'
@@ -26253,9 +26293,112 @@ function ShadcnPhaseBuilderApp() {
     }
     return <ol className="grid gap-2 text-sm">{([['context', 'Read the saved System Architecture source'], ['analysis', 'Coordinator produces Web and Mobile milestones'], ['save', 'Transaction, read-back, and UI refresh']] as const).map(([step, label], index) => { const active = roadmapWorkflow.step === step; const complete = roadmapWorkflow.status === 'success' || (roadmapWorkflow.status === 'running' && ['context', 'analysis', 'save'].indexOf(roadmapWorkflow.step) > index); return <li key={step} className="flex items-start gap-3 border-b pb-3 last:border-b-0 last:pb-0"><span className={cn('mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs', complete ? 'text-emerald-500' : active ? bridgeIndicatorClass : 'text-muted-foreground')}>{complete ? <CheckCircle2 className="size-4" /> : active && roadmapWorkflow.status === 'running' ? <LoaderCircle className="size-4 animate-spin" /> : index + 1}</span><span className={cn(active ? 'font-medium' : 'text-muted-foreground')}>{label}</span></li> })}</ol>
   }
+  const normalizeExecutionRoadmapTask = (task: Record<string, any>): Record<string, any> => {
+    const normalized: Record<string, any> = { ...task }
+    normalized.taskId = normalized.taskId || normalized.task_id || normalized.taskKey || normalized.id
+    normalized.taskTitle = normalized.taskTitle || normalized.task_title || normalized.title || normalized.name
+    normalized.taskDescription = normalized.taskDescription || normalized.task_description || normalized.description || normalized.summary
+    if (!Array.isArray(normalized.subTasks) && Array.isArray(normalized.subtasks)) normalized.subTasks = normalized.subtasks
+    if (Array.isArray(normalized.subTasks)) {
+      normalized.subTasks = normalized.subTasks.map((subtask: Record<string, any>) => {
+        const normalizedSubtask: Record<string, any> = { ...subtask }
+        normalizedSubtask.subtaskId = normalizedSubtask.subtaskId || normalizedSubtask.subtask_id || normalizedSubtask.subTaskId || normalizedSubtask.id
+        normalizedSubtask.subtaskTitle = normalizedSubtask.subtaskTitle || normalizedSubtask.subtask_title || normalizedSubtask.subTaskTitle || normalizedSubtask.title || normalizedSubtask.name
+        normalizedSubtask.subtaskDescription = normalizedSubtask.subtaskDescription || normalizedSubtask.subtask_description || normalizedSubtask.subTaskDescription || normalizedSubtask.description || normalizedSubtask.summary
+        if (!Array.isArray(normalizedSubtask.acceptanceCriteria) && Array.isArray(normalizedSubtask.acceptance_criteria)) normalizedSubtask.acceptanceCriteria = normalizedSubtask.acceptance_criteria
+        if (!Array.isArray(normalizedSubtask.dependsOn)) normalizedSubtask.dependsOn = []
+        if (!Array.isArray(normalizedSubtask.todos) && Array.isArray(normalizedSubtask.todoItems)) normalizedSubtask.todos = normalizedSubtask.todoItems
+        if (Array.isArray(normalizedSubtask.todos)) {
+          normalizedSubtask.todos = normalizedSubtask.todos.map((todo: Record<string, any>) => ({ ...todo, status: todo.status || 'Pending' }))
+        }
+        return normalizedSubtask
+      })
+    }
+    return normalized
+  }
+  const normalizeExecutionRoadmapStagePayload = (stageKey: string, value: unknown): Record<string, any> => {
+    const stage = value && typeof value === 'object' && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {}
+    if (!stage.stage && typeof stage.stageKey === 'string') stage.stage = stage.stageKey
+    if (!stage.contractType && String(stage.schemaVersion || '').startsWith('builderx.execution-roadmap.stage.')) stage.contractType = 'builderx.execution-roadmap-stage'
+    if (Array.isArray(stage.phases)) {
+      stage.phases = stage.phases.map((phase: Record<string, any>) => {
+        const normalized: Record<string, any> = { ...phase }
+        normalized.phaseTitle = normalized.phaseTitle || normalized.phase_title || normalized.title || normalized.name
+        normalized.phaseDescription = normalized.phaseDescription || normalized.phase_description || normalized.description || normalized.summary
+        normalized.status = normalized.status || normalized.phaseStatus || 'Pending'
+        normalized.moduleId = normalized.moduleId || normalized.module_id || (Array.isArray(normalized.moduleIds) ? normalized.moduleIds.find((moduleId: unknown) => typeof moduleId === 'string' && moduleId.trim() !== '') : '')
+        if (!Array.isArray(normalized.systemFlow) && Array.isArray(normalized.systemFlowNodes)) normalized.systemFlow = normalized.systemFlowNodes
+        if (Array.isArray(normalized.tasks)) normalized.tasks = normalized.tasks.map((task: Record<string, any>) => normalizeExecutionRoadmapTask(task))
+        return normalized
+      })
+    }
+    if (stageKey === 'resources' && Array.isArray(stage.resourcePatches)) {
+      const resourceTypes = ['forms', 'tables', 'apis', 'backgroundProcesses', 'reports', 'analytics']
+      stage.resourcePatches = stage.resourcePatches.map((patch: Record<string, any>) => {
+        const normalizedPatch: Record<string, any> = { ...patch }
+        const proposedResources = normalizedPatch.proposedResources && typeof normalizedPatch.proposedResources === 'object' && !Array.isArray(normalizedPatch.proposedResources)
+          ? { ...normalizedPatch.proposedResources }
+          : {}
+        resourceTypes.forEach((resourceType) => { if (!Array.isArray(proposedResources[resourceType])) proposedResources[resourceType] = [] })
+        normalizedPatch.proposedResources = proposedResources
+        return normalizedPatch
+      })
+    }
+    return stage
+  }
+  const normalizeExecutionRoadmapFinalResult = (value: Record<string, any>): Record<string, any> => {
+    const roadmap: Record<string, any> = { ...value }
+    const allowedIndicators = new Set(['api', 'background_process', 'database', 'crud', 'authentication', 'authorization', 'validation', 'frontend', 'backend', 'mobile', 'synchronization', 'queue', 'search', 'reporting', 'audit', 'migration', 'testing', 'accessibility', 'external_integration', 'realtime', 'deployment', 'files', 'notifications', 'cache', 'security', 'forms', 'offline'])
+    const indicatorAliases: Record<string, string> = {
+      smartphone: 'mobile',
+      'key-round': 'authentication',
+      'log-in': 'authentication',
+      'list-checks': 'frontend',
+      'message-circle': 'notifications',
+      'map-pin': 'frontend',
+      'wifi-off': 'offline',
+      'refresh-cw': 'synchronization',
+      shuffle: 'synchronization',
+    }
+    if (Array.isArray(roadmap.phases)) {
+      roadmap.phases = roadmap.phases.map((phase: Record<string, any>) => {
+        const normalized: Record<string, any> = normalizeExecutionRoadmapStagePayload('resources', { phases: [phase] }).phases[0]
+        const deliveryTrack = String(normalized.deliveryTrack || '').toLowerCase()
+        normalized.phaseType = ['foundation', 'vertical_slice', 'background_process', 'cross_cutting'].includes(String(normalized.phaseType || '')) ? normalized.phaseType : (deliveryTrack === 'shared' ? 'cross_cutting' : 'vertical_slice')
+        normalized.systemFlow = Array.isArray(normalized.systemFlow) ? normalized.systemFlow : []
+        normalized.proposedResources = normalized.proposedResources && typeof normalized.proposedResources === 'object' && !Array.isArray(normalized.proposedResources) ? normalized.proposedResources : {}
+        const phaseTrack = ['web', 'android', 'shared'].includes(deliveryTrack) ? deliveryTrack : 'shared'
+        if (Array.isArray(normalized.tasks)) {
+          normalized.tasks = normalized.tasks.map((task: Record<string, any>) => {
+            const normalizedTask = normalizeExecutionRoadmapTask(task)
+            const taskTrack = String(normalizedTask.track || phaseTrack || '').toLowerCase()
+            normalizedTask.track = ['web', 'android', 'shared'].includes(taskTrack) ? taskTrack : phaseTrack
+            normalizedTask.taskType = ['page', 'form', 'api', 'database', 'background_process', 'report', 'analytics', 'security', 'test', 'integration', 'vertical_slice'].includes(String(normalizedTask.taskType || '')) ? normalizedTask.taskType : 'vertical_slice'
+            normalizedTask.indicators = Array.isArray(normalizedTask.indicators)
+              ? normalizedTask.indicators.map((indicator: unknown) => indicatorAliases[String(indicator)] || executionRoadmapIndicatorAliases[String(indicator)] || indicator).map((indicator: unknown) => allowedIndicators.has(String(indicator)) ? indicator : 'integration')
+              : []
+            return normalizedTask
+          })
+        }
+        return normalized
+      })
+    }
+    if (!roadmap.phaseExecutionOverview || typeof roadmap.phaseExecutionOverview !== 'object' || Array.isArray(roadmap.phaseExecutionOverview)) {
+      const phases = Array.isArray(roadmap.phases) ? roadmap.phases : []
+      const tasks = phases.flatMap((phase: Record<string, any>) => Array.isArray(phase.tasks) ? phase.tasks : [])
+      const subTasks = tasks.flatMap((task: Record<string, any>) => Array.isArray(task.subTasks) ? task.subTasks : [])
+      roadmap.phaseExecutionOverview = {
+        totalPhases: phases.length,
+        totalTasks: tasks.length,
+        totalSubTasks: subTasks.length,
+        status: 'Pending',
+      }
+    }
+    return roadmap
+  }
   const validateExecutionRoadmapResourcePatch = (value: unknown, contextArchitectureHash: string, expectedPhaseId = '', expectedModuleId = ''): Record<string, any> => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Define implementation resources returned invalid JSON.')
-    const candidate = value as Record<string, any>
+    const candidate = normalizeExecutionRoadmapStagePayload('resources', value)
     const resourcePatches = Array.isArray(candidate.resourcePatches)
       ? candidate.resourcePatches
       : candidate.schemaVersion === 'builderx.execution-roadmap.v3' && Array.isArray(candidate.phases)
@@ -26317,12 +26460,12 @@ function ShadcnPhaseBuilderApp() {
     assembled.contractType = 'builderx.execution-roadmap'
     assembled.stage = 'resources'
     assembled.phases = assembled.phases.map((phase: Record<string, any>) => ({ ...phase, proposedResources: patchesByPhase.get(String(phase.phaseId)) }))
-    return validateExecutionRoadmapResult(assembled)
+    return validateExecutionRoadmapResult(normalizeExecutionRoadmapFinalResult(assembled))
   }
   const validateExecutionRoadmapModuleResult = (value: unknown, contextArchitectureHash: string): Record<string, any> => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Define product modules returned invalid JSON.')
     const catalog = value as Record<string, any>
-    if (catalog.schemaVersion !== 'builderx.execution-roadmap.stage.modules.v1' || catalog.contractType !== 'builderx.execution-roadmap-stage' || catalog.stage !== 'modules' || !catalog.source || typeof catalog.source !== 'object' || catalog.source.draftKey !== phaseBuilderDraftKey || catalog.source.architectureHash !== contextArchitectureHash || !Array.isArray(catalog.modules) || catalog.modules.length < 2 || catalog.modules.length > 30) throw new Error('Define product modules must return a verified module catalog containing 2 to 30 modules.')
+    if (catalog.schemaVersion !== 'builderx.execution-roadmap.stage.modules.v1' || catalog.contractType !== 'builderx.execution-roadmap-stage' || catalog.stage !== 'modules' || !catalog.source || typeof catalog.source !== 'object' || catalog.source.draftKey !== phaseBuilderDraftKey || catalog.source.architectureHash !== contextArchitectureHash || !Array.isArray(catalog.modules) || catalog.modules.length < 1 || catalog.modules.length > 30) throw new Error('Define product modules must return a verified module catalog containing 1 to 30 modules.')
     const moduleIds = new Set<string>()
     const moduleKeys = new Set<string>()
     const moduleKeyPattern = /^[a-z][a-z0-9_]{1,63}$/
@@ -26355,10 +26498,10 @@ function ShadcnPhaseBuilderApp() {
   }
   const validateExecutionRoadmapStageResult = (value: unknown, stageKey: string, contextArchitectureHash: string, expectedModuleId = ''): Record<string, any> => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${executionRoadmapStageLabels[stageKey] || 'Execution Roadmap stage'} returned invalid JSON.`)
-    const stage = value as Record<string, any>
+    const stage = normalizeExecutionRoadmapStagePayload(stageKey, value)
     if (!String(stage.schemaVersion || '').startsWith('builderx.execution-roadmap.stage.') || stage.contractType !== 'builderx.execution-roadmap-stage' || stage.stage !== stageKey) throw new Error(`${executionRoadmapStageLabels[stageKey] || 'Execution Roadmap stage'} returned an unsupported contract.`)
-    const minimumPhaseCount = expectedModuleId !== '' ? 1 : 5
-    const maximumPhaseCount = expectedModuleId !== '' ? 30 : 9
+    const minimumPhaseCount = 1
+    const maximumPhaseCount = 30
     if (!stage.source || typeof stage.source !== 'object' || stage.source.draftKey !== phaseBuilderDraftKey || stage.source.architectureHash !== contextArchitectureHash || !Array.isArray(stage.phases) || stage.phases.length < minimumPhaseCount || stage.phases.length > maximumPhaseCount) throw new Error(`${executionRoadmapStageLabels[stageKey] || 'Execution Roadmap stage'} must preserve the verified source and contain ${minimumPhaseCount} to ${maximumPhaseCount} phases.`)
     const phaseIds = new Set<string>()
     const savedModuleIds = new Set(executionRoadmapModules.map((module) => String(module.moduleId || '')).filter(Boolean))
@@ -26450,7 +26593,7 @@ function ShadcnPhaseBuilderApp() {
   }
   const validateExecutionRoadmapResult = (value: unknown): Record<string, any> => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Execution Roadmap returned an invalid JSON object.')
-    const roadmap = value as Record<string, any>
+    const roadmap = normalizeExecutionRoadmapFinalResult(value as Record<string, any>)
     const requiredKeys = ['schemaVersion', 'contractType', 'source', 'phaseExecutionOverview', 'phases']
     const missing = requiredKeys.filter((key) => !(key in roadmap))
     if (missing.length > 0) throw new Error(`Execution Roadmap is missing required fields: ${missing.join(', ')}.`)
@@ -26535,20 +26678,19 @@ function ShadcnPhaseBuilderApp() {
     const stageNumber = ({ modules: 0, phases: 1, tasks: 2, subtasks: 3, resources: 4 } as Record<string, number>)[stageKey]
     const stageStep = stageKey === 'modules' ? 'stage1' : `stage${stageNumber}` as 'stage1' | 'stage2' | 'stage3' | 'stage4'
     const targetInstruction = stageKey === 'modules'
-      ? 'Read the saved System Architecture and UI/UX design once. Generate only a compact module catalog and dependency graph. Return 2 to 30 modules, each with moduleId, unique lower_snake_case moduleKey, moduleTitle, moduleDescription, moduleType, order, dependsOn, provides, consumes, uiUxScope with routes/screens/sharedComponents arrays, and phaseCountHint. Each provides or consumes entry must include interfaceId, name, kind, and contractSummary. Do not generate phases, tasks, sub-tasks, todos, forms, tables, APIs, or resource arrays. A later module must be able to consume the compact interface summaries from its dependencies without rereading unrelated modules.'
+      ? 'Read the saved System Architecture and UI/UX guide once. Generate the smallest coherent module catalog allowed by the contract. Return the full builderx.execution-roadmap.stage.modules.v1 envelope with schemaVersion, contractType, stage, source, and root modules array. Never use moduleCatalog or module_catalog. Each provides and consumes entry must be an object with interfaceId, kind, and contractSummary. Keep dependency interfaces concise. Do not generate phases, tasks, sub-tasks, todos, forms, tables, APIs, resources, or speculative modules.'
       : stageKey === 'phases'
-      ? `${moduleId !== '' ? `Process only module ${moduleId} from the scoped context. Every phaseId must be unique and must begin with ${moduleId}- so module checkpoints can be merged safely. ` : ''}Analyze the saved narrative, requirements, architecture, and UI/UX direction. Generate only the standalone chronological phases and their connections. Each phase must have a systemFlow with page/view/API/database/background/report nodes, entry and exit conditions, dependencies, and a clear outcome. Do not generate tasks yet.`
+      ? `${moduleId !== '' ? `Process only module ${moduleId}; preserve its ID namespace. ` : ''}Return the full builderx.execution-roadmap.stage.phases.v1 envelope with schemaVersion, contractType, stage, source, and root phases array. Each phase must include phaseId, moduleId, phaseTitle, phaseDescription, status exactly Pending, and systemFlow. Do not use moduleIds or systemFlowNodes instead of the required fields. Generate only the essential chronological phases for confirmed scope. Include system-flow nodes only for components that actually participate. Do not generate tasks yet.`
         : stageKey === 'tasks'
-        ? `${moduleId !== '' ? `Process only the phases for module ${moduleId}. ` : ''}Enhance the supplied phase result without changing phase IDs, titles, descriptions, flow steps, or dependencies. Generate small implementation tasks for every phase. Split page-by-page UI, API, database, background, security, reporting, and integration work into separate tasks. Do not generate sub-tasks yet.`
+        ? `${moduleId !== '' ? `Process only the phases for module ${moduleId}. ` : ''}Return the full builderx.execution-roadmap.stage.tasks.v1 envelope with schemaVersion, contractType, stage, source, and root phases array. Preserve upstream IDs and add only the minimum practical tasks required for each phase. Keep coherent cross-layer work together instead of manufacturing separate UI, API, database, security, report, or integration tasks. Do not generate sub-tasks yet.`
         : stageKey === 'subtasks'
-          ? `${moduleId !== '' ? `Process only the phases and tasks for module ${moduleId}. ` : ''}Enhance the supplied phase and task result without deleting or renaming upstream items. For every task, generate executable sub-tasks with detailed descriptions, acceptance criteria, dependencies, and multiple small todos with Pending status. Every task.subTasks item is mandatory and must contain exactly these fields: subtaskId, subtaskTitle, subtaskDescription, acceptanceCriteria, dependsOn, todos. subtaskDescription and subtaskTitle must be non-empty; acceptanceCriteria and todos must each contain at least one item; every todo must contain todoId, todoTitle, todoDescription, todoType, and status set to Pending. Before writing the MySQL job result, inspect every task and regenerate any incomplete sub-task.`
-          : 'Read the saved Stage 3 hierarchy completely, but return only a compact resource-patch contract. Do not return phases, tasks, sub-tasks, or todos. Return exactly one resourcePatches item for every saved phase, keyed by the existing phaseId. Each proposedResources object must contain forms, tables, apis, backgroundProcesses, reports, and analytics arrays. Every resource item must include a stable id and name. Every form MUST include formId, formName, formAction, purpose, route, and a non-empty fields array; formAction must be exactly add, edit, search, delete, view, or bulk_update; every form field must include name, label, type, required, and nullable. Every table MUST include tableId, tableName, purpose, and a non-empty fields array; every table field must include lower_snake_case name, type, nullable, and purpose. APIs must include method, route, request, response, and error behavior; background processes must include trigger, input, output, and retry behavior; reports and analytics must include source, metrics or dimensions, and access boundary. Before returning, inspect every proposed form and table and regenerate any item missing these fields. Add proposed fields, actions, routes, API endpoints, database tables and fields, indexes, relationships, background processes, reports, analytics, states, permissions, indicators, and resource references as planning proposals only. Preserve every phaseId exactly and do not claim resources already exist.'
-    // The full response contract is stored in the server-generated stage context file.
+          ? `${moduleId !== '' ? `Process only the phases and tasks for module ${moduleId}. ` : ''}Return the full builderx.execution-roadmap.stage.subtasks.v1 envelope with schemaVersion, contractType, stage, source, and root phases array. Preserve upstream items. For each task, add the minimum valid executable sub-task and Pending todo; one is enough when it clearly describes the work. Add more only when confirmed scope cannot be implemented safely as one unit.`
+          : 'Return the full builderx.execution-roadmap.stage.resources.v1 envelope with schemaVersion, contractType, stage, source, and root resourcePatches array. Return one compact resource patch for every saved phase and preserve each phaseId. Each proposedResources object must contain the required resource arrays, but keep an array empty unless confirmed scope requires that resource. For included items, return only the contract-required fields. Do not invent forms, APIs, tables, reports, analytics, background work, indexes, states, or permissions for completeness, and do not regenerate the hierarchy.'
+    // The full response contract is stored in the server-generated MySQL stage context.
     const command = [
       stageKey === 'modules' ? 'BuilderX Phase Builder module blueprint specialist.' : `BuilderX Phase Builder Execution Roadmap Specialist Stage ${stageNumber} of 4.`,
-      'Read the complete verified context file at:',
-      context.context_path,
-      'Work deliberately as a senior system analyst. The file contains the saved prior stage when one is required; read it completely before generating.',
+      `Use the complete verified MySQL context reference ${context.context_path}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT.`,
+      'Work deliberately as a senior system analyst. The context contains the saved prior stage when one is required; read it completely before generating.',
       targetInstruction,
       'Preserve every upstream ID and meaning. Return only the required JSON object to the MySQL job result. No Markdown, commentary, file edits, SQL, product database changes, or Phase Manager changes.',
     ].join('\n')
@@ -26583,28 +26725,38 @@ function ShadcnPhaseBuilderApp() {
       parsed = validateExecutionRoadmapStageResult(raw, stageKey, context.source_architecture_hash, moduleId)
     }
     addRoadmapStageEvent(stageKey, 'Specialist result passed schema validation.', 'complete')
-    if (phaseAiStage(persistentRun, 'integration_review')?.status !== 'SUCCEEDED') {
+    let reviewResult = phaseAiStage(persistentRun, 'integration_review')?.result as Record<string, any> | undefined
+    if (!reviewResult) {
       const reviewContext = await preparePersistentPhaseAiCheckpointContext(endpoint, phaseData?.csrf || '', runKey, 'integration_review')
-      const review = await dispatchPersistentPhaseAiStage({ endpoint, csrf: phaseData?.csrf || '', runKey, stageKey: 'integration_review', command: `BuilderX Execution Roadmap integration review. Read ${reviewContext.context_path}. Review only this validated semantic chunk for immutable-ID, dependency, naming, traceability, duplicate, and relationship conflicts. Do not replace the artifact or edit files. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`, onProgress: (message) => addRoadmapStageEvent(stageKey, message, 'active') })
+      const review = await dispatchPersistentPhaseAiStage({ endpoint, csrf: phaseData?.csrf || '', runKey, stageKey: 'integration_review', command: `BuilderX Execution Roadmap integration review. Read ${reviewContext.context_path}. Block only for a genuine confirmed-baseline defect using an exact allowed blocker code. Treat extra decomposition, resources, traceability, optimization, or future work as short non-blocking coding-time suggestions. Do not replace the artifact or edit files. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`, onProgress: (message) => addRoadmapStageEvent(stageKey, message, 'active') })
       persistentRun = review.run
-      addRoadmapStageEvent(stageKey, 'Bounded integration review approved this semantic chunk.', 'complete')
+      reviewResult = review.result
     }
+    if (phaseAiIntegrationReviewStatus(reviewResult) === 'blocked') {
+      persistentRun = await completePersistentPhaseAiPersistence(endpoint, phaseData?.csrf || '', runKey, 'execution_roadmap', raw as Record<string, any>, 'blocked', runKey)
+      const detail = phaseAiIntegrationReviewBlockedDetail(reviewResult)
+      addRoadmapStageEvent(stageKey, 'Integration review findings were checkpointed; no roadmap database write was attempted.', 'error')
+      setRoadmapWorkflow((current) => ({ ...current, report: JSON.stringify({ status: 'blocked', run_key: runKey, run_status: persistentRun.status, persistence: 'blocked_no_write', integration_review: reviewResult }, null, 2) }))
+      throw new Error(detail)
+    }
+    addRoadmapStageEvent(stageKey, 'Bounded integration review approved this semantic chunk.', 'complete')
+    const codingTimeSuggestions = phaseAiIntegrationReviewSuggestions(reviewResult)
+    if (codingTimeSuggestions.length > 0) addRoadmapStageEvent(stageKey, `${codingTimeSuggestions.length} optional suggestion${codingTimeSuggestions.length === 1 ? '' : 's'} saved for coding time; they did not block this chunk.`, 'complete')
     if (persist) {
       const savedStage = await saveExecutionRoadmapStage(stageKey, parsed, context.source_architecture_hash)
       persistentRun = await completePersistentPhaseAiPersistence(endpoint, phaseData?.csrf || '', runKey, 'execution_roadmap', raw, 'updated', savedStage.roadmap_key)
       addRoadmapStageEvent(stageKey, `${executionRoadmapStageLabels[stageKey]} saved and read back with transaction verification.`, 'complete')
       addRoadmapStageEvent(stageKey, 'Saved checkpoint read back; Phase Builder state refreshed.', 'complete')
     }
-    setRoadmapWorkflow((current) => ({ ...current, step: stageStep, message: `${executionRoadmapStageLabels[stageKey]} completed and verified.`, report: JSON.stringify(parsed, null, 2) }))
+    setRoadmapWorkflow((current) => ({ ...current, step: stageStep, message: `${executionRoadmapStageLabels[stageKey]} completed and verified.`, report: JSON.stringify({ artifact: parsed, coding_time_suggestions: codingTimeSuggestions }, null, 2) }))
     return { parsed, runKey, artifact: raw, requestId, persistentRun }
   }
   const runExecutionRoadmapResourcePhase = async (context: { context_id: string; context_path: string; bytes: number; sha256: string; source_architecture_hash: string; phase_id?: string | null; phase_index?: number | null; phase_count?: number | null }, phaseId: string, phaseIndex: number, phaseCount: number) => {
     const command = [
       'BuilderX Phase Builder Execution Roadmap Specialist Stage 4 of 4: Define implementation resources for one phase.',
-      'Read the complete verified context file at:',
-      context.context_path,
+      `Use the complete verified MySQL context reference ${context.context_path}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT.`,
       `This is phase ${phaseIndex} of ${phaseCount}: ${phaseId}. Process only this selected phase.`,
-      'Return exactly one resourcePatches item for the selected phaseId. Every form must include formId, formName, formAction, purpose, route, and a non-empty fields array; formAction must be add, edit, search, delete, view, or bulk_update; every form field must include lower_snake_case name, label, type, required, and nullable. Every table must include tableId, tableName, purpose, and a non-empty fields array with lower_snake_case field names. APIs, background processes, reports, and analytics must include their route or trigger, inputs, outputs, and boundaries. Propose forms, fields, views, actions, routes, APIs, tables, fields, indexes, relationships, background processes, reports, analytics, states, permissions, indicators, and resource references as planning proposals only.',
+      'Return the full builderx.execution-roadmap.stage.resources.v1 envelope with schemaVersion, contractType, stage, source, and root resourcePatches array. Return exactly one resourcePatches item for the selected phaseId. Keep every required resource array empty unless confirmed phase scope needs an item. For included resources, provide only the contract-required identifiers, fields, routes, inputs, outputs, and boundaries. Do not invent resources for completeness.',
       'Do not return phases, tasks, sub-tasks, todos, Markdown, commentary, file edits, SQL, product database changes, or Phase Manager changes. Preserve the selected phaseId exactly and return only the required JSON object to the MySQL job result.',
     ].join('\n')
     const endpoint = route('phases/')
@@ -26623,10 +26775,19 @@ function ShadcnPhaseBuilderApp() {
     addRoadmapStageEvent('resources', `Phase ${phaseIndex} of ${phaseCount} specialist result received; schema validation started.`, 'active')
     const resourcePatch = validateExecutionRoadmapResourcePatch(raw, context.source_architecture_hash, phaseId)
     addRoadmapStageEvent('resources', `Phase ${phaseIndex} of ${phaseCount} resource patch passed schema validation.`, 'complete')
-    if (phaseAiStage(persistentRun, 'integration_review')?.status !== 'SUCCEEDED') {
+    let reviewResult = phaseAiStage(persistentRun, 'integration_review')?.result as Record<string, any> | undefined
+    if (!reviewResult) {
       const reviewContext = await preparePersistentPhaseAiCheckpointContext(endpoint, phaseData?.csrf || '', runKey, 'integration_review')
-      const review = await dispatchPersistentPhaseAiStage({ endpoint, csrf: phaseData?.csrf || '', runKey, stageKey: 'integration_review', command: `BuilderX Execution Roadmap resource integration review. Read ${reviewContext.context_path}. Review the single verified phase resource patch for immutable phase identity, table and form identifiers, route and API boundaries, dependency conflicts, duplicates, and upstream traceability. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`, onProgress: (message) => addRoadmapStageEvent('resources', message, 'active') })
+      const review = await dispatchPersistentPhaseAiStage({ endpoint, csrf: phaseData?.csrf || '', runKey, stageKey: 'integration_review', command: `BuilderX Execution Roadmap resource review. Read ${reviewContext.context_path}. Block only when a required confirmed resource makes the baseline unusable, using an exact allowed blocker code. Treat optional resources or extra detail as non-blocking coding-time suggestions. Return exactly the required builderx.ai-integration-review.v1 JSON object to the MySQL job result.`, onProgress: (message) => addRoadmapStageEvent('resources', message, 'active') })
       persistentRun = review.run
+      reviewResult = review.result
+    }
+    if (phaseAiIntegrationReviewStatus(reviewResult) === 'blocked') {
+      persistentRun = await completePersistentPhaseAiPersistence(endpoint, phaseData?.csrf || '', runKey, 'execution_roadmap', raw as Record<string, any>, 'blocked', runKey)
+      const detail = phaseAiIntegrationReviewBlockedDetail(reviewResult)
+      addRoadmapStageEvent('resources', `Phase ${phaseIndex} of ${phaseCount} integration review findings were checkpointed; no resource database write was attempted.`, 'error')
+      setRoadmapWorkflow((current) => ({ ...current, report: JSON.stringify({ status: 'blocked', run_key: runKey, run_status: persistentRun.status, persistence: 'blocked_no_write', integration_review: reviewResult }, null, 2) }))
+      throw new Error(detail)
     }
     return { patch: resourcePatch.resourcePatches[0], runKey, artifact: raw, persistentRun }
   }
@@ -26672,7 +26833,7 @@ function ShadcnPhaseBuilderApp() {
         resourcePatches: Array.from(patchesByPhase.values()),
       }
       const savedCheckpoint = await saveExecutionRoadmapStage('resources', checkpoint, contextArchitectureHash)
-      await completePersistentPhaseAiPersistence(route('phases/'), phaseData?.csrf || '', result.runKey, 'execution_roadmap', result.artifact as Record<string, any>, 'updated', savedCheckpoint.roadmap_key)
+      if (!phaseAiRunHasTerminalPersistence(result.persistentRun)) await completePersistentPhaseAiPersistence(route('phases/'), phaseData?.csrf || '', result.runKey, 'execution_roadmap', result.artifact as Record<string, any>, 'updated', savedCheckpoint.roadmap_key)
       addRoadmapStageEvent('resources', `Phase ${index + 1} of ${phases.length} resource checkpoint saved and read back.`, 'complete')
     }
     const resourcePatch = {
@@ -26692,8 +26853,6 @@ function ShadcnPhaseBuilderApp() {
     addRoadmapStageEvent('resources', 'Background final roadmap assembly started.', 'active')
     const assembled = assembleExecutionRoadmapWithResources(validatedPatch)
     addRoadmapStageEvent('resources', 'Background assembly merged phase resource patches into the saved hierarchy.', 'complete')
-    await saveExecutionRoadmapStage('resources', assembled, contextArchitectureHash)
-    addRoadmapStageEvent('resources', 'Final resource roadmap saved and read back with transaction verification.', 'complete')
     return { parsed: assembled, threadId: '' }
   }
   const mergeExecutionRoadmapModuleStage = (stageKey: 'phases' | 'tasks' | 'subtasks', incoming: Record<string, any>, moduleId: string): Record<string, any> => {
@@ -26762,7 +26921,7 @@ function ShadcnPhaseBuilderApp() {
         moduleRuns: currentRuns,
         resourcePatches: Array.from(checkpointPatches.values()),
       }, contextArchitectureHash)
-      await completePersistentPhaseAiPersistence(route('phases/'), phaseData?.csrf || '', result.runKey, 'execution_roadmap', result.artifact as Record<string, any>, 'updated', savedCheckpoint.roadmap_key)
+      if (!phaseAiRunHasTerminalPersistence(result.persistentRun)) await completePersistentPhaseAiPersistence(route('phases/'), phaseData?.csrf || '', result.runKey, 'execution_roadmap', result.artifact as Record<string, any>, 'updated', savedCheckpoint.roadmap_key)
       addRoadmapStageEvent('resources', `Module ${moduleId} phase ${index + 1} checkpoint saved and read back.`, 'complete')
     }
     const completedRuns = Array.isArray(existingStage?.moduleRuns) ? existingStage.moduleRuns.filter((run: Record<string, any>) => String(run.moduleId || '') !== moduleId) : []
@@ -27144,6 +27303,11 @@ function ShadcnPhaseBuilderApp() {
   const phaseAiStage = (run: Record<string, any> | null, stageKey: string) => Array.isArray(run?.stages)
     ? run.stages.find((stage: Record<string, any>) => String(stage.stage_key || '') === stageKey) || null
     : null
+  const phaseAiRunHasTerminalPersistence = (run: Record<string, any> | null): boolean => {
+    const persistence = phaseAiStage(run, 'persistence')
+    const status = String(persistence?.status || '').toLowerCase()
+    return ['completed', 'succeeded', 'blocked', 'failed'].includes(status)
+  }
   const startPersistentPhase2Run = async (sourceSnapshot: Record<string, string>) => {
     const randomBytes = new Uint8Array(16)
     crypto.getRandomValues(randomBytes)
@@ -27399,7 +27563,7 @@ function ShadcnPhaseBuilderApp() {
         const validationCommand = [
           'Act as the read-only BuilderX Phase Builder Narrative & Cleanup validation stage. Use the complete validation context at:',
           databaseContext.context_path,
-          'Validate the grammar result and approve persistence only if all nine required keys are present and meaning is preserved. An unchanged empty string is valid when the corresponding source field is empty; completeness means key and type completeness, not invented content. Do not execute SQL or edit files; the server performs the transaction. Write the required compact JSON object to the BuilderX MySQL job result, not as a chat response. Use role database_specialist, status approved or rejected, database_specialist_approved boolean, draft_key, validation, and reason. Do not repeat corrected_sections; the server reuses the validated grammar result unchanged after approval. If the context is unreadable, write {"status":"error","error":"PHASE2_CONTEXT_UNAVAILABLE"} to the MySQL job result and stop.',
+          'Validate the grammar result and approve persistence only if all nine required keys are present and meaning is preserved. An unchanged empty string is valid when the corresponding source field is empty; completeness means key and type completeness, not invented content. Do not execute SQL or edit files; the server performs the transaction. Write only the semantic decision to the BuilderX MySQL job result, not as a chat response. Use this exact compact shape: {"role":"database_specialist","status":"approved","database_specialist_approved":true,"draft_key":"<exact current draft key>","reason":"..."}. Use status rejected and false approval when validation fails. Do not return validation flags or corrected_sections; BuilderX derives complete, meaning_preserved, and write_allowed deterministically from the persisted source and grammar checkpoints. If the context is unreadable, write {"status":"error","error":"PHASE2_CONTEXT_UNAVAILABLE"} to the MySQL job result and stop.',
         ].join('\n')
         const databaseResult = savedValidationStage?.status === 'RUNNING' && savedValidationStage.provider_request_id
           ? await waitPersistentPhaseAiBridgeResult(persistentRunKey, 'validation', String(savedValidationStage.provider_request_id), 'the Narrative & Cleanup validation stage')
@@ -27408,11 +27572,20 @@ function ShadcnPhaseBuilderApp() {
         database = databaseResult.fileResult as Record<string, any>
         if (!database) throw new Error('The validation stage MySQL job result did not contain a JSON object.')
         if (database.status === 'error' && database.error === 'PHASE2_CONTEXT_UNAVAILABLE') throw new Error('PHASE2_CONTEXT_UNAVAILABLE')
-        if (database.role !== 'database_specialist' || database.status !== 'approved' || database.database_specialist_approved !== true) throw new Error(String(database.reason || 'The validation stage did not approve persistence.'))
-        if (typeof database.draft_key !== 'string' || database.draft_key.trim().toLowerCase() !== phaseBuilderDraftKey.trim().toLowerCase()) throw new Error('The validation stage draft key did not match the current Builder draft.')
-        const validation = database.validation
-        if (!validation || typeof validation !== 'object' || (validation as Record<string, unknown>).complete !== true || (validation as Record<string, unknown>).meaning_preserved !== true || (validation as Record<string, unknown>).write_allowed !== true) throw new Error('The validation stage did not return complete approval validation.')
         persistentRun = await checkpointPersistentPhase2Run(persistentRunKey, 'validation', 'SUCCEEDED', { result: database })
+        const canonicalValidation = phaseAiStage(persistentRun, 'validation')?.result
+        if (
+          !canonicalValidation
+          || canonicalValidation.role !== 'database_specialist'
+          || canonicalValidation.status !== 'approved'
+          || canonicalValidation.database_specialist_approved !== true
+          || typeof canonicalValidation.draft_key !== 'string'
+          || canonicalValidation.draft_key.trim().toLowerCase() !== phaseBuilderDraftKey.trim().toLowerCase()
+          || canonicalValidation.validation?.complete !== true
+          || canonicalValidation.validation?.meaning_preserved !== true
+          || canonicalValidation.validation?.write_allowed !== true
+        ) throw new Error('BuilderX did not persist the canonical validation approval.')
+        database = canonicalValidation
         addPhase2Event('Validation stage approved the correction and was checkpointed.', 'complete')
       }
 
@@ -27925,39 +28098,58 @@ async function startPersistentPhaseAiWorkflow(options: PersistentPhaseAiStart): 
   return run
 }
 
-async function readPersistentPhaseAiEventStream(url: string, onProgress?: (message: string) => void): Promise<void> {
-  const response = await fetch(url, { cache: 'no-store', headers: { Accept: 'text/event-stream', 'X-Requested-With': 'XMLHttpRequest' } })
-  if (!response.ok || !response.body) throw new Error('The server-owned AI Bridge progress stream is unavailable.')
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let terminal = false
-  let failure: Error | null = null
-  const consume = (block: string) => {
-    const event = block.split('\n').find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message'
-    const dataText = block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
-    if (!dataText) return
-    const data = JSON.parse(dataText) as Record<string, any>
-    if (event === 'status') onProgress?.(String(data.message || 'The active Codex AI Chat is processing the persisted stage…'))
-    if (event === 'assistant_message') onProgress?.('The active Codex AI Chat is returning the bounded JSON result…')
-    if (event === 'failed') failure = new Error(String(data.message || 'The persisted AI Bridge stage failed.'))
-    if (event === 'completed') terminal = true
-  }
-  while (!terminal && !failure) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, '\n')
-    let separator = buffer.indexOf('\n\n')
-    while (separator >= 0) {
-      consume(buffer.slice(0, separator))
-      buffer = buffer.slice(separator + 2)
-      if (terminal || failure) break
-      separator = buffer.indexOf('\n\n')
+const persistentPhaseAiStageTimeoutMs = 4 * 60 * 1000
+const persistentPhaseAiStageSettleMs = 5000
+
+function phaseAiDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function readPersistentPhaseAiEventStream(url: string, onProgress?: (message: string) => void, timeoutMs = persistentPhaseAiStageTimeoutMs): Promise<void> {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  try {
+    const response = await fetch(url, { cache: 'no-store', headers: { Accept: 'text/event-stream', 'X-Requested-With': 'XMLHttpRequest' }, signal: controller.signal })
+    if (!response.ok || !response.body) throw new Error('The server-owned AI Bridge progress stream is unavailable.')
+    reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let terminal = false
+    let failure: Error | null = null
+    const consume = (block: string) => {
+      const event = block.split('\n').find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message'
+      const dataText = block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+      if (!dataText) return
+      const data = JSON.parse(dataText) as Record<string, any>
+      if (event === 'status') onProgress?.(String(data.message || 'The active Codex AI Chat is processing the persisted stage…'))
+      if (event === 'assistant_message') onProgress?.('The active Codex AI Chat is returning the bounded JSON result…')
+      if (event === 'failed') failure = new Error(String(data.message || 'The persisted AI Bridge stage failed.'))
+      if (event === 'completed') terminal = true
     }
-    if (done) break
+    while (!terminal && !failure) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, '\n')
+      let separator = buffer.indexOf('\n\n')
+      while (separator >= 0) {
+        consume(buffer.slice(0, separator))
+        buffer = buffer.slice(separator + 2)
+        if (terminal || failure) break
+        separator = buffer.indexOf('\n\n')
+      }
+      if (done) break
+    }
+    if (failure) throw failure
+    if (!terminal) throw new Error('The persisted AI Bridge stream ended before completion.')
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('The persisted AI Bridge stage timed out before a MySQL result read-back.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+    await reader?.cancel().catch(() => {})
   }
-  await reader.cancel().catch(() => {})
-  if (failure) throw failure
-  if (!terminal) throw new Error('The persisted AI Bridge stream ended before completion.')
 }
 
 async function dispatchPersistentPhaseAiStage(options: { endpoint: string; csrf: string; runKey: string; stageKey: string; command: string; onProgress?: (message: string) => void }): Promise<{ result: Record<string, any>; run: Record<string, any>; requestId: string }> {
@@ -27973,14 +28165,28 @@ async function dispatchPersistentPhaseAiStage(options: { endpoint: string; csrf:
     requestId = String(dispatched.delivery?.provider_request_id || '')
     if (!requestId) throw new Error('The server-owned AI Bridge did not return a request identity.')
     const query = new URLSearchParams({ action: 'phase_ai_bridge', bridge_action: 'events', csrf: options.csrf, run_key: options.runKey, stage_key: options.stageKey, request_id: requestId })
-    await readPersistentPhaseAiEventStream(`${options.endpoint}?${query.toString()}`, options.onProgress)
+    let streamError: Error | null = null
+    try {
+      await readPersistentPhaseAiEventStream(`${options.endpoint}?${query.toString()}`, options.onProgress)
+    } catch (error) {
+      streamError = error instanceof Error ? error : new Error('The persisted AI Bridge stream ended before completion.')
+    }
     query.set('bridge_action', 'result')
     const response = await fetch(`${options.endpoint}?${query.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
     const payload = await response.json().catch(() => null)
     const result = payload?.data?.result?.result_json
-    if (!response.ok || payload?.ok !== true || !result || typeof result !== 'object' || Array.isArray(result)) throw new Error(String(payload?.message || 'The persisted MySQL AI job did not contain a JSON object.'))
+    if (!response.ok || payload?.ok !== true || !result || typeof result !== 'object' || Array.isArray(result)) {
+      if (streamError) throw streamError
+      throw new Error(String(payload?.message || 'The persisted MySQL AI job did not contain a JSON object.'))
+    }
+    if (streamError) options.onProgress?.('The Bridge stream ended early; recovered the persisted MySQL job result by read-back.')
     const completed = await phaseAiTransition(options.endpoint, options.csrf, options.runKey, options.stageKey, 'complete', result)
-    return { result, run: completed.run, requestId }
+    const canonicalStageResult = persistentPhaseAiStage(completed.run, options.stageKey)?.result
+    return {
+      result: canonicalStageResult && typeof canonicalStageResult === 'object' && !Array.isArray(canonicalStageResult) ? canonicalStageResult : result,
+      run: completed.run,
+      requestId,
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The persistent AI stage failed.'
     await phaseAiTransition(options.endpoint, options.csrf, options.runKey, options.stageKey, 'fail', { error_code: message.toLowerCase().includes('bridge') ? 'BRIDGE_UNAVAILABLE' : 'INVALID_RESULT_SCHEMA', error_detail: message }).catch(() => undefined)
@@ -27995,8 +28201,28 @@ async function preparePersistentPhaseAiCheckpointContext(endpoint: string, csrf:
   return context as PersistentPhaseAiContext
 }
 
+function phaseAiIntegrationReviewStatus(result: Record<string, any> | undefined): 'approved' | 'blocked' {
+  return result?.status === 'blocked' ? 'blocked' : 'approved'
+}
+
+function phaseAiIntegrationReviewSuggestions(result: Record<string, any> | undefined): Array<Record<string, any>> {
+  return Array.isArray(result?.suggestions)
+    ? result.suggestions.filter((suggestion): suggestion is Record<string, any> => Boolean(suggestion && typeof suggestion === 'object' && !Array.isArray(suggestion)))
+    : []
+}
+
+function phaseAiIntegrationReviewBlockedDetail(result: Record<string, any> | undefined): string {
+  const findings = Array.isArray(result?.findings) ? result.findings : []
+  if (findings.length === 0) return 'The integration review blocked persistence without returning a usable finding.'
+  return findings.map((finding: Record<string, any>, index: number) => {
+    const summary = String(finding?.summary || `Finding ${index + 1}`).trim()
+    const resolution = String(finding?.requiredResolution || '').trim()
+    return `${index + 1}. ${summary}${resolution !== '' ? `\n   Required resolution: ${resolution}` : ''}`
+  }).join('\n')
+}
+
 async function completePersistentPhaseAiPersistence(endpoint: string, csrf: string, runKey: string, workflowKey: string, artifact: Record<string, any>, status: string, recordKey: string): Promise<Record<string, any>> {
-  await phaseAiTransition(endpoint, csrf, runKey, 'persistence', 'begin', { operation: 'transactional_write_and_direct_read_back', record_key: recordKey })
+  await phaseAiTransition(endpoint, csrf, runKey, 'persistence', 'begin', { operation: status === 'blocked' ? 'verified_blocked_no_product_write' : 'transactional_write_and_direct_read_back', record_key: recordKey })
   const completed = await phaseAiTransition(endpoint, csrf, runKey, 'persistence', 'complete', {
     schemaVersion: 'builderx.ai-persistence.v1',
     workflowKey,
@@ -28034,9 +28260,9 @@ async function runPersistentCodingWorkflow(options: PersistentPhaseAiStart & { i
     }
     const stageContext = await preparePersistentPhaseAiCheckpointContext(options.endpoint, options.csrf, runKey, stageKey)
     const instruction = stageKey === 'inspection'
-      ? `Inspect the saved todo scope and current project state without editing anything. Identify relevant files, database paths, Android paths, authorization boundaries, existing tests, unrelated dirty changes, and blockers. Return only builderx.coding-checkpoint.v1 JSON for stage inspection with status and an evidence array.`
+      ? `Inspect the saved todo scope and current project state without editing anything. Identify relevant files, database paths, Android paths, authorization boundaries, existing tests, unrelated dirty changes, and blockers. Mark dirty worktree evidence as blocked only when the current diff cannot be preserved, conflicts with required edit hunks, or prevents safe attribution; same-file overlap alone is not a blocker. Otherwise keep dirty worktree findings as non-blocking evidence. Return only builderx.coding-checkpoint.v1 JSON for stage inspection with status and an evidence array.`
       : stageKey === 'plan'
-        ? `Create a bounded implementation plan for the verified todo scope. Preserve unrelated changes and list ordered file, database, UI, Android, test, and read-back steps actually required. Do not edit yet. Return only builderx.coding-checkpoint.v1 JSON for stage plan with status and an evidence array.`
+        ? `Create a bounded implementation plan for the verified todo scope. Preserve unrelated changes and list ordered file, database, UI, Android, test, and read-back steps actually required. Do not edit yet. Treat dirty files as blocking only when the existing hunks cannot be preserved or conflict with the planned edit hunks; same-file overlap alone is not a blocker. Treat missing database rollback protection as blocking only when actual schema or data writes are required by the plan. Return only builderx.coding-checkpoint.v1 JSON for stage plan with status and an evidence array.`
         : stageKey === 'implementation'
           ? options.implementationInstruction
           : stageKey === 'verification'
@@ -28048,7 +28274,7 @@ async function runPersistentCodingWorkflow(options: PersistentPhaseAiStart & { i
       csrf: options.csrf,
       runKey,
       stageKey,
-      command: `BuilderX Phase Manager Coding Engine ${stageKey} stage. Read ${stageContext.context_path}. ${instruction} Do not use Codex CLI, MCP, a hidden fallback, or another agent.`,
+      command: `BuilderX Phase Manager Coding Engine ${stageKey} stage. Use the verified MySQL context reference ${stageContext.context_path}; BuilderX includes its JSON in BUILDERX_MYSQL_JOB_CONTEXT. ${instruction} Do not use Codex CLI, MCP, a hidden fallback, or another agent.`,
       onProgress: options.onProgress,
     })
     run = dispatched.run
@@ -28057,7 +28283,11 @@ async function runPersistentCodingWorkflow(options: PersistentPhaseAiStart & { i
     if (stageResult.status === 'blocked') overallStatus = 'blocked'
     if (stageResult.status === 'failed') overallStatus = 'failed'
     if (['inspection', 'plan'].includes(stageKey) && stageResult.status === 'blocked') {
-      throw new Error(`The Coding Engine ${stageKey} stage reported a blocker.`)
+      options.onProgress?.(`Coding Engine ${stageKey} stage recorded a blocker; continuing to produce durable evidence.`)
+    }
+    if (stageKey !== stages[stages.length - 1]) {
+      options.onProgress?.('Waiting briefly for the visible Codex Chat handoff to settle before the next stage.')
+      await phaseAiDelay(persistentPhaseAiStageSettleMs)
     }
   }
   if (!implementation) throw new Error('The Coding Engine did not return a validated implementation report.')
@@ -28473,9 +28703,9 @@ function ShadcnPhaseManagerApp() {
     try {
       addProcessEvent('Preparing the saved phase, task, sub-task, todo, and chat context.', 'active')
       const prepared = await todoChatRequest('consolidate_phase_todo_chat', chatContextFields)
-      addProcessEvent('Consolidation context file created.', 'complete')
+      addProcessEvent('Consolidation MySQL context checkpoint saved and verified.', 'complete')
       const contextPath = String(prepared.data?.context_path || '')
-      const prompt = `Analyze the BuilderX todo conversation in ${contextPath}. Read the JSON context file, including image data URLs. Return only JSON with keys summary, suggestion, suggestedTodoTitle, suggestedTodoDescription, risks, confidence. The user will approve the result before any update.`
+      const prompt = `Analyze the BuilderX todo conversation from verified MySQL context ${contextPath}. BuilderX includes the JSON context, including image data URLs, in BUILDERX_MYSQL_JOB_CONTEXT. Return only JSON with keys summary, suggestion, suggestedTodoTitle, suggestedTodoDescription, risks, confidence. The user will approve the result before any update.`
       const persistentRun = await startPersistentPhaseAiWorkflow({ endpoint: todoChatEndpoint, csrf, engineType: 'PLANNING', workflowKey: 'todo_consolidation', draftKey: phaseBuilderDraftKey, taskId: chatScope.task_id, subtaskId: chatScope.subtask_id, todoId: chatScope.todo_id, semanticChunkKey: `todo:${chatScope.todo_id.toLowerCase()}`, context: { context_id: String(prepared.data?.context_id || ''), context_path: contextPath, bytes: Number(prepared.data?.bytes || 0), sha256: String(prepared.data?.sha256 || '') } })
       const runKey = String(persistentRun.run_key || '')
       addProcessEvent(`Persistent Planning Engine run ${runKey} created before Bridge delivery.`, 'complete')
@@ -28536,7 +28766,7 @@ function ShadcnPhaseManagerApp() {
     try {
       addProcessEvent('Verifying the selected todo against the saved Execution Roadmap.', 'active')
       const prepared = await todoChatRequest('prepare_phase_todo_execution', executionFields)
-      addProcessEvent('Execution context file created and scope verified.', 'complete')
+      addProcessEvent('Execution MySQL context checkpoint saved and scope verified.', 'complete')
       executionKey = String(prepared.data?.execution_key || '')
       if (!executionKey) throw new Error('The execution log key was not returned.')
       const contextPath = String(prepared.data?.context_path || '')
@@ -28551,7 +28781,7 @@ function ShadcnPhaseManagerApp() {
         todoId: executionFields.todo_id,
         semanticChunkKey: `todo:${executionFields.todo_id.toLowerCase()}`,
         context: { context_id: String(prepared.data?.context_id || ''), context_path: contextPath, bytes: Number(prepared.data?.bytes || 0), sha256: String(prepared.data?.sha256 || '') },
-        implementationInstruction: 'Implement only the approved todo in the real current project after verifying the exact server_source checkpoint supplied in the stage context. Reference that checkpoint key and manifest hash in recoveryCheckpoints; do not create or substitute a model-reported checkpoint. The server checkpoint protects eligible source files only and does not protect database rollback, so return blocked instead of completed when database changes are required. Make the actual source or Kotlin Android changes required while excluding the BuilderX Phase Manager control plane. Use authorization, direct read-back, focused tests, and builds as applicable. Preserve unrelated changes. Return only JSON with keys status, summary, recoveryCheckpoints, changedFiles, databaseChanges, androidChanges, tests, blockers, and nextSteps. Use completed only for actual verified work.',
+        implementationInstruction: 'Implement only the approved todo in the real current project after verifying the exact server_source checkpoint supplied in the stage context. Review prior inspection and plan blockers, but treat them as fatal only when they prove missing required context, dirty hunks that cannot be preserved or conflict with the needed edit hunks, unavailable dependencies, required database writes without rollback protection, or unverifiable scope. Same-file dirty overlap is not fatal when you can preserve the existing hunk and make an attributable new hunk. Reference the server checkpoint in recoveryCheckpoints with exact keys type, reference, scope, manifestSha256, createdBeforeWrite, and databaseRollbackProtected; use reference for the checkpoint key and scope project_source_files. Do not create or substitute a model-reported checkpoint. The server checkpoint protects eligible source files only and does not protect database rollback, so return blocked instead of completed when actual database schema or data changes are required. Source-only or Android-only work may proceed without database rollback protection when focused verification can prove no database writes were made. Make the actual source or Kotlin Android changes required while excluding the BuilderX Phase Manager control plane. Use authorization, direct read-back, focused tests, and builds as applicable. Preserve unrelated changes. Return only JSON with keys status, summary, recoveryCheckpoints, changedFiles, databaseChanges, androidChanges, tests, blockers, and nextSteps. Use completed only for actual verified work.',
         onProgress: (message) => {
         setTodoChatProcessMessage(message)
         addProcessEvent(message, 'active')
@@ -28563,21 +28793,23 @@ function ShadcnPhaseManagerApp() {
       addProcessEvent('Saving the execution report and change evidence.', 'active')
       await todoChatRequest('save_phase_todo_execution_log', { execution_key: executionKey, run_key: coding.runKey, status: executionStatus, result_json: JSON.stringify(executionResult) })
       await completePersistentPhaseAiPersistence(todoChatEndpoint, csrf, coding.runKey, 'todo_execution', executionResult, coding.overallStatus, executionKey)
-      addProcessEvent('Execution report saved and read back.', 'complete')
-      setTodoExecutionResult(executionResult)
-      setTodoChatProcessStatus(executionResult.status === 'failed' || executionResult.status === 'blocked' ? 'error' : 'success')
-      setTodoChatProcessMessage(executionResult.status === 'failed' || executionResult.status === 'blocked' ? 'AI execution reported a blocker. Review the report and logs.' : 'AI execution completed. Review the verified report.')
-      await loadTodoExecutionLogs()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'The selected todo could not be executed by AI.'
-      setTodoChatError(message)
-      setTodoChatProcessStatus('error')
-      setTodoChatProcessMessage('AI execution stopped before a verified completion report.')
-      addProcessEvent(message, 'error')
-      if (executionKey) {
-        await todoChatRequest('save_phase_todo_execution_log', { execution_key: executionKey, status: 'FAILED', result_json: JSON.stringify({ status: 'failed', summary: message, recoveryCheckpoints: [], changedFiles: [], databaseChanges: [], androidChanges: [], tests: [], blockers: [message], nextSteps: [] }) }).catch(() => {})
-        await loadTodoExecutionLogs().catch(() => {})
-      }
+	      addProcessEvent('Execution report saved and read back.', 'complete')
+	      setTodoExecutionResult(executionResult)
+	      setTodoChatProcessEvents((current) => settleOneFlowEvents(current, executionResult.status === 'failed' || executionResult.status === 'blocked' ? 'error' : 'complete'))
+	      setTodoChatProcessStatus(executionResult.status === 'failed' || executionResult.status === 'blocked' ? 'error' : 'success')
+	      setTodoChatProcessMessage(executionResult.status === 'failed' || executionResult.status === 'blocked' ? 'AI execution reported a blocker. Review the report and logs.' : 'AI execution completed. Review the verified report.')
+	      await loadTodoExecutionLogs()
+	    } catch (error) {
+	      const message = error instanceof Error ? error.message : 'The selected todo could not be executed by AI.'
+	      setTodoChatError(message)
+	      setTodoChatProcessStatus('error')
+	      setTodoChatProcessMessage('AI execution stopped before a verified completion report.')
+	      addProcessEvent(message, 'error')
+	      setTodoChatProcessEvents((current) => settleOneFlowEvents(current, 'error'))
+	      if (executionKey) {
+	        await todoChatRequest('save_phase_todo_execution_log', { execution_key: executionKey, status: 'FAILED', result_json: JSON.stringify({ status: 'failed', summary: message, recoveryCheckpoints: [], changedFiles: [], databaseChanges: [], androidChanges: [], tests: [], blockers: [message], nextSteps: [] }) }).catch(() => {})
+	        await loadTodoExecutionLogs().catch(() => {})
+	      }
     } finally { setTodoChatBusy(false) }
   }
   const rollbackTodoExecution = async () => {
@@ -28590,13 +28822,13 @@ function ShadcnPhaseManagerApp() {
     setTodoAiProcessKind('rollback')
     setTodoExecutionResult(null)
     setTodoChatProcessStatus('running')
-    setTodoChatProcessMessage('Preparing the rollback stage context…')
+    setTodoChatProcessMessage('Preparing the rollback MySQL context checkpoint…')
     setTodoChatProcessEvents([makeOneFlowEvent('AI rollback stage started.', 'active')])
     setTodoChatProcessOpen(true)
     const addProcessEvent = (label: string, status: OneFlowEvent['status'] = 'info') => setTodoChatProcessEvents((current) => appendOneFlowEvent(current, label, status))
     try {
       const prepared = await todoChatRequest('prepare_phase_todo_rollback', { execution_key: executionKey })
-      addProcessEvent('Rollback context created from the saved execution report.', 'complete')
+      addProcessEvent('Rollback MySQL context checkpoint saved from the execution report.', 'complete')
       const contextPath = String(prepared.data?.context_path || '')
       const coding = await runPersistentCodingWorkflow({
         endpoint: todoChatEndpoint,
@@ -28620,20 +28852,22 @@ function ShadcnPhaseManagerApp() {
       const rollbackStatus = coding.overallStatus === 'failed' ? 'FAILED' : coding.overallStatus === 'blocked' ? 'BLOCKED' : 'COMPLETED'
       await todoChatRequest('save_phase_todo_rollback', { execution_key: executionKey, run_key: coding.runKey, rollback_status: rollbackStatus, result_json: JSON.stringify(rollbackResult) })
       await completePersistentPhaseAiPersistence(todoChatEndpoint, csrf, coding.runKey, 'todo_rollback', rollbackResult, rollbackStatus === 'COMPLETED' ? 'rolled_back' : coding.overallStatus, executionKey)
-      addProcessEvent('Rollback report saved and read back.', 'complete')
-      setTodoExecutionResult(rollbackResult)
-      setTodoChatProcessStatus(rollbackStatus === 'COMPLETED' ? 'success' : 'error')
-      setTodoChatProcessMessage(rollbackStatus === 'COMPLETED' ? 'Rollback completed and was reported as verified.' : 'Rollback reported a blocker. Review the logs and report.')
-      await loadTodoExecutionLogs()
+	      addProcessEvent('Rollback report saved and read back.', 'complete')
+	      setTodoExecutionResult(rollbackResult)
+	      setTodoChatProcessEvents((current) => settleOneFlowEvents(current, rollbackStatus === 'COMPLETED' ? 'complete' : 'error'))
+	      setTodoChatProcessStatus(rollbackStatus === 'COMPLETED' ? 'success' : 'error')
+	      setTodoChatProcessMessage(rollbackStatus === 'COMPLETED' ? 'Rollback completed and was reported as verified.' : 'Rollback reported a blocker. Review the logs and report.')
+	      await loadTodoExecutionLogs()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The execution stage could not be rolled back.'
       setTodoChatError(message)
-      setTodoChatProcessStatus('error')
-      setTodoChatProcessMessage('Rollback stopped before a verified completion report.')
-      addProcessEvent(message, 'error')
-      await todoChatRequest('save_phase_todo_rollback', { execution_key: executionKey, rollback_status: 'FAILED', result_json: JSON.stringify({ status: 'failed', summary: message, recoveryCheckpoints: [], changedFiles: [], databaseChanges: [], androidChanges: [], tests: [], blockers: [message], nextSteps: [] }) }).catch(() => {})
-      await loadTodoExecutionLogs().catch(() => {})
-    } finally {
+	      setTodoChatProcessStatus('error')
+	      setTodoChatProcessMessage('Rollback stopped before a verified completion report.')
+	      addProcessEvent(message, 'error')
+	      setTodoChatProcessEvents((current) => settleOneFlowEvents(current, 'error'))
+	      await todoChatRequest('save_phase_todo_rollback', { execution_key: executionKey, rollback_status: 'FAILED', result_json: JSON.stringify({ status: 'failed', summary: message, recoveryCheckpoints: [], changedFiles: [], databaseChanges: [], androidChanges: [], tests: [], blockers: [message], nextSteps: [] }) }).catch(() => {})
+	      await loadTodoExecutionLogs().catch(() => {})
+	    } finally {
       setTodoChatBusy(false)
       setTodoRollbackTarget(null)
     }
@@ -28644,9 +28878,9 @@ function ShadcnPhaseManagerApp() {
     const text = String(value ?? '').trim()
     return text === '' ? 'None recorded.' : text
   }
-  const executionLogEvidence = (log: Record<string, any>) => {
-    const result = log.result && typeof log.result === 'object' ? log.result : {}
-    return [
+	  const executionLogEvidence = (log: Record<string, any>) => {
+	    const result = log.result && typeof log.result === 'object' ? log.result : {}
+	    return [
       ['Recovery checkpoints', result.recoveryCheckpoints ?? result.recovery_checkpoints],
       ['Files edited', result.changedFiles ?? result.changed_files],
       ['Database changes and queries', result.databaseChanges ?? result.database_changes ?? result.queries],
@@ -28654,8 +28888,26 @@ function ShadcnPhaseManagerApp() {
       ['Tests and verification', result.tests ?? result.verification],
       ['Blockers', result.blockers],
       ['Next steps', result.nextSteps ?? result.next_steps],
-    ] as Array<[string, unknown]>
-  }
+	    ] as Array<[string, unknown]>
+	  }
+	  const latestTodoExecutionLog = (todoId: string) => {
+	    const normalizedTodoId = String(todoId || '')
+	    if (!normalizedTodoId || todoExecutionLogs.length === 0) return null
+	    return todoExecutionLogs.find((log) => String(log.todo_id || '') === normalizedTodoId) || (selectedRoadmapTodoId === normalizedTodoId ? todoExecutionLogs[0] || null : null)
+	  }
+	  const todoDisplayStatus = (todo: { todoId?: string; status?: string }) => {
+	    const fallback = String(todo.status || 'Pending')
+	    const log = latestTodoExecutionLog(String(todo.todoId || ''))
+	    if (!log) return fallback
+	    const status = String(log.status || '').toUpperCase()
+	    const rollbackStatus = String(log.rollback_status || '').toUpperCase()
+	    if (status === 'ROLLED_BACK' || rollbackStatus === 'COMPLETED') return 'Rolled back'
+	    if (status === 'COMPLETED') return 'Completed'
+	    if (status === 'BLOCKED') return 'Blocked'
+	    if (status === 'FAILED') return 'Failed'
+	    if (status === 'RUNNING') return 'Running'
+	    return fallback
+	  }
   const approveTodoChatResult = async () => {
     if (!todoChatAiResult || !todoChatConsolidationKey || todoChatBusy) return
     setTodoChatBusy(true); setTodoChatError('')
@@ -28765,7 +29017,7 @@ function ShadcnPhaseManagerApp() {
   const renderTodoChatPanel = () => (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden border-0 shadow-none">
       <CardHeader className="shrink-0 border-b px-4 py-4">
-        <div className="flex items-start justify-between gap-2"><div className="min-w-0 flex-1"><CardDescription>Todo chat</CardDescription>{selectedGeneratedTodo ? <p className="mt-1 font-mono text-[11px] font-medium text-primary">{selectedGeneratedTodo.todo.todoId}</p> : null}<CardTitle className="mt-1 whitespace-normal break-words text-base [overflow-wrap:anywhere]">{selectedGeneratedTodo ? selectedGeneratedTodo.todo.todoTitle : 'Select a todo'}</CardTitle></div>{selectedGeneratedTodo ? <Badge className="shrink-0" variant="outline">{selectedGeneratedTodo.todo.status}</Badge> : null}</div>
+        <div className="flex items-start justify-between gap-2"><div className="min-w-0 flex-1"><CardDescription>Todo chat</CardDescription>{selectedGeneratedTodo ? <p className="mt-1 font-mono text-[11px] font-medium text-primary">{selectedGeneratedTodo.todo.todoId}</p> : null}<CardTitle className="mt-1 whitespace-normal break-words text-base [overflow-wrap:anywhere]">{selectedGeneratedTodo ? selectedGeneratedTodo.todo.todoTitle : 'Select a todo'}</CardTitle></div>{selectedGeneratedTodo ? <Badge className="shrink-0" variant={phaseStatusVariant(todoDisplayStatus(selectedGeneratedTodo.todo))}>{todoDisplayStatus(selectedGeneratedTodo.todo)}</Badge> : null}</div>
         {selectedGeneratedTodo ? <p className="mt-2 whitespace-normal break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">Chat is saved for this todo. Consolidate it for an AI summary and suggested adjustment.</p> : <p className="mt-2 whitespace-normal break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">Click a todo in the task details to open its saved conversation.</p>}
       </CardHeader>
       {!selectedGeneratedTodo ? <CardContent className="p-4"><div className="rounded-md bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">No todo selected.</div></CardContent> : <>
@@ -28799,7 +29051,7 @@ function ShadcnPhaseManagerApp() {
           <Badge variant="secondary">{selectedGeneratedTask.subTasks.length} sub-task{selectedGeneratedTask.subTasks.length === 1 ? '' : 's'} · {selectedTodoCount} todo{selectedTodoCount === 1 ? '' : 's'}</Badge>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-0 [scrollbar-gutter:stable]">
-          {selectedGeneratedTask.subTasks.length > 0 ? selectedGeneratedTask.subTasks.map((subTask) => <section key={subTask.subtaskId} className="grid gap-3 rounded-md bg-muted/10 p-4"><div><p className="font-mono text-[11px] text-blue-700 dark:text-blue-300">{subTask.subtaskId}</p><h3 className="mt-1 text-sm font-semibold">{subTask.subtaskTitle}</h3><p className="mt-1 text-sm leading-5 text-muted-foreground">{subTask.subtaskDescription}</p></div>{subTask.acceptanceCriteria.length > 0 ? <p className="text-xs leading-5 text-muted-foreground"><span className="font-medium text-foreground">Acceptance:</span> {subTask.acceptanceCriteria.join(' · ')}</p> : null}<div className="grid gap-2"><div className="flex items-center justify-between gap-2"><h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Todos</h4><Badge variant="outline">{subTask.todos.length}</Badge></div>{subTask.todos.length > 0 ? <ul className="grid gap-2">{subTask.todos.map((todo) => <li key={todo.todoId}><div className={cn('flex items-start gap-2 rounded-md bg-background/70 p-3 transition-colors hover:bg-muted/50', selectedRoadmapTodoId === todo.todoId && 'bg-primary/10 ring-1 ring-primary/40')}><a href={roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)} onClick={(event) => handlePhaseManagerNavigation(event, roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId))} className="grid min-w-0 flex-1 gap-1"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] text-blue-700 dark:text-blue-300">{todo.todoId}</span><span className="text-sm font-medium">{todo.todoTitle}</span><div className="flex items-center gap-1" aria-label={`Todo involvement for ${todo.todoId}`}>{roadmapTodoInvolvement(todo, selectedGeneratedTask).map(({ key, label, Icon }) => <Tooltip key={key}><TooltipTrigger render={<span className="grid size-5 place-items-center rounded-full bg-sky-500/10 text-sky-700 dark:text-sky-300" aria-label={label} title={label}><Icon className="size-3.5" /></span>} /><TooltipContent>{label}</TooltipContent></Tooltip>)}</div><Badge variant="outline">{todo.status}</Badge></div><p className="text-xs leading-5 text-muted-foreground">{todo.todoDescription}</p></a><div className="flex shrink-0 items-center gap-1"><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`View change logs for ${todo.todoId}`} title="View change logs" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionLogsOpen(true) }}><FileText /></Button><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`Execute ${todo.todoId} with AI`} title="Execute this todo with AI" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionConfirmOpen(true) }}><Sparkles /></Button></div></div></li>)}</ul> : <p className="text-xs text-muted-foreground">No todos were generated for this sub-task.</p>}</div></section>) : <p className="rounded-md bg-muted/10 p-4 text-sm text-muted-foreground">No sub-tasks were generated for this task.</p>}
+          {selectedGeneratedTask.subTasks.length > 0 ? selectedGeneratedTask.subTasks.map((subTask) => <section key={subTask.subtaskId} className="grid gap-3 rounded-md bg-muted/10 p-4"><div><p className="font-mono text-[11px] text-blue-700 dark:text-blue-300">{subTask.subtaskId}</p><h3 className="mt-1 text-sm font-semibold">{subTask.subtaskTitle}</h3><p className="mt-1 text-sm leading-5 text-muted-foreground">{subTask.subtaskDescription}</p></div>{subTask.acceptanceCriteria.length > 0 ? <p className="text-xs leading-5 text-muted-foreground"><span className="font-medium text-foreground">Acceptance:</span> {subTask.acceptanceCriteria.join(' · ')}</p> : null}<div className="grid gap-2"><div className="flex items-center justify-between gap-2"><h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Todos</h4><Badge variant="outline">{subTask.todos.length}</Badge></div>{subTask.todos.length > 0 ? <ul className="grid gap-2">{subTask.todos.map((todo) => <li key={todo.todoId}><div className={cn('flex items-start gap-2 rounded-md bg-background/70 p-3 transition-colors hover:bg-muted/50', selectedRoadmapTodoId === todo.todoId && 'bg-primary/10 ring-1 ring-primary/40')}><a href={roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)} onClick={(event) => handlePhaseManagerNavigation(event, roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId))} className="grid min-w-0 flex-1 gap-1"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] text-blue-700 dark:text-blue-300">{todo.todoId}</span><span className="text-sm font-medium">{todo.todoTitle}</span><div className="flex items-center gap-1" aria-label={`Todo involvement for ${todo.todoId}`}>{roadmapTodoInvolvement(todo, selectedGeneratedTask).map(({ key, label, Icon }) => <Tooltip key={key}><TooltipTrigger render={<span className="grid size-5 place-items-center rounded-full bg-sky-500/10 text-sky-700 dark:text-sky-300" aria-label={label} title={label}><Icon className="size-3.5" /></span>} /><TooltipContent>{label}</TooltipContent></Tooltip>)}</div><Badge variant={phaseStatusVariant(todoDisplayStatus(todo))}>{todoDisplayStatus(todo)}</Badge></div><p className="text-xs leading-5 text-muted-foreground">{todo.todoDescription}</p></a><div className="flex shrink-0 items-center gap-1"><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`View change logs for ${todo.todoId}`} title="View change logs" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionLogsOpen(true) }}><FileText /></Button><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`Execute ${todo.todoId} with AI`} title="Execute this todo with AI" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionConfirmOpen(true) }}><Sparkles /></Button></div></div></li>)}</ul> : <p className="text-xs text-muted-foreground">No todos were generated for this sub-task.</p>}</div></section>) : <p className="rounded-md bg-muted/10 p-4 text-sm text-muted-foreground">No sub-tasks were generated for this task.</p>}
         </CardContent>
       </Card>
     }

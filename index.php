@@ -18,6 +18,21 @@ function bx_portal_json_response(array $payload, int $status = 200): never
     exit;
 }
 
+function bx_portal_require_authorization(array $requirements = [], bool $json = false): array
+{
+    $authorization = bx_authorization_guard($requirements);
+    if ($authorization['allowed']) {
+        return $authorization;
+    }
+
+    if ($json) {
+        bx_portal_json_response(['ok' => false, 'message' => (string) $authorization['message']], bx_authorization_status_code($authorization));
+    }
+
+    bx_flash((string) $authorization['message'], 'error');
+    bx_portal_redirect();
+}
+
 /**
  * Read and reconcile one task through the same server-side path used by the
  * normal JSON status endpoint and the SSE status stream.
@@ -486,7 +501,6 @@ $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($requestMethod === 'POST') {
     bx_verify_csrf();
     $action = (string) ($_POST['action'] ?? '');
-    $currentUserForAction = bx_current_user();
 
     if ($action === 'login_portal') {
         if (bx_login(trim((string) ($_POST['login'] ?? '')), (string) ($_POST['password'] ?? ''))) {
@@ -504,9 +518,7 @@ if ($requestMethod === 'POST') {
     }
 
     if ($action === 'create_ai_task') {
-        if (!$currentUserForAction) {
-            bx_portal_json_response(['ok' => false, 'message' => 'Sign in before using an AI task.'], 401);
-        }
+        $currentUserForAction = bx_portal_require_authorization([], true)['user'];
 
         $task = null;
         try {
@@ -576,9 +588,7 @@ if ($requestMethod === 'POST') {
     }
 
     if (in_array($action, ['propose_specialist', 'approve_specialist', 'propose_memory', 'approve_memory'], true)) {
-        if (!$currentUserForAction || !bx_is_admin($currentUserForAction)) {
-            bx_portal_json_response(['ok' => false, 'message' => 'Administrator approval is required for Coordinator management.'], 403);
-        }
+        $currentUserForAction = bx_portal_require_authorization(['requireAdmin' => true], true)['user'];
 
         try {
             if ($action === 'propose_specialist') {
@@ -631,10 +641,7 @@ if ($requestMethod === 'POST') {
     }
 
     if ($action === 'save_family_member') {
-        if (!$currentUserForAction) {
-            bx_flash('Sign in before managing family members.', 'error');
-            bx_portal_redirect();
-        }
+        $currentUserForAction = bx_portal_require_authorization()['user'];
 
     bx_portal_save_family_member($currentUserForAction);
     bx_portal_redirect();
@@ -642,10 +649,7 @@ if ($requestMethod === 'POST') {
 }
 
 if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'ai_task_status') {
-    $currentUserForStatus = bx_current_user();
-    if (!$currentUserForStatus) {
-        bx_portal_json_response(['ok' => false, 'message' => 'Sign in before reading an AI task.'], 401);
-    }
+    $currentUserForStatus = bx_portal_require_authorization([], true)['user'];
 
     $taskId = trim((string) ($_GET['task_id'] ?? ''));
     try {
@@ -663,10 +667,7 @@ if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'ai_task_st
 }
 
 if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'ai_task_status_stream') {
-    $currentUserForStream = bx_current_user();
-    if (!$currentUserForStream) {
-        bx_portal_json_response(['ok' => false, 'message' => 'Sign in before reading an AI task.'], 401);
-    }
+    $currentUserForStream = bx_portal_require_authorization([], true)['user'];
 
     $taskId = trim((string) ($_GET['task_id'] ?? ''));
     $taskStore = new \BuilderX\AI\AiTaskStore();
@@ -741,10 +742,7 @@ if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'ai_task_st
 }
 
 if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'ai_specialists') {
-    $currentUserForDirectory = bx_current_user();
-    if (!$currentUserForDirectory || !bx_is_admin($currentUserForDirectory)) {
-        bx_portal_json_response(['ok' => false, 'message' => 'Administrator access is required.'], 403);
-    }
+    bx_portal_require_authorization(['requireAdmin' => true], true);
     bx_portal_json_response([
         'ok' => true,
         'data' => [
