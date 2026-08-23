@@ -5,7 +5,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { spawn } = require('node:child_process')
 
-const extensionVersion = '2.0.4'
+const extensionVersion = '2.0.5'
 const bridgeHost = '127.0.0.1'
 const bridgePort = 43127
 const maxRequestBytes = 64 * 1024

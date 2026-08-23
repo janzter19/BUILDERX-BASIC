@@ -648,6 +648,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'source_hash' => (string) ($state['run']['source_hash'] ?? ''),
                 'request' => $state['run']['request'] ?? [],
                 'verified_checkpoints' => $verifiedCheckpoints,
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::appliesTo($workflowKey)
+                    ? \BuilderX\AI\PhaseBuilderPlanningPolicy::context($workflowKey)
+                    : null,
                 'rules' => [
                     'read_only_for_planning_engine',
                     'coding_engine_changes_only_the_saved_todo_scope',
@@ -670,8 +673,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'workflowKey' => $workflowKey,
                     'artifactHash' => $context['artifact_hash'],
                     'status' => 'approved | blocked',
-                    'findings' => [],
+                    'findings' => [[
+                        'code' => 'One exact blockingPolicy.allowedCodes value when blocked; otherwise a concise suggestion code.',
+                        'summary' => 'Required when status is blocked; concise description of one concrete conflict.',
+                        'requiredResolution' => 'Specific correction required before persistence.',
+                        'relatedArea' => 'Feature or module',
+                    ]],
                 ];
+                if (\BuilderX\AI\PhaseBuilderPlanningPolicy::appliesTo($workflowKey)) {
+                    $context['review_instruction'] = 'Block only for a genuine baseline defect represented by an exact allowed blocker code. Report optional improvements as concise findings; the server converts them to non-blocking coding-time suggestions and approves persistence.';
+                }
             } else {
                 $context['required_response'] = [
                     'schemaVersion' => 'builderx.coding-checkpoint.v1',
@@ -988,8 +999,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'source_narrative_hash' => $request['source_narrative_hash'],
                     'source_snapshot' => $request['source_snapshot'],
                     'semantic_chunks' => \BuilderX\AI\RequirementsAnalysisWorkflow::CHUNKS,
+                    'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('requirements_analysis'),
                     'global_rules' => [
                         'Use only the supplied saved Narrative and Cleanup source.',
+                        'Return only requirements directly supported by that source; an empty chunk is valid.',
+                        'Merge overlapping statements and do not invent production-readiness requirements to populate categories.',
                         'Return exactly one JSON object to the MySQL job result with no markdown.',
                         'Do not edit files, execute SQL, call another provider, or dispatch another agent.',
                         'Preserve the supplied draft key, narrative hash, stage key, chunk key, and requirement ID prefix.',
@@ -1101,11 +1115,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'source_narrative_hash' => $merge['sourceNarrativeHash'],
                 'merged_contract_hash' => $merge['contractHash'],
                 'merged_contract' => $merge['contract'],
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('requirements_analysis'),
                 'rules' => [
                     'Review only the supplied merged contract.',
                     'Do not change, omit, or invent requirement IDs.',
-                    'Approve only when terminology, traceability, dependencies, and category placement are internally consistent.',
-                    'Findings may be informational or warnings only; a blocking contradiction must stop approval.',
+                    'Approve the minimum confirmed baseline when its essential meaning is coherent.',
+                    'Treat optional completeness, detail, optimization, and future improvements as informational or warning suggestions only.',
                     'Do not edit files, execute SQL, or dispatch another agent.',
                 ],
                 'required_response' => [
@@ -1443,16 +1458,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'complete the read-only inspection and plan before implementation',
                             'BuilderX creates and hash-verifies a private project-local source checkpoint before the implementation stage is dispatched',
                             'the source checkpoint excludes runtime state, dependencies, generated output, local configuration, and secret material',
-                            'the source checkpoint does not provide database rollback protection',
+                            'the source checkpoint does not provide database rollback protection; this blocks only actual database schema or data writes, not source-only or Android-only work',
                             'preserve all upstream phase, task, sub-task, and todo identifiers and meaning',
-                            'make real source, database, or Android changes required by the selected todo',
+                            'make real source or Android changes required by the selected todo; make database changes only when a verified database rollback path is available',
                             'use parameterized SQL, authorization, transactions, and read-back verification for database changes',
                             'run focused tests, lint, or build checks appropriate to the changed surface',
                             'never claim a file, database change, Android change, or test passed unless it was actually verified',
-                            'stop and report a blocker when required context, credentials, dependencies, or scope are unavailable',
+                            'stop and report a blocker when required context, credentials, dependencies, dirty hunks that cannot be preserved or conflict with required edit hunks, database rollback for required database writes, or scope are unavailable',
                         ],
                     ],
-                    'instruction' => 'Execute the selected todo in the real project workspace only after BuilderX supplies the verified server source checkpoint. Reference that exact checkpoint in the execution report. Return blocked rather than claim completed database changes because no server-verified database recovery checkpoint exists. Do not modify the BuilderX Phase Manager control plane.',
+                    'instruction' => 'Execute the selected todo in the real project workspace only after BuilderX supplies the verified server source checkpoint. Reference that exact checkpoint in the execution report. Return blocked rather than claim completed database changes because no server-verified database recovery checkpoint exists; source-only and Android-only work may proceed when no database write is required. Do not modify the BuilderX Phase Manager control plane.',
                 ];
                 $file = $writePhaseCoordinatorContext($contextId, $context);
                 $contextJson = json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -1796,8 +1811,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'phase_key' => (string) ($_POST['phase_key'] ?? ''),
                 'draft_key' => $draftKey,
                 'workflow' => 'coordinator_to_grammar_to_database',
-                'project_scope' => 'User Portal and Administrator Portal only; BuilderX Phase Builder is control plane and excluded.',
+                'project_scope' => 'Only product surfaces and integrations explicitly confirmed in the saved requirements; BuilderX Phase Builder is the control plane and is excluded.',
                 'objective' => 'Correct spelling and grammar only, then validate and persist the corrected Tab 1 narrative.',
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('narrative_cleanup'),
                 'target_product_surfaces' => [
                     'user_portal' => 'http://127.0.0.1' . $projectMountPath . '/',
                     'administrator_portal' => 'http://127.0.0.1' . $projectMountPath . '/administrator/',
@@ -1843,6 +1859,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'treat_all_nine_required_keys_as_complete_even_when_an_unchanged_source_value_is_an_empty_string',
                     'approve_persistence_only_if_the_change_is_grammar_and_spelling_only',
                     'do_not_execute_sql_or_modify_files',
+                    'return_only_the_semantic_approval_decision_and_reason',
+                    'the_server_derives_complete_meaning_preserved_and_write_allowed_from_persisted_checkpoints',
                     'return_exactly_one_json_object_with_no_markdown_fences',
                 ],
                 'source_snapshot' => $sourceSnapshot,
@@ -1852,9 +1870,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'status' => 'approved_or_rejected',
                     'database_specialist_approved' => false,
                     'draft_key' => $draftKey,
-                    'corrected_sections' => 'omit; the server reuses the validated grammar_response after approval',
-                    'validation' => ['complete' => false, 'meaning_preserved' => false, 'write_allowed' => false],
                     'reason' => '',
+                ],
+                'server_owned_validation' => [
+                    'complete' => 'derived from the persisted nine-section grammar checkpoint',
+                    'meaning_preserved' => 'derived by deterministic source-to-grammar comparison',
+                    'write_allowed' => 'derived only after approval and all deterministic checks pass',
                 ],
             ];
             $result = $writePhaseCoordinatorContext($contextId, $context);
@@ -1949,8 +1970,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'context_id' => $contextId,
                 'draft_key' => $draftKey,
                 'workflow' => 'coordinator_requirements_analysis_from_saved_narrative',
-                'project_scope' => 'User Portal and Administrator Portal only; BuilderX Phase Builder is control plane and excluded.',
-                'objective' => 'Use the saved Narrative & Cleanup source to produce a traceable Requirements Analysis contract.',
+                'project_scope' => 'Only capabilities, actors, surfaces, integrations, and constraints explicitly confirmed in the saved narrative; BuilderX Phase Builder is excluded.',
+                'objective' => 'Convert the saved narrative into a concise minimum set of confirmed, testable requirements that can guide Phase Manager.',
                 'target_product_surfaces' => [
                     'user_portal' => 'http://127.0.0.1' . $projectMountPath . '/',
                     'administrator_portal' => 'http://127.0.0.1' . $projectMountPath . '/administrator/',
@@ -1958,11 +1979,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'source_narrative_hash' => $sourceHash,
                 'source_snapshot' => $sourceSnapshot,
                 'available_specialists' => $approvedSpecialists,
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('requirements_analysis'),
                 'coordinator_rules' => [
                     'select only specialists present in available_specialists',
                     'record selected specialist keys in orchestration.selectedSpecialists',
-                    'record missing capabilities as orchestration.additionalSpecialistProposals',
-                    'proposals are recommendations only and never activate or dispatch a specialist automatically',
+                    'include_only_requirements_explicitly_supported_by_the_saved_narrative',
+                    'do_not_fill_every_category_when_the_narrative_does_not_require_it',
+                    'merge_overlapping_statements_instead_of_creating_duplicate_requirements',
+                    'record_only_material_missing_capabilities_as_non_blocking_coding_time_suggestions',
+                    'proposals_are_recommendations_only_and_never_activate_or_dispatch_a_specialist_automatically',
                     'this is one visible Codex Chat turn and must not claim true parallel execution',
                 ],
                 'required_response' => [
@@ -2018,6 +2043,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fail('Run and save Requirements Analysis before starting System Architecture.');
             }
             $requirementsHash = hash('sha256', $requirementsJson);
+            $previousReviewRows = $db->GetAll(
+                "SELECT r.run_key, COALESCE(NULLIF(s.result_json, ''), NULLIF(j.result_json, '')) AS result_json
+                 FROM phase_builder_ai_run r
+                 LEFT JOIN phase_builder_ai_run_stage s ON s.run_key = r.run_key AND s.stage_key = 'integration_review'
+                 LEFT JOIN phase_builder_ai_job j ON j.run_key = r.run_key AND j.stage_key = 'integration_review'
+                 WHERE r.project_identity = ? AND r.created_by_user_key = ? AND r.workflow_key = ? AND r.draft_key = ?
+                 ORDER BY r.x_id DESC LIMIT 10",
+                [$projectIdentity, (string) ($user['user_key'] ?? ''), 'system_architecture', $draftKey]
+            );
+            $previousReviewRunKeys = [];
+            $previousFindings = [];
+            $seenPreviousFindings = [];
+            foreach (is_array($previousReviewRows) ? $previousReviewRows : [] as $candidateReviewRow) {
+                if (!is_array($candidateReviewRow)) continue;
+                $candidateReview = json_decode((string) ($candidateReviewRow['result_json'] ?? ''), true);
+                if (
+                    !is_array($candidateReview)
+                    || ($candidateReview['schemaVersion'] ?? '') !== 'builderx.ai-integration-review.v1'
+                    || ($candidateReview['workflowKey'] ?? '') !== 'system_architecture'
+                    || ($candidateReview['status'] ?? '') !== 'blocked'
+                    || !is_array($candidateReview['findings'] ?? null)
+                ) {
+                    continue;
+                }
+                $candidateContributed = false;
+                foreach ($candidateReview['findings'] as $candidateFinding) {
+                    if (count($previousFindings) >= 12) break;
+                    if (!is_array($candidateFinding) || array_is_list($candidateFinding)) continue;
+                    $summary = trim((string) ($candidateFinding['summary'] ?? $candidateFinding['detail'] ?? ''));
+                    if ($summary === '') continue;
+                    $code = strtoupper(trim((string) ($candidateFinding['code'] ?? '')));
+                    if (!in_array($code, \BuilderX\AI\PhaseBuilderPlanningPolicy::blockingCodes(), true)) continue;
+                    $requiredResolution = trim((string) ($candidateFinding['requiredResolution'] ?? ''));
+                    $findingIdentity = $code !== ''
+                        ? 'code:' . strtoupper($code)
+                        : 'content:' . hash('sha256', $summary . "\n" . $requiredResolution);
+                    if (isset($seenPreviousFindings[$findingIdentity])) continue;
+                    $seenPreviousFindings[$findingIdentity] = true;
+                    $previousFindings[] = [
+                        'code' => $code,
+                        'summary' => $summary,
+                        'requiredResolution' => $requiredResolution,
+                    ];
+                    $candidateContributed = true;
+                }
+                $candidateRunKey = trim((string) ($candidateReviewRow['run_key'] ?? ''));
+                if ($candidateContributed && $candidateRunKey !== '') $previousReviewRunKeys[] = $candidateRunKey;
+                if (count($previousFindings) >= 12) break;
+            }
+            $refinementHash = $previousFindings === []
+                ? 'initial'
+                : hash('sha256', json_encode($previousFindings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
             $registeredSpecialists = (new \BuilderX\AI\AiSpecialistRegistry())->listAll(100);
             $approvedSpecialists = array_values(array_map(
                 static fn (array $specialist): array => [
@@ -2029,35 +2106,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ],
                 array_filter($registeredSpecialists, static fn (array $specialist): bool => $specialist['status'] === 'active' && $specialist['review_status'] === 'approved')
             ));
-            $contextId = 'system-architecture-' . substr(hash('sha256', $draftKey . ':' . $requirementsHash), 0, 24);
+            $contextId = 'system-architecture-' . substr(hash('sha256', $draftKey . ':' . $requirementsHash . ':' . $refinementHash), 0, 24);
             $context = [
                 'context_id' => $contextId,
                 'draft_key' => $draftKey,
                 'workflow' => 'coordinator_system_architecture_from_saved_requirements',
-                'project_scope' => 'User Portal and Administrator Portal only; BuilderX Phase Builder is the control plane and is excluded.',
-                'objective' => 'Turn the verified Requirements Analysis into a production-oriented system architecture and implementation manifest.',
+                'project_scope' => 'Only product surfaces and integrations explicitly confirmed by the saved Requirements Analysis; BuilderX Phase Builder is excluded.',
+                'objective' => 'Turn the verified Requirements Analysis into the smallest coherent System Architecture guide needed to start implementation in Phase Manager.',
                 'source_requirements_hash' => $requirementsHash,
                 'approved_specialists' => $approvedSpecialists,
                 'requirements_analysis' => $requirements,
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('system_architecture'),
+                'previous_integration_review' => $previousFindings === [] ? null : [
+                    'source_run_key' => (string) ($previousReviewRunKeys[0] ?? ''),
+                    'source_run_keys' => $previousReviewRunKeys,
+                    'status' => 'blocked',
+                    'findings' => $previousFindings,
+                    'instruction' => 'Correct these unresolved baseline blockers only. Preserve accepted decisions and do not expand unrelated sections.',
+                ],
                 'rules' => [
-                    'preserve_requirement_traceability',
+                    'preserve_confirmed_requirement_meaning_and_essential_traceability',
+                    'describe_only_required_product_boundaries_owners_and_primary_data_flows',
+                    'use_a_small_implementation_checklist_and_file_manifest_as_guidance_not_as_an_exhaustive_build_specification',
+                    'do_not_invent_optional_services_tables_apis_roles_screens_infrastructure_or_production_hardening',
+                    'when_previous_integration_review_is_present_correct_only_the_supplied_baseline_blockers',
                     'design_only_no_file_edits_no_sql_and_no_database_changes_in_the_codex_turn',
-                    'separate_web_portal_administrator_portal_android_and_sync_boundaries',
-                    'use_durable_outbox_acknowledgement_idempotency_and_reconciliation_for_offline_sync',
-                    'keep_local_rag_context_separate_from_transactional_inventory_data',
-                    'propose_missing_specialists_in_orchestration_additionalSpecialistProposals_only',
+                    'include_only_explicitly_confirmed_web_mobile_sync_or_tenant_boundaries',
+                    'put_material_optional_improvements_in_concise_non_blocking_coding_time_suggestions',
                     'stop_with_ARCHITECTURE_CONTEXT_UNAVAILABLE_if_this_file_cannot_be_read_completely',
                 ],
                 'required_response' => [
                     'schemaVersion' => 'builderx.system-architecture.v1',
                     'contractType' => 'builderx.system-architecture',
-                    'source' => ['draftKey' => $draftKey, 'requirementsHash' => $requirementsHash, 'requirementIds' => ['REQ-001']],
+                    'source' => ['draftKey' => $draftKey, 'requirementsHash' => $requirementsHash, 'requirementIds' => ['Only confirmed requirement IDs represented by this guide']],
                     'projectBlueprint' => [
                         'title' => 'Architecture title',
                         'summary' => 'Architecture summary',
                         'architecturePattern' => 'Pattern and rationale',
-                        'boundaries' => [['name' => 'User Portal', 'responsibility' => '...', 'routes' => [$projectMountPath . '/']]],
-                        'dataFlow' => [['from' => 'Source', 'to' => 'Destination', 'purpose' => '...', 'consistency' => 'transactional|eventual']],
+                        'boundaries' => [['boundaryId' => 'BOUNDARY-001', 'name' => 'User Portal', 'owner' => 'Web application', 'responsibility' => '...', 'routes' => [$projectMountPath . '/'], 'requirementIds' => ['REQ-001']]],
+                        'dataFlow' => [['flowId' => 'FLOW-001', 'from' => 'Source', 'to' => 'Destination', 'owner' => 'Owning component', 'purpose' => '...', 'consistency' => 'transactional|eventual', 'idempotency' => 'Required rule for mutating flows', 'requirementIds' => ['REQ-001']]],
                         'integrationBoundaries' => [],
                         'securityBoundaries' => [],
                         'synchronizationResponsibilities' => [],
@@ -2070,7 +2157,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ],
             ];
             $result = $writePhaseCoordinatorContext($contextId, $context);
-            $respondJson(['ok' => true, 'context_id' => $contextId, 'source_requirements_hash' => $requirementsHash, 'available_specialist_count' => count($approvedSpecialists), ...$result]);
+            $respondJson(['ok' => true, 'context_id' => $contextId, 'source_requirements_hash' => $requirementsHash, 'available_specialist_count' => count($approvedSpecialists), 'previous_review_finding_count' => count($previousFindings), ...$result]);
         }
 
         if ($action === 'prepare_ui_ux_design_context') {
@@ -2102,19 +2189,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'context_id' => $contextId,
                 'draft_key' => $draftKey,
                 'workflow' => 'coordinator_ui_ux_design_from_saved_architecture',
-                'project_scope' => 'User Portal, Administrator Portal, and Android stockroom product surfaces only; BuilderX Phase Builder is the control plane and is excluded.',
-                'objective' => 'Turn the verified System Architecture into a production-oriented UI/UX design contract with proposed screens, low-fidelity wireframes, and a renderable user/system flow.',
+                'project_scope' => 'Only product surfaces explicitly confirmed by the saved architecture; BuilderX Phase Builder is the control plane and is excluded.',
+                'objective' => 'Create a concise UI/UX guide for the essential confirmed screens and primary journey; Phase Manager owns detailed design during coding.',
                 'source_architecture_hash' => $architectureHash,
                 'approved_specialists' => $approvedSpecialists,
                 'system_architecture' => $architecture,
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('ui_ux_design'),
                 'rules' => [
-                    'preserve_architecture_traceability',
+                    'preserve_confirmed_architecture_meaning_and_primary_journey_traceability',
                     'use_existing_react_and_shadcn_ui_patterns',
-                    'include_responsive_loading_empty_error_success_and_offline_states',
-                    'include_accessibility_keyboard_focus_labels_and_contrast_rules',
+                    'include_only_essential_screens_actions_and_states_needed_for_the_primary_journey',
+                    'include_loading_empty_error_success_or_offline_states_only_when_relevant_to_confirmed_behavior',
+                    'include_baseline_accessibility_and_responsive_guidance_without_final_pixel_level_specification',
+                    'do_not_invent_optional_dashboards_reports_widgets_or_secondary_flows',
                     'design_only_no_file_edits_no_sql_and_no_database_changes_in_the_codex_turn',
                     'do_not_modify_builderx_phase_builder',
-                    'propose_missing_capabilities_in_orchestration_additionalSpecialistProposals_only',
+                    'put_material_optional_improvements_in_concise_non_blocking_coding_time_suggestions',
                     'stop_with_UI_UX_CONTEXT_UNAVAILABLE_if_this_file_cannot_be_read_completely',
                 ],
                 'required_response' => [
@@ -2220,27 +2310,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'context_id' => $contextId,
                 'draft_key' => $draftKey,
                 'workflow' => 'coordinator_execution_roadmap_from_saved_architecture',
-                'project_scope' => 'User Portal and Administrator Portal web surfaces plus the Kotlin Android stockroom mobile surface; BuilderX Phase Builder is the control plane and is excluded.',
-                'objective' => 'Build a deliberate, implementation-ready Execution Roadmap in four independent specialist passes: connected standalone phases, small tasks, detailed sub-tasks with todos, then proposed forms, fields, APIs, tables, background processes, reports, analytics, and indicators.',
+                'project_scope' => 'Only confirmed product surfaces and integrations represented by the saved architecture and optional UI/UX guide; BuilderX Phase Builder is excluded.',
+                'objective' => 'Create the smallest practical starter roadmap for Phase Manager, using concise modules and work packages without speculative implementation detail.',
                 'source_architecture_hash' => $architectureHash,
                 'source_ui_ux_hash' => $uiUxHash,
                 'module_catalog' => $moduleCatalog,
                 'approved_specialists' => $approvedSpecialists,
                 'system_architecture' => $architecture,
                 'ui_ux_design' => $uiUxDesign,
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('execution_roadmap'),
                 'rules' => [
-                    'preserve_architecture_traceability',
+                    'preserve_confirmed_architecture_meaning_and_essential_traceability',
                     'use_the_saved_ui_ux_design_as_the_page_flow_and_screen_handoff_when_available',
                     'show_delivery_track_on_each_task_as_web_android_or_shared',
                     'generate_phases_tasks_subtasks_and_resources_in_separate_sequential_passes',
                     'never_overwrite_or_rename_verified_upstream_ids_when_enhancing_a_stage',
-                    'system_flow_must_be_page_by_page_and_must_show_connections_between_views_forms_apis_databases_and_background_processes',
-                    'use_the_saved_module_catalog_as_the_bounded_product_partition_and_assign_every_phase_to_one_module',
-                    'subtasks_require_detailed_descriptions_acceptance_criteria_dependencies_and_multiple_todos',
+                    'include_only_primary_flow_connections_required_to_start_implementation',
+                    'use_the_smallest_coherent_module_and_phase_partition',
+                    'use_one_concise_subtask_and_todo_when_that_is_enough_to_express_the_work',
                     'indicators_are_allowlisted_icon_slugs_and_have_no_display_labels',
                     'normalize_common_indicator_aliases_to_the_canonical_icon_slugs_before_validation',
-                    'database_and_form_suggestions_are_advisory_and_must_be_traceable_to_architecture',
+                    'include_forms_tables_apis_and_background_resources_only_when_confirmed_scope_requires_them',
                     'suggested_table_names_and_fields_use_lower_snake_case',
+                    'put_material_optional_improvements_in_concise_non_blocking_coding_time_suggestions',
                     'planning_only_no_file_edits_no_sql_and_no_product_database_changes_in_the_codex_turn',
                     'do_not_modify_builderx_phase_builder',
                     'stop_with_ROADMAP_CONTEXT_UNAVAILABLE_if_this_file_cannot_be_read_completely',
@@ -2436,11 +2528,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'system_architecture' => $architecture,
                 'ui_ux_design' => $uiUxDesign,
                 'previous_stage' => $previousStage,
+                'phase_builder_policy' => \BuilderX\AI\PhaseBuilderPlanningPolicy::context('execution_roadmap'),
                 'rules' => [
                     'this_file_contains_the_verified_previous_stage_result_when_one_is_required',
                     'use_the_saved_ui_ux_design_as_the_page_flow_and_screen_handoff_when_available',
                     'preserve_every_upstream_id_title_description_flow_step_dependency_and_meaning',
                     'enhance_only_the_current_stage',
+                    'create_only_the_minimum_items_needed_to_express_confirmed_scope',
+                    'do_not_split_work_by_technical_layer_when_one_coherent_work_package_is_clearer',
+                    'do_not_invent_optional_resources_or_future_features',
                     'return_only_the_required_json_object_to_the_mysql_job',
                     'planning_only_no_file_edits_no_sql_and_no_product_database_changes_in_the_codex_turn',
                     'do_not_modify_builderx_phase_builder_or_phase_manager',
@@ -2448,7 +2544,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'indicators_are_allowlisted_icon_slugs_without_display_labels',
                     'stop_with_ROADMAP_CONTEXT_UNAVAILABLE_if_this_file_cannot_be_read_completely',
                     'when_phase_id_is_present_for_resources_return only the selected phase resource patch and preserve its phase ID',
-                    'when_module_catalog_is_present_use_module_scope_and_dependency_interface_summaries_without_reloading_unrelated_modules',
+                    'when_saved_module_catalog_is_present_use_module_scope_and_dependency_interface_summaries_without_reloading_unrelated_modules',
                     'when_module_id_is_present_process only that module and preserve the cumulative upstream checkpoint outside this context',
                 ],
                 'required_response' => [
@@ -2459,19 +2555,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'hierarchy' => 'phase -> tasks[] -> subTasks[] -> todos[]',
                     'module_schema' => $stageKey === 'modules'
                         ? [
+                            'rootField' => 'modules',
                             'requiredFields' => ['moduleId', 'moduleKey', 'moduleTitle', 'moduleDescription', 'moduleType', 'order', 'dependsOn', 'provides', 'consumes', 'uiUxScope', 'phaseCountHint'],
-                            'constraints' => ['2 to 30 cohesive modules', 'moduleKey uses lower_snake_case', 'dependsOn contains module IDs only', 'provides and consumes are compact interface summaries', 'do not include phases, tasks, sub-tasks, todos, or resource arrays'],
+                            'interfaceFields' => ['interfaceId', 'kind', 'contractSummary'],
+                            'uiUxScopeFields' => ['routes', 'screens', 'sharedComponents'],
+                            'constraints' => ['return the module list only as root field modules, never moduleCatalog or module_catalog', '1 to 30 modules; use one when the confirmed product has one coherent boundary', 'moduleKey uses lower_snake_case', 'dependsOn contains module IDs only', 'provides and consumes are arrays of compact interface objects, not strings', 'do not include phases, tasks, sub-tasks, todos, or resource arrays'],
                         ]
                         : null,
                     'stage_scope' => $stageKey === 'modules'
-                        ? 'Generate a compact product module catalog and dependency graph from the saved architecture and UI/UX design. Each module must expose only its boundary, UI/UX scope, consumes, provides, and dependency summaries; do not generate phases or implementation resources.'
+                        ? 'Generate the smallest coherent product module catalog from confirmed architecture and UI/UX scope. Return it as {"modules":[...]} with structured provides/consumes interface objects. Keep boundaries and dependency summaries concise; do not generate phases or implementation resources.'
                         : ($stageKey === 'phases'
-                        ? ($moduleId !== '' ? 'Generate connected standalone phases for only module ' . $moduleId . ' and its declared dependency interfaces. Every returned phase must use moduleId ' . $moduleId . '.' : 'Generate connected standalone phases grouped by the saved module catalog. Each phase must include moduleId and page, view, API, database, background, report, entry, exit, and dependency flow nodes.')
+                        ? ($moduleId !== '' ? 'Generate only the essential implementation phases for module ' . $moduleId . ' and its confirmed dependencies. Every returned phase must use moduleId ' . $moduleId . '.' : 'Generate only essential phases grouped by the saved module catalog. Include flow nodes only for confirmed components that actually participate.')
                         : ($stageKey === 'tasks'
-                            ? 'Add small page-by-page, API, database, background, security, reporting, and integration tasks without generating sub-tasks.'
+                            ? 'Add the minimum practical tasks needed for each confirmed phase. Do not split one coherent task into separate technical-layer tasks merely for completeness.'
                             : ($stageKey === 'subtasks'
-                                ? 'Add detailed executable sub-tasks, acceptance criteria, dependencies, and multiple Pending todos to every task.'
-                                : 'Return only proposed resource patches keyed by phaseId. Add forms, fields, actions, routes, APIs, tables, indexes, relationships, background processes, reports, analytics, states, permissions, indicators, and resource references. Do not return or regenerate phases, tasks, sub-tasks, or todos; the Phase Builder will merge these patches into the saved Stage 3 hierarchy. These are proposals only; do not claim resources already exist.'))),
+                                ? 'Add concise executable sub-tasks and at least one Pending todo only where required by the contract. One is enough when it fully expresses the work.'
+                                : 'Return only resource patches keyed by phaseId. Include forms, tables, APIs, background processes, reports, or analytics only when confirmed scope needs them; keep all other resource arrays empty. Do not regenerate the hierarchy or add speculative resources.'))),
                     'resource_patch_schema' => $stageKey === 'resources'
                         ? [
                             'requiredFields' => ['schemaVersion', 'contractType', 'stage', 'source', 'resourcePatches'],
@@ -2638,6 +2737,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!is_array($roadmap) || array_is_list($roadmap)) {
                 $fail('Execution Roadmap returned an invalid JSON object.');
             }
+            if (!isset($roadmap['phaseExecutionOverview']) && isset($roadmap['phases']) && is_array($roadmap['phases'])) {
+                $taskCount = 0;
+                $subTaskCount = 0;
+                foreach ($roadmap['phases'] as $overviewPhase) {
+                    if (!is_array($overviewPhase) || !is_array($overviewPhase['tasks'] ?? null)) {
+                        continue;
+                    }
+                    $taskCount += count($overviewPhase['tasks']);
+                    foreach ($overviewPhase['tasks'] as $overviewTask) {
+                        if (is_array($overviewTask) && is_array($overviewTask['subTasks'] ?? null)) {
+                            $subTaskCount += count($overviewTask['subTasks']);
+                        }
+                    }
+                }
+                $roadmap['phaseExecutionOverview'] = [
+                    'totalPhases' => count($roadmap['phases']),
+                    'totalTasks' => $taskCount,
+                    'totalSubTasks' => $subTaskCount,
+                    'status' => 'Pending',
+                ];
+            }
             $requiredRoadmapKeys = ['schemaVersion', 'contractType', 'source', 'phaseExecutionOverview', 'phases'];
             foreach ($requiredRoadmapKeys as $requiredKey) {
                 if (!array_key_exists($requiredKey, $roadmap)) {
@@ -2648,8 +2768,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ((!$isRoadmapV3 && $roadmap['schemaVersion'] !== 'builderx.execution-roadmap.v2') || $roadmap['contractType'] !== 'builderx.execution-roadmap') {
                 $fail('Execution Roadmap returned an unsupported contract version.');
             }
-            if (!is_array($roadmap['source']) || ($roadmap['source']['draftKey'] ?? '') !== $draftKey || !is_array($roadmap['phaseExecutionOverview']) || !is_array($roadmap['phases']) || count($roadmap['phases']) < 5 || count($roadmap['phases']) > 9) {
-                $fail('Execution Roadmap must contain a valid source, overview, and 5 to 9 milestones.');
+            if (!is_array($roadmap['source']) || ($roadmap['source']['draftKey'] ?? '') !== $draftKey || !is_array($roadmap['phaseExecutionOverview']) || !is_array($roadmap['phases']) || count($roadmap['phases']) < 1 || count($roadmap['phases']) > 30) {
+                $fail('Execution Roadmap must contain a valid source, overview, and 1 to 30 essential phases.');
             }
             $allowedIndicators = ['api', 'background_process', 'database', 'crud', 'authentication', 'authorization', 'validation', 'frontend', 'backend', 'mobile', 'synchronization', 'queue', 'search', 'reporting', 'audit', 'migration', 'testing', 'accessibility', 'external_integration', 'realtime', 'deployment', 'files', 'notifications', 'cache', 'security', 'forms', 'offline'];
             $indicatorAliases = [
@@ -2688,6 +2808,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
             $allowedFormActions = ['add', 'edit', 'search', 'delete', 'view', 'bulk_update'];
             $identifierPattern = '/^[a-z][a-z0-9_]{0,63}$/';
+            $nodeTypeAliases = [
+                'ui_surface' => 'view',
+                'mobile_surface' => 'view',
+                'mobile_queue' => 'background',
+                'security_boundary' => 'decision',
+                'backend_data_plane' => 'database',
+                'sync_process' => 'background',
+                'background_process' => 'background',
+                'api_endpoint' => 'api',
+                'reporting' => 'report',
+            ];
+            if ($isRoadmapV3) {
+                foreach ($roadmap['phases'] as $phaseIndex => &$normalizingPhase) {
+                    if (!is_array($normalizingPhase)) {
+                        continue;
+                    }
+                    if (!is_array($normalizingPhase['systemFlow'] ?? null) && is_array($normalizingPhase['systemFlowNodes'] ?? null)) {
+                        $normalizingPhase['systemFlow'] = $normalizingPhase['systemFlowNodes'];
+                    }
+                    if (is_array($normalizingPhase['systemFlow'] ?? null)) {
+                        foreach ($normalizingPhase['systemFlow'] as $flowIndex => &$flowStep) {
+                            if (!is_array($flowStep)) {
+                                continue;
+                            }
+                            $nodeId = trim((string) ($flowStep['nodeId'] ?? $flowStep['flowStepId'] ?? ''));
+                            $label = trim((string) ($flowStep['label'] ?? $flowStep['action'] ?? $flowStep['description'] ?? ''));
+                            $kind = trim((string) ($flowStep['kind'] ?? $flowStep['nodeType'] ?? 'view'));
+                            $flowStep['flowStepId'] = trim((string) ($flowStep['flowStepId'] ?? '')) !== '' ? $flowStep['flowStepId'] : ('FLOW-' . str_pad((string) ($flowIndex + 1), 3, '0', STR_PAD_LEFT));
+                            $flowStep['order'] = is_int($flowStep['order'] ?? null) ? $flowStep['order'] : ($flowIndex + 1);
+                            $flowStep['from'] = trim((string) ($flowStep['from'] ?? '')) !== '' ? $flowStep['from'] : ($flowIndex === 0 ? 'Start' : ('FLOW-' . str_pad((string) $flowIndex, 3, '0', STR_PAD_LEFT)));
+                            $flowStep['action'] = trim((string) ($flowStep['action'] ?? '')) !== '' ? $flowStep['action'] : ($label !== '' ? $label : ($nodeId !== '' ? $nodeId : 'Process confirmed roadmap node'));
+                            $flowStep['to'] = trim((string) ($flowStep['to'] ?? '')) !== '' ? $flowStep['to'] : ($nodeId !== '' ? $nodeId : ('FLOW-' . str_pad((string) ($flowIndex + 1), 3, '0', STR_PAD_LEFT)));
+                            $flowStep['nodeType'] = $nodeTypeAliases[$kind] ?? (in_array($kind, ['page', 'view', 'form', 'api', 'database', 'background', 'report', 'analytics', 'decision'], true) ? $kind : 'view');
+                        }
+                        unset($flowStep);
+                    }
+                }
+                unset($normalizingPhase);
+            }
             $phaseIds = [];
             foreach ($roadmap['phases'] as $phaseIndex => $roadmapPhase) {
                 if (!is_array($roadmapPhase) || trim((string) ($roadmapPhase['phaseId'] ?? '')) === '' || trim((string) ($roadmapPhase['phaseTitle'] ?? '')) === '' || trim((string) ($roadmapPhase['phaseDescription'] ?? '')) === '' || ($roadmapPhase['status'] ?? '') !== 'Pending' || ($isRoadmapV3 && !in_array(($roadmapPhase['phaseType'] ?? ''), ['foundation', 'vertical_slice', 'background_process', 'cross_cutting'], true)) || ($isRoadmapV3 && !is_array($roadmapPhase['systemFlow'] ?? null)) || ($isRoadmapV3 && !is_array($roadmapPhase['proposedResources'] ?? null)) || !is_array($roadmapPhase['tasks'] ?? null) || count($roadmapPhase['tasks']) < 1 || count($roadmapPhase['tasks']) > 16) {

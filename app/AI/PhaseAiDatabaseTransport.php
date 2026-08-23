@@ -283,14 +283,54 @@ final class PhaseAiJobStore
             'priorStageResults' => $priorStageResults,
             'contexts' => $contexts,
         ];
+        $workflowKey = (string) ($row['workflow_key'] ?? '');
+        $planningPolicyPrompt = PhaseBuilderPlanningPolicy::prompt($workflowKey);
+        if ($planningPolicyPrompt !== '') {
+            $promptPayload['phaseBuilderPolicy'] = PhaseBuilderPlanningPolicy::context($workflowKey);
+        }
+        $stageContractPrompt = (string) ($row['stage_key'] ?? '') === 'integration_review'
+            ? implode("\n", [
+                'BUILDERX_INTEGRATION_REVIEW_RESULT_CONTRACT',
+                'Return exactly: {"schemaVersion":"builderx.ai-integration-review.v1","status":"approved|blocked","findings":[]}.',
+                'Each finding may contain only code, summary, requiredResolution, and relatedArea.',
+                'Use findings for both genuine blockers and optional observations; the server applies the finite blocker policy and converts optional observations into coding-time suggestions.',
+                'Do not rename findings to blockingFindings or nonBlockingSuggestions.',
+            ])
+            : '';
+        $executionMode = (string) ($row['execution_mode'] ?? '');
+        $engineType = strtoupper((string) ($row['engine_type'] ?? ''));
+        $isCodingWorkflow = $engineType === 'CODING' || in_array($workflowKey, ['todo_execution', 'todo_rollback'], true);
+        $workspacePolicyPrompt = $isCodingWorkflow
+            ? implode("\n", [
+                'BuilderX supplied the complete, authoritative, server-read-back scope context below from MySQL. Every run key, stage result, context value, and artifact hash in this payload is already bound and verified by BuilderX.',
+                'For this Coding Engine stage, use the supplied context as the scope authority, then inspect the current project workspace, source tree, database paths, Android paths, logs, and focused test/build commands only as required by the requested stage.',
+                'For inspection, plan, verification, evidence, and git_update checkpoints, return exact camelCase keys: schemaVersion, workflowKey, stage, status, evidence. Do not use schema_version, workflow_key, job_key, tests_run, or other snake_case contract keys.',
+                $executionMode === 'coding_implementation'
+                    ? 'Source or Android edits are allowed only inside the selected todo scope and only when the stage instruction requires them. Preserve unrelated changes and do not modify BuilderX Phase Manager control-plane files.'
+                    : 'This is a read-only Coding Engine stage: do not edit files, write product data, change the database, run migrations, install dependencies, or make Git changes.',
+                'Classify blockers narrowly. Dirty worktree changes block only when they cannot be preserved, conflict with the required edit hunk, or prevent safe attribution after reading the current diff; same-file overlap alone is not a blocker. Otherwise preserve and list dirty changes as non-blocking evidence. Missing database rollback protection blocks only when actual schema or data writes are required; do not block source-only work because database impact is merely possible.',
+                'If you discover a confirmed product, scope, permission, rollback, dependency, or verification blocker, do not use the fail helper. Return the requested JSON through the complete helper with status "blocked" and evidence explaining the blocker.',
+                'Return exactly one JSON object matching the requested stage contract. When complete, pass the JSON object as the final quoted argument to:',
+                'php tools/builderx-ai-job.php complete ' . $jobKey . " '<JSON_OBJECT>'",
+                'Use the fail helper only for transport or helper execution failures where no valid JSON stage result can be produced. If that happens, pass a short failure reason as the final quoted argument to:',
+                'php tools/builderx-ai-job.php fail ' . $jobKey . " '<FAILURE_REASON>'",
+                'Run the complete or fail helper once after the stage work is finished, without sudo, sandbox escalation, a pipeline, or a shell wrapper. Keep the JSON object inside one shell-quoted argument, and do not add backslashes before its double quotes merely because the outer shell quotes are single quotes. After the helper returns ok:true, do not run another command.',
+                'Do not create a BuilderX result JSON file.',
+            ])
+            : implode("\n", [
+                'BuilderX supplied the complete, authoritative, server-read-back context below from MySQL. Every run key, stage result, context value, and artifact hash in this payload is already bound and verified by BuilderX.',
+                'Do not independently re-read or verify this payload. Do not inspect the database, source tree, helper implementation, skills, memory, logs, or any workspace file. Do not run php -r, mysql, rg, grep, find, cat, or any exploratory command. A secondary lookup is an error, not additional verification.',
+                'Return exactly one JSON object matching the requested stage contract. When complete, pass the JSON object as the final quoted argument to:',
+                'php tools/builderx-ai-job.php complete ' . $jobKey . " '<JSON_OBJECT>'",
+                'If the stage cannot be completed, pass a short failure reason as the final quoted argument to:',
+                'php tools/builderx-ai-job.php fail ' . $jobKey . " '<FAILURE_REASON>'",
+                'Use no command or tool before the final complete or fail helper. Run that helper once as an ordinary current-workspace command without sudo, sandbox escalation, a pipeline, or a shell wrapper. The BuilderX companion installs exact allow rules for the complete and fail command prefixes, so do not request user approval. Keep the JSON object inside one shell-quoted argument, and do not add backslashes before its double quotes merely because the outer shell quotes are single quotes. After the helper returns ok:true, do not run another command.',
+                'Do not create a BuilderX result JSON file.',
+            ]);
         $prompt = trim((string) $row['instruction_text']) . "\n\n"
-            . "BuilderX supplied the complete trusted context below from MySQL. Do not search for a context or result file.\n"
-            . "Return exactly one JSON object matching the requested stage contract. When complete, pass the JSON object as the final quoted argument to:\n"
-            . 'php tools/builderx-ai-job.php complete ' . $jobKey . " '<JSON_OBJECT>'\n"
-            . "If the stage cannot be completed, pass a short failure reason as the final quoted argument to:\n"
-            . 'php tools/builderx-ai-job.php fail ' . $jobKey . " '<FAILURE_REASON>'\n"
-            . "Run the helper directly without a pipeline or shell wrapper. For completion request sandbox_permissions=require_escalated with prefix_rule=[\"php\",\"tools/builderx-ai-job.php\",\"complete\"]; for failure use the same setting with prefix_rule=[\"php\",\"tools/builderx-ai-job.php\",\"fail\"]. These two BuilderX helpers are owner-approved; do not ask the user for approval.\n"
-            . "Do not create a BuilderX result JSON file.\n\nBUILDERX_MYSQL_JOB_CONTEXT\n"
+            . ($planningPolicyPrompt !== '' ? $planningPolicyPrompt . "\n\n" : '')
+            . ($stageContractPrompt !== '' ? $stageContractPrompt . "\n\n" : '')
+            . $workspacePolicyPrompt . "\n\nBUILDERX_MYSQL_JOB_CONTEXT\n"
             . json_encode($promptPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         return ['ok' => true, 'job_key' => $jobKey, 'status' => 'running', 'workspace' => self::normalizedRoot($this->projectRoot), 'prompt' => $prompt, 'execution_mode' => $row['execution_mode']];
     }

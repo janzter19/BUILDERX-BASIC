@@ -1,4 +1,4 @@
-# BuilderX companion 2.0.4
+# BuilderX companion 2.0.5
 
 The BuilderX companion follows the first folder currently open in VS Code. It
 hosts the local BuilderX endpoint, claims jobs from that project's MySQL-backed
@@ -16,3 +16,6 @@ the desktop user so visible Codex recognizes a complete repository immediately.
 It also installs two narrowly matched Codex rules for the BuilderX `complete`
 and `fail` helper commands. This lets a visible Codex task return its result to
 the local MySQL job without a manual approval click or broad shell permission.
+The generated job prompt uses ordinary local execution and never requests
+sandbox escalation; after a successful helper read-back it does not retry the
+completion command.

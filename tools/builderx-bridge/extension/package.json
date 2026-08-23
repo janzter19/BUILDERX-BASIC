@@ -2,7 +2,7 @@
   "name": "builderx",
   "displayName": "BuilderX",
   "description": "BuilderX handoff and progress bridge for the visible OpenAI Codex chat in VS Code.",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "publisher": "builderx",
   "engines": {
     "vscode": "^1.85.0"

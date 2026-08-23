@@ -20,7 +20,9 @@ Linux group, or ACL setup.
 4. Codex completes or fails the job through the same helper. The helper accepts
    JSON or a failure reason as the direct command's final argument and stores
    the terminal state in MySQL. The companion installs only the two matching
-   owner-approved Codex helper rules, so no approval click is required.
+   owner-approved Codex helper rules. The job prompt uses ordinary local
+   execution, never requests sandbox escalation, preserves the JSON as one
+   shell-quoted argument, and never repeats a successful completion command.
 5. PHP reads progress and the result directly from MySQL, validates the stage,
    performs the application transaction, and returns database read-back to the
    browser.
@@ -35,6 +37,6 @@ their relative path, MIME type, byte size, SHA-256 digest, and lifecycle state.
 
 ## Installation
 
-Install `builderx-companion-2.0.4.vsix` once in VS Code. New BuilderX projects
+Install `builderx-companion-2.0.5.vsix` once in VS Code. New BuilderX projects
 do not require any terminal command. Opening another generated project in VS
 Code automatically changes the companion workspace.

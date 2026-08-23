@@ -4,6 +4,7 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $app = (string) file_get_contents($root . '/frontend/src/App.tsx');
 $extension = (string) file_get_contents($root . '/tools/builderx-bridge/extension/extension.js');
+$databaseTransport = (string) file_get_contents($root . '/app/AI/PhaseAiDatabaseTransport.php');
 
 foreach ([
     'BuilderX companion is not ready',
@@ -34,6 +35,16 @@ foreach (['currentWorkspace()', 'runHelper(root', "transport: 'mysql'", 'workspa
         throw new RuntimeException('The global companion is missing automatic workspace transport: ' . $extensionMarker);
     }
 }
+foreach (['authoritative, server-read-back context', 'A secondary lookup is an error, not additional verification.', 'Use no command or tool before the final complete or fail helper.', 'ordinary current-workspace command without sudo, sandbox escalation', 'do not add backslashes before its double quotes', 'After the helper returns ok:true, do not run another command.'] as $transportMarker) {
+    if (!str_contains($databaseTransport, $transportMarker)) {
+        throw new RuntimeException('The MySQL completion prompt is missing its automatic local-execution contract: ' . $transportMarker);
+    }
+}
+foreach (['sandbox_permissions=require_escalated', 'prefix_rule=['] as $forbiddenTransportMarker) {
+    if (str_contains($databaseTransport, $forbiddenTransportMarker)) {
+        throw new RuntimeException('The MySQL completion prompt still requests a manual approval path: ' . $forbiddenTransportMarker);
+    }
+}
 if (preg_match('/\brbmsv[0-9]+\b/i', $app . $extension) === 1) {
     throw new RuntimeException('The automatic bridge flow must not hardcode an installed project name.');
 }
@@ -48,4 +59,5 @@ echo json_encode([
     'desktop_git_safe_directory_automatic' => true,
     'desktop_git_initial_commit_automatic' => true,
     'codex_helper_rules_automatic' => true,
+    'manual_completion_approval_requested' => false,
 ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;

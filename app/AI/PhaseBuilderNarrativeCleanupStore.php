@@ -56,12 +56,12 @@ final class PhaseBuilderNarrativeCleanupStore
             throw new RuntimeException('PHASE2_CONTEXT_UNAVAILABLE');
         }
 
-        return self::validateApprovalContext($draftKey, $reply, $sourceSnapshot, $context);
+        return self::validateApprovalContext($draftKey, $reply, $sourceSnapshot, $context)['corrected_sections'];
     }
 
     /**
      * Validate a persistent run from its database-backed grammar checkpoint.
-     * The temporary bridge file is deliberately not consulted here.
+     * No filesystem transport is consulted here.
      *
      * @return array<string, string>
      */
@@ -74,10 +74,30 @@ final class PhaseBuilderNarrativeCleanupStore
             'grammar_response' => $grammarResponse,
         ];
 
-        return self::validateApprovalContext(trim($draftKey), $reply, $sourceSnapshot, $context);
+        return self::validateApprovalContext(trim($draftKey), $reply, $sourceSnapshot, $context)['corrected_sections'];
     }
 
-    /** @return array<string, string> */
+    /**
+     * Convert the AI's semantic approval decision into the server-owned result
+     * contract stored by the persistent orchestrator. Completeness, meaning
+     * preservation, and write authorization are always derived from the saved
+     * source and grammar checkpoints rather than trusted from model output.
+     *
+     * @return array<string, mixed>
+     */
+    public static function canonicalizePersistedApproval(string $draftKey, array $reply, array $sourceSnapshot, array $grammarResponse): array
+    {
+        $context = [
+            'workflow' => 'database_validation_after_grammar',
+            'draft_key' => trim($draftKey),
+            'source_snapshot' => $sourceSnapshot,
+            'grammar_response' => $grammarResponse,
+        ];
+
+        return self::validateApprovalContext(trim($draftKey), $reply, $sourceSnapshot, $context)['approval'];
+    }
+
+    /** @return array{approval: array<string, mixed>, corrected_sections: array<string, string>} */
     private static function validateApprovalContext(string $draftKey, array $reply, array $sourceSnapshot, array $context): array
     {
         if (
@@ -126,10 +146,10 @@ final class PhaseBuilderNarrativeCleanupStore
             'status',
             'database_specialist_approved',
             'draft_key',
-            'validation',
             'reason',
         ];
-        if (array_diff($requiredReplyKeys, array_keys($reply)) !== [] || array_diff(array_keys($reply), $requiredReplyKeys) !== []) {
+        $allowedReplyKeys = [...$requiredReplyKeys, 'validation'];
+        if (array_diff($requiredReplyKeys, array_keys($reply)) !== [] || array_diff(array_keys($reply), $allowedReplyKeys) !== []) {
             throw new RuntimeException('The Database Specialist returned an invalid approval object.');
         }
 
@@ -144,18 +164,12 @@ final class PhaseBuilderNarrativeCleanupStore
             throw new RuntimeException('The Database Specialist did not approve the complete Phase Builder Narrative & Cleanup result.');
         }
 
-        $validation = $reply['validation'] ?? null;
-        $requiredValidationKeys = ['complete', 'meaning_preserved', 'write_allowed'];
-        if (
-            !is_array($validation)
-            || array_diff($requiredValidationKeys, array_keys($validation)) !== []
-            || array_diff(array_keys($validation), $requiredValidationKeys) !== []
-            || ($validation['complete'] ?? false) !== true
-            || ($validation['meaning_preserved'] ?? false) !== true
-            || ($validation['write_allowed'] ?? false) !== true
-            || !self::meaningPreserved($contextSourceSnapshot, $grammarSections)
-        ) {
-            throw new RuntimeException('The Database Specialist did not return complete approval validation.');
+        if (array_key_exists('validation', $reply) && !is_array($reply['validation'])) {
+            throw new RuntimeException('The Database Specialist returned an invalid legacy validation value.');
+        }
+
+        if (!self::meaningPreserved($contextSourceSnapshot, $grammarSections)) {
+            throw new RuntimeException('The validated grammar result did not preserve the source meaning.');
         }
 
         $normalizedSections = [];
@@ -169,7 +183,21 @@ final class PhaseBuilderNarrativeCleanupStore
             $normalizedSections[$field] = $grammarSections[$field];
         }
 
-        return $normalizedSections;
+        return [
+            'approval' => [
+                'role' => 'database_specialist',
+                'status' => 'approved',
+                'database_specialist_approved' => true,
+                'draft_key' => trim($draftKey),
+                'validation' => [
+                    'complete' => true,
+                    'meaning_preserved' => true,
+                    'write_allowed' => true,
+                ],
+                'reason' => trim($reply['reason']),
+            ],
+            'corrected_sections' => $normalizedSections,
+        ];
     }
 
     private static function hasGrammarOnlyChangeHistory(mixed $changeHistory): bool

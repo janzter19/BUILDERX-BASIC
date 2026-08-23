@@ -191,10 +191,14 @@ final class PhaseAiRunStore
         $sourceHash = hash('sha256', $requestJson);
         $db = \bx_db();
         $resumable = $db->GetRow(
-            "SELECT run_key FROM phase_builder_ai_run WHERE project_identity = ? AND created_by_user_key = ? AND route_key = ? AND engine_type = ? AND workflow_key = ? AND draft_key = ? AND source_hash = ? AND status IN ('QUEUED','RUNNING','VALIDATING','FAILED','SUCCEEDED') ORDER BY x_id DESC LIMIT 1",
+            "SELECT run_key, status, stage_key, result_json FROM phase_builder_ai_run WHERE project_identity = ? AND created_by_user_key = ? AND route_key = ? AND engine_type = ? AND workflow_key = ? AND draft_key = ? AND source_hash = ? AND status IN ('QUEUED','RUNNING','VALIDATING','FAILED','SUCCEEDED') ORDER BY x_id DESC LIMIT 1",
             [$projectIdentity, $userKey, $routeKey, $engineType, $workflowKey, $draftKey, $sourceHash]
         );
-        if (is_array($resumable) && self::validRecordKey((string) ($resumable['run_key'] ?? ''))) {
+        if (
+            is_array($resumable)
+            && self::validRecordKey((string) ($resumable['run_key'] ?? ''))
+            && $this->isResumableRun($resumable)
+        ) {
             return $this->read((string) $resumable['run_key'], $projectIdentity);
         }
         $existing = $db->GetRow(
@@ -752,6 +756,31 @@ final class PhaseAiRunStore
         if (!in_array($to, $allowed[$from] ?? [], true)) {
             throw new RuntimeException(sprintf('The AI stage transition from %s to %s is not allowed.', $from, $to));
         }
+    }
+
+    /** @param array<string, mixed> $run */
+    private function isResumableRun(array $run): bool
+    {
+        $status = (string) ($run['status'] ?? '');
+        if (in_array($status, ['QUEUED', 'RUNNING', 'VALIDATING'], true)) {
+            return true;
+        }
+        if ($status === 'SUCCEEDED') {
+            $result = self::decodeJson((string) ($run['result_json'] ?? ''));
+            return !is_array($result) || ($result['status'] ?? '') !== 'blocked';
+        }
+        if ($status !== 'FAILED') {
+            return false;
+        }
+        $stageKey = trim((string) ($run['stage_key'] ?? ''));
+        if ($stageKey === '') {
+            return false;
+        }
+        $stage = \bx_db()->GetRow(
+            'SELECT attempt_count, max_attempts FROM phase_builder_ai_run_stage WHERE run_key = ? AND stage_key = ? LIMIT 1',
+            [(string) ($run['run_key'] ?? ''), $stageKey]
+        );
+        return is_array($stage) && (int) ($stage['attempt_count'] ?? 0) < (int) ($stage['max_attempts'] ?? 0);
     }
 
     private function assertCreatedReadBack(string $runKey, string $projectIdentity, string $workflowKey, string $routeKey, string $sourceHash, string $userKey): void

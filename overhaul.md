@@ -1,6 +1,6 @@
 # BuilderX Two-Engine AI Overhaul
 
-Status: MySQL-native Phase Builder/Phase Manager transport and browser-only project installation are implemented in Developer and passing focused source/database/build gates; official installer publication, a genuine fresh database installation, and live visible-Codex delivery remain release gates
+Status: MySQL-native Phase Builder/Phase Manager transport and browser-only project installation are implemented in Developer, verified, and published to the official installer; a genuine fresh database installation and live visible-Codex lifecycle from that new installation remain acceptance gates
 Authoritative source: `/var/www/html/developer`
 Last updated: 2026-08-23
 
@@ -117,9 +117,28 @@ This milestone supersedes the earlier Coordinator file-exchange, per-project use
 - added fresh-install rejection for inherited Phase Builder narrative, AI job/context/run, roadmap, todo, attachment, and generated runtime data;
 - verified PHP/shell/JavaScript syntax, MySQL transport lifecycle, deterministic orchestrator, all Planning workflows, Coding execution/rollback, Sharingan on three surfaces, Phase Manager schema/export, authorization, source recovery, installer static/package gates, and the frontend lint/build. A live visible-Codex handoff and genuine fresh release installation remain required before declaring the release complete.
 
+### 2026-08-23 Narrative validation contract hardening
+
+- removed AI-authored `complete`, `meaning_preserved`, and `write_allowed` values from the Narrative & Cleanup validation request contract. The validation stage now returns only its semantic approval decision, exact draft identity, and reason through the MySQL job result;
+- made deterministic PHP validate the persisted source and grammar checkpoints, verify all nine section keys and types, compare meaning-preservation anchors, and construct the canonical approval envelope stored in the persistent validation checkpoint;
+- retained bounded compatibility for an older optional `validation` object, including the observed `sections_complete` key drift, but never trusts or persists those model-authored flags. Unknown root fields, rejected decisions, mismatched drafts, incomplete grammar output, changed source, and failed meaning preservation remain fail-closed;
+- changed the browser to submit the raw MySQL result to the server validator and continue only from the canonical validation checkpoint returned by database read-back. The persistence request must exactly match that saved checkpoint;
+- added regression coverage proving the formerly failing `sections_complete` response is canonicalized to `complete`, the decision-only response contract succeeds, the five-stage MySQL lifecycle reaches `SUCCEEDED`, and no filesystem result transport or manual workspace path is used;
+- re-ran the MySQL transport, orchestrator, run lifecycle, Requirements Analysis, shared Planning/Coding workflows, source checkpoint, Sharingan workflow and authorization, Phase Manager schema/export, installer application/package, frontend lint, and production build gates successfully. Frontend lint retains only the existing warnings and no errors.
+
+### 2026-08-23 Codex completion approval refinement
+
+- removed the MySQL job prompt's contradictory instruction to request sandbox escalation for an already owner-approved local helper command. That instruction forced visible Codex Chat to display `Allow once` even when the desktop user owned the workspace and the exact `complete`/`fail` prefix rules were installed;
+- retained the narrowly scoped Codex allow rules and changed the completion contract to ordinary current-workspace execution without `sudo`, escalation, a pipeline, or a shell wrapper;
+- made the prompt preserve the result as one shell-quoted JSON argument, forbid unnecessary escaping of JSON double quotes inside single shell quotes, and stop after the first `ok:true` helper read-back so a successful MySQL completion cannot generate another approval-gated retry;
+- made the server-read-back MySQL payload authoritative for the visible Codex turn and explicitly prohibited redundant database, source, skill, memory, log, and filesystem inspection before the single pre-approved `complete` or `fail` helper. Secondary lookups are workflow errors because they can pause an otherwise valid run behind an unrelated approval dialog;
+- made the deterministic server construct `workflowKey` and `artifactHash` for every integration-review checkpoint from the persisted run and validated analysis artifact. The model supplies only the review decision and findings, so an otherwise valid review cannot fail because the model omitted or decorated server-owned identity fields;
+- changed System Architecture refinement to retain only a finite set of genuine unresolved baseline blockers from recent valid reviews. Optional completeness, optimization, traceability expansion, extra tables/files/services, and future hardening are stored as non-blocking coding-time suggestions and are never accumulated into an endless regeneration loop;
+- added regression coverage for the absence of `sandbox_permissions=require_escalated`, exact automatic-execution wording, quote-bearing JSON payload read-back, and no-repeat behavior. This refinement changes the Developer source and companion package only; existing installed projects retain their packaged version until installed from a newly published release.
+
 ### Release and installation gate
 
-Implemented in source and installer tooling on 2026-08-21, but not yet eligible for a clean release-manifest refresh:
+Implemented in source and installer tooling on 2026-08-21. The source/template publication portion was closed by the verified 2026-08-23 validation release below; genuine fresh-database and live visible-Codex acceptance remain open:
 
 - added different-name installation isolation checks covering runtime source references, compiled assets, symlink containment, generated runtime state, AI/todo database rows, and forbidden source paths stored in the installed database;
 - added a source-unavailable lifecycle harness that renders the installed User Portal and Phases entrypoints under project-only PHP `open_basedir`, starts the installed Bridge worker on an isolated port, verifies its current-project workspace, and optionally checks the real Apache routes;
@@ -128,7 +147,16 @@ Implemented in source and installer tooling on 2026-08-21, but not yet eligible 
 - verified the isolation and source-unavailable web/worker harnesses against a disposable different-name copy;
 - re-ran the different-name executable/runtime scan with 317 files inspected, no symlinks, and zero generated runtime files, then rendered the installed User Portal and Phases under project-only `open_basedir` and verified the isolated Bridge worker resolved only the disposable workspace. The disposable copies were moved to trash;
 - kept the fresh-database claim open: the disposable source-unavailable copy intentionally reused Developer database configuration for render coverage, and the blanket database path scan found one expected P3 checklist prose reference to `/var/www/html/developer`, not a runtime/configuration dependency. A real fresh database under a different installation path is still required;
-- retained the clean-Git source/template alignment gate. The current Developer worktree is intentionally uncommitted. Verified shared payload files have been mirrored into the working installer template for acceptance, but the installer source manifest remains bound to its previous clean revision; no clean release refresh or post-change fresh release installation has been claimed.
+- at that 2026-08-21 checkpoint, retained the clean-Git source/template alignment gate because the Developer worktree was intentionally uncommitted. The later 2026-08-23 validation release closed the clean source/template publication gap without claiming the still-pending fresh-database and live visible-Codex lifecycle.
+
+### 2026-08-23 validation release publication
+
+- committed only the verified validation-contract source, regression tests, and overhaul record, then built the release from that clean Git state;
+- passed the release builder's clean-revision check, fresh-template isolation, PHP lint, companion package checksum/source match, frontend dependency audit, lint, and production build;
+- deployed the versioned installer application while preserving its protected local configuration, then atomically published the checksum-bound clean template with a root-only previous-template rollback copy;
+- directly verified deployed/versioned installer application parity, 324 scanned runtime files, zero symlinks, zero generated runtime files, zero Phase Builder demo-data markers, and no filesystem result transport or manual workspace-path requirement;
+- reloaded `http://localhost/_installer/` and verified the live preflight is green, the published release identity matches its source manifest, the clean template and MySQL administrator checks pass, password fields remain empty, and **Review and Create Project** is enabled;
+- did not modify an existing installed project. A genuine newly named installation with a new database and one live visible-Codex Narrative & Cleanup lifecycle remains the final end-to-end acceptance check.
 
 ### 2026-08-21 continuation verification and P3 read-back
 
@@ -381,7 +409,7 @@ Non-privileged capture, selection, and annotation may be exposed to an authentic
 
 #### 1. Phase Builder Planning Engine
 
-The planning engine owns:
+The planning engine owns concise minimum viable guides for:
 
 - Narrative & Cleanup;
 - Requirements Analysis;
@@ -389,7 +417,7 @@ The planning engine owns:
 - UI/UX Design;
 - Execution Roadmap.
 
-It is planning-only. It must not edit source files, execute arbitrary shell commands, or directly mutate product tables. Application code validates every result before a transaction, audit event, commit, and database read-back.
+It is planning-only. Phase Builder establishes the smallest coherent confirmed baseline; Phase Manager owns later expansion, implementation detail, and changing requirements. The Planning Engine must not invent optional features, roles, services, tables, APIs, screens, infrastructure, or production hardening to make an artifact look complete. It must not edit source files, execute arbitrary shell commands, or directly mutate product tables. Application code validates every result before a transaction, audit event, commit, and database read-back.
 
 #### 2. Phase Manager Coding Engine
 
@@ -483,9 +511,11 @@ Invalid output does not advance to the next stage and is not reported as complet
 
 ### Layer 5: Merger and integration review
 
-Application code first merges validated chunks deterministically. One final bounded AI review may identify contradictions, duplicate requirements, naming differences, missing dependencies, or traceability gaps.
+Application code first merges validated chunks deterministically. One final bounded AI review checks only whether the confirmed minimum baseline is coherent and implementable.
 
-The integration review returns corrections or findings. It must not replace the complete artifact with an unrelated response.
+The integration review returns an `approved` or `blocked` decision bound to the validated artifact hash. Blocking is limited to server-owned codes for an omitted confirmed requirement, conflicting confirmed requirements, a broken essential journey, an unusable required integration, conflicting core data ownership, a required request with no response, required data with no storage, a missing essential security boundary, or an essential data-integrity gap. Every other finding is normalized into a short `non_blocking_coding_time` suggestion and cannot prevent persistence or progression to Phase Manager. A genuine blocked decision is a valid durable MySQL checkpoint, stops before product write, and exposes the exact blocker to the browser. The review must not replace the artifact.
+
+System Architecture generation must describe only essential confirmed boundaries, owners, primary data flows, storage, integrations, and security/data-integrity decisions. File manifests and implementation checklists are concise guides, may be empty when premature, and are expanded during Phase Manager coding work. Refinement changes only affected scope and preserves accepted decisions.
 
 ### Layer 6: Persistence and read-back
 
@@ -515,24 +545,15 @@ Required sequential semantic chunks:
 
 ### System Architecture
 
-Suggested chunks:
-
-- authentication and authorization;
-- web surfaces;
-- Android application;
-- API layer;
-- database;
-- synchronization;
-- background processing;
-- security and operations.
+Use one concise architecture guide unless confirmed scope is too large for a bounded result. Include only required product surfaces, integrations, ownership, persistence, and security/data-integrity boundaries. Do not create components merely to populate architectural categories.
 
 ### UI/UX Design
 
-Chunk by product surface, module, or bounded screen group. Each chunk must preserve routes, states, accessibility, responsive behavior, and upstream traceability.
+Cover only essential confirmed screens and the primary journey. Include relevant routes and states plus baseline accessibility and responsive guidance; defer visual polish and optional secondary flows to coding time.
 
 ### Execution Roadmap
 
-Chunk by module. Prefer one or two bounded model operations per module that produce its phases, tasks, sub-tasks, todos, and implementation resources. Avoid a separate model call for every small hierarchy level when the bounded output can be validated together.
+Use the smallest coherent module and phase count. Keep work packages vertical and concise, use one sub-task and todo when sufficient, and leave optional forms, tables, APIs, background processes, reports, and analytics empty until confirmed scope requires them. Avoid a separate model call for every small hierarchy level when bounded output can be validated together.
 
 ### Coding engine
 
@@ -676,6 +697,7 @@ The transport contract is:
 - every write uses parameterized ADODB SQL inside a checked transaction with audit and direct read-back;
 - the companion receives only a job key over loopback; it claims and completes the matching current-project row through `tools/builderx-ai-job.php`;
 - no phase workflow materializes a request, context, acknowledgement, progress, or result JSON file;
+- the claimed payload is the complete authoritative server read-back. The visible Codex turn must not independently re-query MySQL or inspect project files before returning the stage result through the one pre-approved helper command;
 - browser reload rehydrates from database state, and successful stages remain durable checkpoints;
 - old `context_path` response fields are transitional compatibility aliases whose value is a `mysql:` reference, never a filesystem path.
 
@@ -715,6 +737,9 @@ MySQL stores only the normalized project-relative storage path, original name, M
 - Retry only the failed chunk, normally no more than two or three attempts.
 - Save successful chunks permanently before continuing.
 - Resume from the first incomplete chunk after reload.
+- Do not cache a terminal Planning result whose verified persistence status is `blocked`; the next user run must create a fresh refinement run.
+- Carry the prior bounded integration-review findings into that fresh context so the Coordinator corrects each finding instead of repeating the same architecture.
+- Replace an exhausted failed run with a fresh run while preserving normal same-run retry for failures that still have an available attempt.
 - Allow cancellation between chunks.
 - Cache reusable results by source hash and request version.
 - Reject stale results if upstream data changes.

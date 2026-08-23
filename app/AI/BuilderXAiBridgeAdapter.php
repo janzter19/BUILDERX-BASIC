@@ -180,7 +180,19 @@ final class BuilderXAiBridgeAdapter
         if (($health['ok'] ?? false) !== true || !is_string($workspace) || self::normalizePath($workspace) !== $this->projectRoot) {
             throw new PhaseAiBridgeException('PERMISSION_DENIED', 'The BuilderX AI Bridge is not bound to the current installed project.');
         }
+        $expectedVersion = $this->expectedCompanionVersion();
+        $actualVersion = trim((string) ($health['companion_extension_version'] ?? $health['version'] ?? ''));
+        if ($expectedVersion !== '' && $actualVersion !== $expectedVersion) {
+            $health['extension_version_ready'] = false;
+            $health['ready_to_send'] = false;
+            $health['extension_probe_state'] = 'version_mismatch';
+            $health['extension_probe_message'] = 'Install or reload BuilderX companion ' . $expectedVersion . ' before sending this AI job. Active companion version: ' . ($actualVersion !== '' ? $actualVersion : 'unknown') . '.';
+        }
         if ($requireReady) {
+            if (($health['extension_version_ready'] ?? false) !== true) {
+                $message = trim((string) ($health['extension_probe_message'] ?? '')) ?: 'The BuilderX AI Bridge companion version is not ready.';
+                throw new PhaseAiBridgeException('BRIDGE_UNAVAILABLE', $message);
+            }
             if (($health['active_thread_ready'] ?? false) !== true) {
                 throw new PhaseAiBridgeException('CODEX_CHAT_NOT_READY', 'An active Codex AI Chat for the current project is required.');
             }
@@ -193,6 +205,23 @@ final class BuilderXAiBridgeAdapter
             }
         }
         return $health;
+    }
+
+    private function expectedCompanionVersion(): string
+    {
+        $manifestPath = $this->projectRoot . '/tools/builderx-bridge/builderx-companion.manifest.json';
+        if (!is_file($manifestPath) || !is_readable($manifestPath)) {
+            return '';
+        }
+        try {
+            $manifest = json_decode((string) file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return '';
+        }
+        if (!is_array($manifest)) {
+            return '';
+        }
+        return trim((string) ($manifest['version'] ?? $manifest['companion_version'] ?? ''));
     }
 
     /** @return array<string, mixed> */

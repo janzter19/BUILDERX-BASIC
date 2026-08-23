@@ -349,13 +349,12 @@ final class PhaseAiOrchestrator
         if (!is_array($source) || !is_array($grammar)) {
             throw new RuntimeException('The validation checkpoint upstream context is unavailable.');
         }
-        PhaseBuilderNarrativeCleanupStore::validatePersistedApproval(
+        return PhaseBuilderNarrativeCleanupStore::canonicalizePersistedApproval(
             (string) ($run['draft_key'] ?? ''),
             $result,
             $source,
             $grammar
         );
-        return $result;
     }
 
     /** @param array<string, mixed> $run @param array<string, mixed> $result @return array<string, mixed> */

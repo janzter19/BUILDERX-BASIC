@@ -16,6 +16,7 @@ final class FakeMysqlCompanionTransport implements BuilderXAiBridgeTransport
     /** @var list<array{method: string, path: string, payload: array<string, mixed>|null}> */
     public array $calls = [];
     public bool $ready = true;
+    public string $version = '2.0.5';
 
     public function __construct(public readonly string $workspace)
     {
@@ -28,7 +29,10 @@ final class FakeMysqlCompanionTransport implements BuilderXAiBridgeTransport
             return [
                 'ok' => true,
                 'bridge' => 'BuilderX',
+                'version' => $this->version,
+                'companion_extension_version' => $this->version,
                 'workspace' => $this->workspace,
+                'extension_version_ready' => true,
                 'ready_to_send' => $this->ready,
                 'active_thread_ready' => $this->ready,
                 'active_thread_busy' => false,
@@ -102,6 +106,22 @@ try {
         throw new RuntimeException('The companion readiness or MySQL capability validation failed.');
     }
 
+    $staleTransport = new FakeMysqlCompanionTransport($projectRoot);
+    $staleTransport->version = '2.0.4';
+    $staleAdapter = new BuilderXAiBridgeAdapter($projectRoot, $staleTransport);
+    $staleHealth = $staleAdapter->health(false);
+    $staleRejected = ($staleHealth['ready_to_send'] ?? true) === false
+        && ($staleHealth['extension_version_ready'] ?? true) === false
+        && str_contains((string) ($staleHealth['extension_probe_message'] ?? ''), '2.0.5');
+    try {
+        $staleAdapter->health(true);
+    } catch (PhaseAiBridgeException $expected) {
+        $staleRejected = $staleRejected && $expected->errorCode() === 'BRIDGE_UNAVAILABLE';
+    }
+    if (!$staleRejected) {
+        throw new RuntimeException('The adapter accepted a stale BuilderX companion version.');
+    }
+
     $draftKey = bx_uuid();
     $request = [
         'schema_version' => 'builderx.ai-run.request.v1',
@@ -173,13 +193,25 @@ try {
         'status' => 'approved',
         'database_specialist_approved' => true,
         'draft_key' => $draftKey,
-        'validation' => ['complete' => true, 'meaning_preserved' => true, 'write_allowed' => true],
+        'validation' => ['sections_complete' => true, 'meaning_preserved' => true, 'write_allowed' => true],
         'reason' => 'The bounded result is complete and preserves meaning.',
     ];
     $jobStore->claim($validationJobKey);
     $jobStore->complete($validationJobKey, $approval);
     $orchestrator->assertBridgeBinding($runKey, $projectIdentity, 'validation', $validationJobKey);
-    $orchestrator->complete($runKey, $projectIdentity, 'validation', $approval);
+    $validationRun = $orchestrator->complete($runKey, $projectIdentity, 'validation', $approval);
+    $validationStage = array_values(array_filter(
+        $validationRun['stages'] ?? [],
+        static fn(mixed $stage): bool => is_array($stage) && ($stage['stage_key'] ?? '') === 'validation'
+    ))[0] ?? null;
+    $canonicalApproval = is_array($validationStage) ? ($validationStage['result'] ?? null) : null;
+    if (
+        !is_array($canonicalApproval)
+        || array_keys($canonicalApproval) !== ['role', 'status', 'database_specialist_approved', 'draft_key', 'validation', 'reason']
+        || ($canonicalApproval['validation'] ?? null) !== ['complete' => true, 'meaning_preserved' => true, 'write_allowed' => true]
+    ) {
+        throw new RuntimeException('The server did not replace the drifted validation schema with its canonical approval contract.');
+    }
     $orchestrator->begin($runKey, $projectIdentity, 'persistence', ['draft_key' => $draftKey, 'approved' => true]);
     $complete = $orchestrator->complete($runKey, $projectIdentity, 'persistence', ['status' => 'saved', 'draft_key' => $draftKey, 'corrected_sections' => $source, 'change_history' => []]);
     if (($complete['status'] ?? '') !== 'SUCCEEDED') {
@@ -225,6 +257,8 @@ try {
         'job_identity_dispatch_verified' => true,
         'result_read_back_verified' => true,
         'progress_read_back_verified' => true,
+        'companion_version_mismatch_rejected' => true,
+        'server_owned_validation_verified' => true,
         'coding_mode_verified' => true,
         'manual_workspace_path_required' => false,
         'filesystem_result_transport_used' => false,

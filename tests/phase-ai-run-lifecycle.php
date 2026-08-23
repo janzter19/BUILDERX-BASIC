@@ -47,9 +47,17 @@ try {
         'status' => 'approved',
         'database_specialist_approved' => true,
         'draft_key' => $draftKey,
-        'validation' => ['complete' => true, 'meaning_preserved' => true, 'write_allowed' => true],
         'reason' => 'Disposable lifecycle validation passed.',
     ];
+    $canonicalApproval = BuilderX\AI\PhaseBuilderNarrativeCleanupStore::canonicalizePersistedApproval(
+        $draftKey,
+        $approvalCheckpoint,
+        $request['source_snapshot'],
+        $grammarCheckpoint
+    );
+    if (($canonicalApproval['validation'] ?? null) !== ['complete' => true, 'meaning_preserved' => true, 'write_allowed' => true]) {
+        throw new RuntimeException('The server-owned narrative validation contract was not derived from persisted checkpoints.');
+    }
     $validatedSections = BuilderX\AI\PhaseBuilderNarrativeCleanupStore::validatePersistedApproval(
         $draftKey,
         $approvalCheckpoint,
@@ -221,6 +229,40 @@ try {
     if (!$retryLimitRejected) {
         throw new RuntimeException('The stage retry limit was not enforced.');
     }
+    $replacementRetryRun = $store->start('PLANNING', 'narrative_cleanup', $retryDraftKey, null, $projectIdentity, bin2hex(random_bytes(16)), $retryRequest, $testUserKey);
+    $replacementRetryRunKey = (string) ($replacementRetryRun['run_key'] ?? '');
+    $runKeys[] = $replacementRetryRunKey;
+    if ($replacementRetryRunKey === '' || $replacementRetryRunKey === $retryRunKey || ($replacementRetryRun['status'] ?? '') !== 'QUEUED') {
+        throw new RuntimeException('An exhausted failed run prevented a fresh retry run from being created.');
+    }
+
+    $refinementDraftKey = bx_uuid();
+    $refinementRequest = [
+        'schema_version' => 'builderx.ai-run.request.v1',
+        'route_key' => 'phases:builder',
+        'workflow_key' => 'system_architecture',
+        'draft_key' => $refinementDraftKey,
+        'phase_key' => null,
+        'semantic_chunk_key' => 'architecture_contract',
+        'source_hashes' => ['requirements_hash' => hash('sha256', 'refinement-requirements')],
+        'context_checkpoint' => ['context_id' => bx_uuid(), 'context_ref' => 'mysql:test', 'bytes' => 1, 'sha256' => hash('sha256', 'x')],
+    ];
+    $blockedRun = $store->start('PLANNING', 'system_architecture', $refinementDraftKey, null, $projectIdentity, bin2hex(random_bytes(16)), $refinementRequest, $testUserKey);
+    $blockedRunKey = (string) ($blockedRun['run_key'] ?? '');
+    $runKeys[] = $blockedRunKey;
+    foreach (['context', 'analysis', 'integration_review', 'persistence'] as $stage) {
+        $store->checkpoint($blockedRunKey, $projectIdentity, $stage, 'RUNNING', ['stage' => $stage], null, null, null, null);
+        $result = $stage === 'persistence'
+            ? ['schemaVersion' => 'builderx.ai-persistence.v1', 'workflowKey' => 'system_architecture', 'status' => 'blocked']
+            : ['stage' => $stage, 'verified' => true];
+        $store->checkpoint($blockedRunKey, $projectIdentity, $stage, 'SUCCEEDED', null, $result, 'test-' . $stage, null, null);
+    }
+    $refinementRun = $store->start('PLANNING', 'system_architecture', $refinementDraftKey, null, $projectIdentity, bin2hex(random_bytes(16)), $refinementRequest, $testUserKey);
+    $refinementRunKey = (string) ($refinementRun['run_key'] ?? '');
+    $runKeys[] = $refinementRunKey;
+    if ($refinementRunKey === '' || $refinementRunKey === $blockedRunKey || ($refinementRun['status'] ?? '') !== 'QUEUED') {
+        throw new RuntimeException('A blocked Planning result was cached instead of creating a refinement run.');
+    }
 
     $cancelDraftKey = bx_uuid();
     $cancelRequest = $request;
@@ -292,6 +334,8 @@ try {
         'strict_transition_rejected' => true,
         'duplicate_running_claim_rejected' => true,
         'retry_limit_rejected' => true,
+        'exhausted_failure_replaced' => true,
+        'blocked_planning_result_refinable' => true,
         'engine_boundary_rejected' => true,
         'idempotency_conflict_rejected' => true,
         'terminal_mutation_rejected' => true,
