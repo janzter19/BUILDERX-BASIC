@@ -17,10 +17,10 @@ Use this skill for modal and dialog work in the BuilderX React/shadcn interface.
 - When the body uses uniform padding, extend the opaque sticky tab-header surface through the top padding so the menu meets the dialog header without a visual gap.
 - Give the scrollable body uniform padding, normally `p-6`. The first and last body content must have the same inset as the left and right content; do not use asymmetric `px-*`/`py-*` spacing for the final layout.
 - The shared `DialogFooter` has default negative margins and default `sm:justify-end`. When the dialog uses `DialogContent` with `p-0`, explicitly override it with `m-0 w-full rounded-none`; when the footer needs a left label and right action, explicitly include `sm:justify-between`.
-- Operational controls belong in the scrollable body. The footer must contain only the persistent footer label/status and the explicit Close/Cancel action unless the user specifically requests a submit action there.
-- Keep the footer label anchored left and the Close/Cancel action anchored right on desktop. Allow intentional stacking on narrow screens only when side-by-side controls would clip or overflow.
+- Operational controls belong in the scrollable body. For form modals, the footer must contain only the persistent footer label/status and the primary submit action. Do not add a footer Cancel button; use the header close control and Escape for dismissal.
+- Keep the footer label anchored left and the primary action anchored right on desktop. Allow intentional stacking on narrow screens only when side-by-side controls would clip or overflow.
 - Do not put a bordered `Card` inside a bordered dialog or another bordered box. Use spacing, typography, separators, or a different background surface for internal grouping.
-- Keep action labels explicit. Use a clear primary action, a secondary cancel/close action, and inline validation or error text near the field that needs attention.
+- Keep action labels explicit. Use a clear primary action and inline validation or error text near the field that needs attention.
 - Preserve the existing route, state, and persistence behavior. A visual modal change must not silently change the underlying CRUD or form contract.
 
 ## Required verification checklist
@@ -30,7 +30,7 @@ Use this skill for modal and dialog work in the BuilderX React/shadcn interface.
 - Test long content and confirm only the body scrolls while header and footer remain visible.
 - Test narrow/mobile widths and confirm equal body insets, no clipped controls, and no horizontal overflow.
 - Confirm the last body object has bottom spacing equal to the body’s other insets and the footer aligns to the same content edges.
-- Confirm footer label is on the left and Close/Cancel is on the right at desktop widths.
+- Confirm footer label is on the left and the primary action is on the right at desktop widths. For form modals, confirm there is no footer Cancel button.
 - Test validation errors, cancel, submit, and pending/disabled action states where applicable.
 - Confirm there are no nested bordered boxes, inherited negative-margin surprises, console errors, or accidental page-scroll regressions.
 - Run the relevant route check and frontend build after implementation.

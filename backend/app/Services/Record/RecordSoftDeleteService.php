@@ -15,6 +15,7 @@ final class RecordSoftDeleteService
         private readonly BackendTableResolver $tableResolver,
         private readonly TableSchemaBuilder $schemaBuilder = new TableSchemaBuilder(),
         private readonly RecordIndexService|null $recordIndexService = null,
+        private readonly RecordTenantPersistence|null $tenantPersistence = null,
     ) {
     }
 
@@ -23,28 +24,25 @@ final class RecordSoftDeleteService
         $registry = $this->tableResolver->resolveByDataRecordKey($dataRecordKey);
         $tableName = (string) $registry['record_table_name'];
 
-        $this->db->begin_transaction();
-        try {
+        $this->tenantPersistence()->afterCommitReadBack(function () use ($tableName, $registry, $userKey, $recordKey): void {
+            [$where, $tenantTypes, $tenantParams] = $this->tenantPersistence()->tenantScopedActiveWhere($registry);
             $stmt = $this->db->prepare(
                 'UPDATE ' . $this->schemaBuilder->quoteIdentifier($tableName)
-                . " SET record_status = 'DELETED', deleted_at = CURRENT_TIMESTAMP, deleted_by_key = ?, updated_by_key = ? WHERE record_key = ? AND record_status <> 'DELETED'"
+                . " SET record_status = 'DELETED', deleted_at = CURRENT_TIMESTAMP, deleted_by_key = ?, updated_by_key = ? WHERE record_key = ? AND " . $where
             );
             if (!$stmt) {
                 throw new RuntimeException($this->db->error);
             }
 
-            $stmt->bind_param('sss', $userKey, $userKey, $recordKey);
+            $params = [$userKey, $userKey, $recordKey, ...$tenantParams];
+            $stmt->bind_param('sss' . $tenantTypes, ...$params);
             $stmt->execute();
             if ($stmt->affected_rows < 1) {
                 throw new RuntimeException('Record soft delete did not affect an active row.');
             }
 
             ($this->recordIndexService ?? new RecordIndexService($this->db))->markStatus($recordKey, 'DELETED');
-            $this->db->commit();
-        } catch (\Throwable $error) {
-            $this->db->rollback();
-            throw $error;
-        }
+        }, fn (): array => $this->tenantPersistence()->readDeletedRecord($tableName, $recordKey, $registry));
     }
 
     public function restore(string $dataRecordKey, string $recordKey, ?string $userKey = null): void
@@ -52,27 +50,29 @@ final class RecordSoftDeleteService
         $registry = $this->tableResolver->resolveByDataRecordKey($dataRecordKey);
         $tableName = (string) $registry['record_table_name'];
 
-        $this->db->begin_transaction();
-        try {
+        $this->tenantPersistence()->afterCommitReadBack(function () use ($tableName, $registry, $userKey, $recordKey): void {
+            [$tenantSql, $tenantTypes, $tenantParams] = $this->tenantPersistence()->tenantPredicate($registry);
             $stmt = $this->db->prepare(
                 'UPDATE ' . $this->schemaBuilder->quoteIdentifier($tableName)
-                . " SET record_status = 'ACTIVE', deleted_at = NULL, deleted_by_key = NULL, updated_by_key = ? WHERE record_key = ? AND record_status = 'DELETED'"
+                . " SET record_status = 'ACTIVE', deleted_at = NULL, deleted_by_key = NULL, updated_by_key = ? WHERE record_key = ? AND record_status = 'DELETED' AND " . $tenantSql
             );
             if (!$stmt) {
                 throw new RuntimeException($this->db->error);
             }
 
-            $stmt->bind_param('ss', $userKey, $recordKey);
+            $params = [$userKey, $recordKey, ...$tenantParams];
+            $stmt->bind_param('ss' . $tenantTypes, ...$params);
             $stmt->execute();
             if ($stmt->affected_rows < 1) {
                 throw new RuntimeException('Record restore did not affect a deleted row.');
             }
 
             ($this->recordIndexService ?? new RecordIndexService($this->db))->markStatus($recordKey, 'ACTIVE');
-            $this->db->commit();
-        } catch (\Throwable $error) {
-            $this->db->rollback();
-            throw $error;
-        }
+        }, fn (): array => $this->tenantPersistence()->readActiveRecord($tableName, $recordKey, $registry));
+    }
+
+    private function tenantPersistence(): RecordTenantPersistence
+    {
+        return $this->tenantPersistence ?? new RecordTenantPersistence($this->db, $this->schemaBuilder);
     }
 }

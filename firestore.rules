@@ -1,0 +1,109 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasProject(projectKey) {
+      return signedIn()
+        && request.auth.token.projects is list
+        && projectKey in request.auth.token.projects;
+    }
+
+    function hasGroup(groupKey) {
+      return signedIn()
+        && request.auth.token.groups is list
+        && groupKey in request.auth.token.groups;
+    }
+
+    function canReadMessenger(resourceData) {
+      return hasProject(resourceData.project_key) && hasGroup(resourceData.group_key);
+    }
+
+    function hasOnlyMessengerChatFields() {
+      return request.resource.data.keys().hasOnly([
+        'chat_key',
+        'project_key',
+        'group_key',
+        'reply_to_chat_key',
+        'sender_user_key',
+        'sender_name',
+        'message_text',
+        'message_type',
+        'message_status',
+        'removed_at',
+        'firebase_collection',
+        'mysql_created_at',
+        'mysql_updated_at',
+        'mysql_sync_status',
+        'mysql_sync_error',
+        'mysql_synced_at',
+        'server_synced_at',
+        'created_at',
+        'updated_at'
+      ]);
+    }
+
+    function hasOnlyMessengerAttachmentFields() {
+      return request.resource.data.keys().hasOnly([
+        'attachment_key',
+        'chat_key',
+        'project_key',
+        'group_key',
+        'uploaded_image_url',
+        'image_original_name',
+        'image_mime_type',
+        'image_byte_size',
+        'image_sha256',
+        'sort_order',
+        'attachment_status',
+        'firebase_collection',
+        'mysql_created_at',
+        'mysql_sync_status',
+        'mysql_sync_error',
+        'mysql_synced_at',
+        'server_synced_at',
+        'created_at'
+      ]);
+    }
+
+    function canCreateMessenger(resourceData) {
+      return hasProject(resourceData.project_key)
+        && hasGroup(resourceData.group_key)
+        && resourceData.message_status == 'ACTIVE'
+        && resourceData.sender_user_key == request.auth.token.user_key
+        && resourceData.chat_key is string
+        && resourceData.project_key is string
+        && resourceData.group_key is string
+        && resourceData.sender_name is string
+        && resourceData.message_text is string;
+    }
+
+    match /project_messenger_chat/{chatKey} {
+      allow read: if canReadMessenger(resource.data);
+      allow create: if signedIn()
+        && hasOnlyMessengerChatFields()
+        && request.resource.data.chat_key == chatKey
+        && canCreateMessenger(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /project_messenger_chat_attachment/{attachmentKey} {
+      allow read: if canReadMessenger(resource.data);
+      allow create: if signedIn()
+        && hasOnlyMessengerAttachmentFields()
+        && request.resource.data.attachment_key == attachmentKey
+        && hasProject(request.resource.data.project_key)
+        && hasGroup(request.resource.data.group_key)
+        && request.resource.data.attachment_status == 'ACTIVE'
+        && request.resource.data.uploaded_image_url is string;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

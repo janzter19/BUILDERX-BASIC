@@ -1,17 +1,32 @@
 import React from 'react'
 import { createPortal } from 'react-dom'
+import { initializeApp, getApps, type FirebaseOptions } from 'firebase/app'
+import {
+  collection,
+  doc,
+  getFirestore,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  where,
+  type Firestore,
+} from 'firebase/firestore'
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   ArrowUpRight,
   Archive,
   Ban,
+  BedDouble,
   Bell,
   BookOpen,
   Building2,
   Camera,
-  Car,
   ClipboardList,
+  Clock3,
   Circle,
   CheckCircle2,
   ChevronDown,
@@ -27,22 +42,23 @@ import {
   FolderKanban,
   Frame,
   GalleryVerticalEnd,
-  GraduationCap,
   GripVertical,
   ImagePlus,
   KeyRound,
   LayoutDashboard,
+  Link2,
   LogIn,
   LockKeyhole,
   LoaderCircle,
   MessageCircle,
+  Milestone,
   Monitor,
   MousePointer2,
-  MoreHorizontal,
+  Network,
   Moon,
+  Palette,
   Pencil,
   PenLine,
-  PieChart,
   Play,
   Plus,
   RotateCcw,
@@ -51,14 +67,19 @@ import {
   Send,
   Settings,
   ShieldCheck,
+  Signpost,
+  Smile,
   Sparkles,
   Square,
+  Stethoscope,
   Sun,
   TerminalSquare,
   TestTube2,
   Trash2,
   Undo2,
   Upload,
+  UserPlus,
+  UserRound,
   Users,
   Workflow,
   Wrench,
@@ -82,6 +103,7 @@ import {
   AvatarFallback,
   AvatarImage,
 } from '@/components/ui/avatar'
+import emptyUserAvatarUrl from '@/assets/user-empty-avatar.svg'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -138,7 +160,6 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -194,6 +215,8 @@ type Flash = {
   message: string
   type: string
   details?: string
+  lifecycleStatus?: string
+  lifecycleSteps?: Array<{ label?: string; status?: string; detail?: string }>
 } | null
 
 type OneFlowEvent = {
@@ -259,7 +282,18 @@ type AdminPayload = {
   softwareName: string
   projectBasePath: string
   projectRoot: string
+  sharinganEnabled?: boolean
   templatePresets: Array<Record<string, string>>
+  bedMasterListSummary?: Record<string, any> | null
+  bedLookupFilters?: Record<string, string>
+  bedLookupOptions?: Record<string, Record<string, any>>
+  bedLookupRows?: Array<Record<string, any>>
+  bedTreatments?: Array<Record<string, any>>
+  bedSources?: Array<Record<string, any>>
+  projectTasks?: Array<Record<string, any>>
+  projectTaskStages?: Array<Record<string, any>>
+  projectTaskStageResponses?: Array<Record<string, any>>
+  taskBuilderSelectedTaskKey?: string
   flash: Flash
   hasUsers: boolean
   isSignedIn: boolean
@@ -268,7 +302,9 @@ type AdminPayload = {
   initialState?: Record<string, unknown>
   user: { key: string; name: string; login: string; email: string } | null
   metrics: Record<string, number>
+  managementReadiness?: Array<Record<string, any>>
   users: Array<Record<string, string>>
+  positions: Array<Record<string, string>>
   branches: Array<Record<string, string>>
   projects: Array<Record<string, string>>
   forms: Array<Record<string, string>>
@@ -282,13 +318,6 @@ type AdminPayload = {
   auditFilters: Record<string, string>
   audits: Array<Record<string, string | null>>
   loginHistory: Array<Record<string, string | null>>
-  familyReport: {
-    allowed: boolean
-    filters: Record<string, string>
-    summary: Record<string, number>
-    rows: Array<Record<string, any>>
-    pagination: Record<string, number>
-  }
   runtimeHealth: Record<string, any> | null
 }
 
@@ -300,6 +329,7 @@ type PhasePayload = {
   isAdmin?: boolean
   isAuthenticated?: boolean
   requiresLogin?: boolean
+  sharinganEnabled?: boolean
   user?: { user_name?: string; user_email?: string } | null
   projectRoot?: string
   activeView: 'phases' | 'settings' | 'flow' | 'data-structure' | 'data-structure-v2' | 'ai-flow' | 'ai-operation' | 'narrative-draft'
@@ -324,6 +354,8 @@ type PhasePayload = {
   phaseBuilderExecutionRoadmap?: Record<string, any> | null
   phaseBuilderExecutionRoadmapProgress?: Record<string, boolean>
   phaseBuilderExecutionRoadmapStages?: Record<string, any>
+  phaseBuilderTodoExecutionStatus?: Record<string, Record<string, any>>
+  bedMasterListSummary?: Record<string, any> | null
   phaseBuilderLatestAiRun?: Record<string, any> | null
   phaseBuilderLatestRequirementsAiRun?: Record<string, any> | null
   narrativeRevision?: Record<string, any>
@@ -352,16 +384,33 @@ type PhasePayload = {
   }
 }
 
+type PortalRouteKey = 'dashboard' | 'bed-management'
+
 type PortalPayload = {
   csrf: string
   softwareName: string
   projectBasePath: string
   portalMode?: 'product' | 'starter' | string
+  portalView?: PortalRouteKey | string
   hasAdministrator: boolean
   isAdmin: boolean
+  sharinganEnabled?: boolean
+  bedMasterListSummary?: Record<string, any> | null
+  bedLookupFilters?: Record<string, string>
+  bedLookupOptions?: Record<string, Record<string, any>>
+  bedLookupRows?: Array<Record<string, any>>
+  bedTreatments?: Array<Record<string, any>>
+  bedSources?: Array<Record<string, any>>
+  projectTasks?: Array<Record<string, any>>
+  projectGroups?: Array<Record<string, any>>
+  messengerSenderKey?: string
+  firebaseConfig?: Record<string, any>
+  mediaUploaderTargetUrl?: string
+  mediaImageViewerUrl?: string
   flash: Flash
   currentUser: Record<string, any> | null
   familyMembers: Array<Record<string, any>>
+  operationalWorkspace?: Record<string, any>
 }
 
 declare global {
@@ -375,7 +424,6 @@ declare global {
 const data = window.__BUILDERX_ADMIN__
 const phaseData = window.__BUILDERX_PHASES__
 const portalData = window.__BUILDERX_PORTAL__
-const projectPublicPath = (phaseData?.projectBasePath || data?.projectBasePath || portalData?.projectBasePath || '/').replace(/\/?$/, '/')
 const uiUxFlowPayloadUpdatedEvent = 'builderx:ui-ux-flow-payload-updated'
 
 type CodexHandoff = {
@@ -481,7 +529,7 @@ function loginSettingValue(name: string, fallback = ''): string {
   return settingValue(`login_${name}`, fallback)
 }
 
-const adminViewKeys = ['dashboard', 'family-reports', 'users', 'groups', 'roles', 'permissions', 'branches', 'projects', 'settings', 'audit', 'health', 'template']
+const adminViewKeys = ['dashboard', 'users', 'positions', 'groups', 'roles', 'permissions', 'branches', 'projects', 'settings', 'bed-management', 'bed-lookup', 'bed-treatment', 'bed-source', 'task-builder', 'audit', 'health', 'template']
 
 const tabs = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -505,15 +553,30 @@ type SettingSection = {
   names: string[]
 }
 
+type SettingRecord = Record<string, string>
+
+type ResolvedSettingSection = SettingSection & {
+  settings: SettingRecord[]
+}
+
 const preferredSettingGroupOrder = [
   'application',
+  'android',
   'contact',
   'general',
   'interface',
   'localization',
   'login',
   'security',
+  'media',
   'debug',
+]
+
+const settingMenuGroupDefinitions = [
+  { label: 'Core', labelClassName: 'text-sky-600 dark:text-sky-300', groups: ['general', 'application', 'localization', 'contact'] },
+  { label: 'Access', labelClassName: 'text-amber-600 dark:text-amber-300', groups: ['interface', 'login', 'security'] },
+  { label: 'Mobile', labelClassName: 'text-emerald-600 dark:text-emerald-300', groups: ['android', 'media', 'firebase'] },
+  { label: 'Operations', labelClassName: 'text-violet-600 dark:text-violet-300', groups: ['debug', 'ai'] },
 ]
 
 const settingSections: Record<string, SettingSection[]> = {
@@ -522,6 +585,28 @@ const settingSections: Record<string, SettingSection[]> = {
       title: 'Application Paths',
       description: 'Base URL and route paths used by generated links.',
       names: ['app_url', 'public_path', 'admin_path', 'system_path'],
+    },
+  ],
+  android: [
+    {
+      title: 'Tenant Bootstrap',
+      description: 'Android package and tenant configuration endpoint used before the app opens tenant-bound screens.',
+      names: ['android_app_package_name', 'android_tenant_configuration_endpoint_url'],
+    },
+    {
+      title: 'Release Gates',
+      description: 'Version and release controls checked before tenant mutation sync is allowed.',
+      names: ['android_current_version_code', 'android_min_supported_version_code', 'android_force_update_enabled', 'android_release_acknowledgement_required', 'android_geofence_required'],
+    },
+    {
+      title: 'Release Assets',
+      description: 'APK update source and first-install splash image links used by the Android app.',
+      names: ['android_update_apk_download_path', 'android_splash_screen_image_url_1', 'android_splash_screen_image_url_2', 'android_splash_screen_image_url_3', 'android_splash_screen_image_url_4'],
+    },
+    {
+      title: 'Offline And Sync',
+      description: 'Android cache, retry, media, and dashboard refresh defaults for tenant-bound operation.',
+      names: ['android_offline_queue_enabled', 'android_offline_retry_interval_seconds', 'android_dashboard_refresh_seconds', 'android_media_upload_enabled'],
     },
   ],
   contact: [
@@ -548,6 +633,11 @@ const settingSections: Record<string, SettingSection[]> = {
       title: 'Navigation Defaults',
       description: 'Default screen choices applied when administrators open the portal.',
       names: ['admin_default_tab'],
+    },
+    {
+      title: 'Surface Features',
+      description: 'Administrator-owned feature switches shared by product surfaces.',
+      names: ['sharingan_enabled'],
     },
   ],
   localization: [
@@ -611,6 +701,18 @@ const settingSections: Record<string, SettingSection[]> = {
       names: ['password_reset_token_minutes', 'account_recovery_2fa_policy', 'account_recovery_email_delivery'],
     },
   ],
+  media: [
+    {
+      title: 'Media Endpoints',
+      description: 'Uploader posts media files to the upload target. The upload response must return the full uploaded image URL.',
+      names: ['media_uploader_target_url'],
+    },
+    {
+      title: 'Image Viewer',
+      description: 'Viewer URL used to open uploaded images. Include the url marker or query parameter where the uploaded image URL should be applied.',
+      names: ['media_image_viewer_url'],
+    },
+  ],
   debug: [
     {
       title: 'Visibility',
@@ -627,7 +729,6 @@ const settingSections: Record<string, SettingSection[]> = {
 
 const sidebarSections = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { key: 'family-reports', label: 'Family Reports', icon: FileBarChart },
   {
     key: 'platform',
     label: 'Platform',
@@ -637,6 +738,34 @@ const sidebarSections = [
       { key: 'groups', label: 'Groups' },
       { key: 'roles', label: 'Roles' },
       { key: 'permissions', label: 'Permissions' },
+    ],
+  },
+  {
+    key: 'project-group',
+    label: 'Project',
+    icon: FolderKanban,
+    items: [
+      { key: 'branches', label: 'Branches' },
+      { key: 'projects', label: 'Projects' },
+    ],
+  },
+  {
+    key: 'bed-management-group',
+    label: 'Bed Management',
+    icon: Building2,
+    items: [
+      { key: 'bed-management', label: 'Analytics' },
+      { key: 'bed-lookup', label: 'Bed Lookup' },
+      { key: 'bed-treatment', label: 'Bed Treatment', icon: Stethoscope },
+      { key: 'bed-source', label: 'Bed Source', icon: Signpost },
+    ],
+  },
+  {
+    key: 'task-manager-group',
+    label: 'Task Manager',
+    icon: ClipboardList,
+    items: [
+      { key: 'task-builder', label: 'Task Builder' },
     ],
   },
   {
@@ -652,15 +781,11 @@ const sidebarSections = [
   },
 ]
 
-const projectSidebarSections = [
-  { key: 'branches', label: 'Branches', icon: Frame },
-  { key: 'projects', label: 'Projects', icon: PieChart },
-]
-
 function SubmissionFeedback({ flash }: { flash: Flash }) {
   const [open, setOpen] = React.useState(false)
   const [showDetails, setShowDetails] = React.useState(false)
   const isSuccess = flash?.type === 'success'
+  const lifecycleSteps = Array.isArray(flash?.lifecycleSteps) ? flash.lifecycleSteps.filter((step) => String(step?.label || '').trim() !== '') : []
 
   React.useEffect(() => {
     if (!flash?.message) {
@@ -675,9 +800,30 @@ function SubmissionFeedback({ flash }: { flash: Flash }) {
 
     const timer = window.setTimeout(() => setOpen(false), 3500)
     return () => window.clearTimeout(timer)
-  }, [flash?.message, flash?.type, flash?.details, isSuccess])
+  }, [flash?.message, flash?.type, flash?.details, flash?.lifecycleStatus, isSuccess])
 
   if (!flash?.message) return null
+
+  const lifecycleContent = lifecycleSteps.length > 0 ? (
+    <ol className="mt-3 grid gap-2 text-xs">
+      {lifecycleSteps.map((step, index) => {
+        const status = String(step.status || 'complete')
+        const isBlocked = ['blocked', 'failed', 'rolled_back'].includes(status)
+        const isQueued = ['queued', 'pending', 'not_started'].includes(status)
+        return (
+          <li key={`${String(step.label)}-${index}`} className="flex items-start gap-2">
+            <span className={cn('mt-0.5 shrink-0', isBlocked ? 'text-destructive' : isQueued ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400')} aria-hidden="true">
+              {isBlocked ? <AlertTriangle className="size-3.5" /> : isQueued ? <Clock3 className="size-3.5" /> : <CheckCircle2 className="size-3.5" />}
+            </span>
+            <span className="min-w-0">
+              <span className="font-medium">{String(step.label)}</span>
+              {step.detail ? <span className="block leading-5 text-muted-foreground">{String(step.detail)}</span> : null}
+            </span>
+          </li>
+        )
+      })}
+    </ol>
+  ) : null
 
   return (
     <>
@@ -685,9 +831,10 @@ function SubmissionFeedback({ flash }: { flash: Flash }) {
         <div
           role="status"
           aria-live="polite"
-          className="fixed right-4 top-20 z-[80] max-w-md rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700 shadow-lg dark:border-green-900/60 dark:bg-green-950 dark:text-green-300"
+          className="fixed right-4 top-20 z-[80] max-w-md rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700 shadow-lg dark:border-green-900/60 dark:bg-green-950 dark:text-green-300"
         >
-          {flash.message}
+          <p className="font-medium">{flash.message}</p>
+          {lifecycleContent}
         </div>
       ) : null}
       {!isSuccess ? (
@@ -696,6 +843,9 @@ function SubmissionFeedback({ flash }: { flash: Flash }) {
             <AlertDialogHeader>
               <AlertDialogTitle>Submission failed</AlertDialogTitle>
               <AlertDialogDescription>{flash.message}</AlertDialogDescription>
+              <div role="alert" aria-live="assertive">
+                {lifecycleContent}
+              </div>
               {flash.details ? (
                 <div className="mt-3 rounded-md bg-muted/60 p-3 text-left">
                   <Button
@@ -757,6 +907,1641 @@ function AdminSidebarMobilePersistence({ defaultOpen }: { defaultOpen: boolean }
   return null
 }
 
+function MessengerHeaderButton({ onOpen = () => {}, unreadCount = 0 }: { onOpen?: () => void; unreadCount?: number }) {
+  const displayCount = Math.min(Math.max(unreadCount, 0), 99)
+  const notificationLabel = displayCount > 0 ? `${displayCount} unread Messenger message${displayCount === 1 ? '' : 's'}` : 'Open Messenger'
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            aria-label={notificationLabel}
+            onClick={onOpen}
+            className="relative"
+          />
+        }
+      >
+        <MessageCircle />
+        {displayCount > 0 ? (
+          <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-4 text-destructive-foreground shadow-sm">
+            {displayCount}
+          </span>
+        ) : null}
+      </TooltipTrigger>
+      <TooltipContent>{notificationLabel}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function HeaderControlSeparator() {
+  return <Separator orientation="vertical" className="hidden data-vertical:h-4 sm:block" />
+}
+
+const messengerOpenStorageKey = 'builderx:messenger:open'
+const messengerSelectedGroupStorageKey = 'builderx:messenger:selectedProjectGroup'
+const messengerUnreadStorageKey = 'builderx:messenger:unread'
+const messengerLastSeenChatStorageKey = 'builderx:messenger:lastSeenChat'
+const messengerMessageReceivedEvent = 'builderx:messenger-message-received'
+const messengerPageSize = 20
+const messengerEmojiChoices = ['😀', '😂', '😍', '👍', '🙏', '❤️', '🔥', '🎉', '😮', '😢', '😡', '✅']
+const messengerReactionChoices = ['👍', '❤️', '😂', '😮', '😢', '🙏']
+
+type MessengerMessageSide = 'me' | 'them'
+type MessengerAttachment = {
+  id: string
+  file?: File
+  previewUrl: string
+  uploaded_image_url?: string
+  image_original_name?: string
+  image_mime_type?: string
+  image_byte_size?: number
+  image_sha256?: string
+  uploading?: boolean
+  error?: string
+}
+
+type MessengerMessage = {
+  id: string
+  chat_key?: string
+  project_key?: string
+  group_key?: string
+  conversation_type?: 'group' | 'direct' | string
+  direct_recipient_user_key?: string
+  sender_user_key?: string
+  sender_name?: string
+  side: MessengerMessageSide
+  text: string
+  message_type?: string
+  message_status?: 'ACTIVE' | 'REMOVED' | string
+  created_at?: string
+  attachments?: MessengerAttachment[]
+  reply?: {
+    chat_key: string
+    sender_name: string
+    message_text: string
+    message_status: string
+  } | null
+  reply_to_chat_key?: string
+  firebase_sync_status?: string
+  reactions?: MessengerReaction[]
+}
+
+type MessengerReaction = {
+  reaction_value: string
+  reaction_count: number
+  reacted_by_me: boolean
+}
+
+type MessengerStreamServiceStatus = {
+  running: boolean | null
+  status: string
+  label: string
+  detail: string
+  service?: string
+  configured?: boolean
+  unit_installed?: boolean
+  checked_at?: string
+}
+
+type MessengerGroupMember = {
+  user_key: string
+  user_login?: string
+  user_name: string
+  user_chat_name?: string
+  user_avatar_path?: string
+  user_status?: string
+}
+
+function messengerLocationKey(): string {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.pathname}${window.location.search}`
+}
+
+function readMessengerOpenState(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    const raw = window.localStorage.getItem(messengerOpenStorageKey)
+    if (!raw) return false
+    const parsed = JSON.parse(raw) as { open?: boolean; location?: string }
+    return parsed.open === true && parsed.location === messengerLocationKey()
+  } catch {
+    return false
+  }
+}
+
+function writeMessengerOpenState(open: boolean) {
+  try {
+    if (typeof window === 'undefined') return
+    if (open) window.localStorage.setItem(messengerOpenStorageKey, JSON.stringify({ open: true, location: messengerLocationKey() }))
+    else window.localStorage.removeItem(messengerOpenStorageKey)
+  } catch {
+    // Blocked storage should not break the layout control.
+  }
+}
+
+function readMessengerUnreadCount(): number {
+  try {
+    if (typeof window === 'undefined') return 0
+    const value = Number.parseInt(window.localStorage.getItem(messengerUnreadStorageKey) || '0', 10)
+    return Number.isFinite(value) && value > 0 ? value : 0
+  } catch {
+    return 0
+  }
+}
+
+function writeMessengerUnreadCount(count: number) {
+  try {
+    if (typeof window === 'undefined') return
+    const nextCount = Math.max(0, Math.floor(count))
+    if (nextCount > 0) window.localStorage.setItem(messengerUnreadStorageKey, String(nextCount))
+    else window.localStorage.removeItem(messengerUnreadStorageKey)
+  } catch {
+    // Blocked storage should not break notification display.
+  }
+}
+
+function readMessengerLastSeenChatKey(): string {
+  try {
+    if (typeof window === 'undefined') return ''
+    return window.localStorage.getItem(messengerLastSeenChatStorageKey) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeMessengerLastSeenChatKey(chatKey: string) {
+  try {
+    if (typeof window === 'undefined') return
+    if (chatKey) window.localStorage.setItem(messengerLastSeenChatStorageKey, chatKey)
+  } catch {
+    // Blocked storage should not break notification polling.
+  }
+}
+
+function playTemporaryMessengerDing() {
+  try {
+    if (typeof window === 'undefined') return
+    type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext
+    const audioWindow = window as unknown as {
+      AudioContext?: BrowserAudioContextConstructor
+      webkitAudioContext?: BrowserAudioContextConstructor
+    }
+    const AudioContextClass = audioWindow.AudioContext || audioWindow.webkitAudioContext
+    if (!AudioContextClass) return
+    const context = new AudioContextClass()
+    const gain = context.createGain()
+    const firstTone = context.createOscillator()
+    const secondTone = context.createOscillator()
+    const startAt = context.currentTime
+
+    gain.connect(context.destination)
+    gain.gain.setValueAtTime(0.0001, startAt)
+    gain.gain.exponentialRampToValueAtTime(0.06, startAt + 0.015)
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.42)
+
+    firstTone.type = 'sine'
+    firstTone.frequency.setValueAtTime(880, startAt)
+    firstTone.frequency.exponentialRampToValueAtTime(660, startAt + 0.18)
+    firstTone.connect(gain)
+    firstTone.start(startAt)
+    firstTone.stop(startAt + 0.2)
+
+    secondTone.type = 'sine'
+    secondTone.frequency.setValueAtTime(1174.66, startAt + 0.12)
+    secondTone.frequency.exponentialRampToValueAtTime(880, startAt + 0.34)
+    secondTone.connect(gain)
+    secondTone.start(startAt + 0.12)
+    secondTone.stop(startAt + 0.42)
+
+    window.setTimeout(() => void context.close().catch(() => {}), 700)
+  } catch {
+    // Notification sound is best-effort and can be blocked by browser policy.
+  }
+}
+
+function useMessengerNotifications(messengerOpen: boolean, enabled = true) {
+  const [unreadCount, setUnreadCount] = React.useState(readMessengerUnreadCount)
+
+  const clearUnread = React.useCallback(() => {
+    writeMessengerUnreadCount(0)
+    setUnreadCount(0)
+  }, [])
+
+  const handleReceived = React.useCallback(() => {
+    playTemporaryMessengerDing()
+    if (readMessengerOpenState()) return
+    setUnreadCount((current) => {
+      const nextCount = current + 1
+      writeMessengerUnreadCount(nextCount)
+      return nextCount
+    })
+  }, [])
+
+  React.useEffect(() => {
+    if (!enabled) {
+      clearUnread()
+      return
+    }
+    if (messengerOpen) clearUnread()
+  }, [clearUnread, enabled, messengerOpen])
+
+  React.useEffect(() => {
+    if (!enabled || !messengerOpen) return
+    const projectGroups = Array.isArray(portalData?.projectGroups) ? portalData.projectGroups : []
+    const selectedGroupKey = readMessengerSelectedGroupKey() || String(projectGroups[0]?.group_key || '')
+    if (!selectedGroupKey) return
+
+    const body = new FormData()
+    body.append('csrf', messengerCsrfToken())
+    body.append('action', 'messenger_load_messages')
+    body.append('group_key', selectedGroupKey)
+    void fetch(messengerEndpoint(), {
+      method: 'POST',
+      body,
+      headers: { Accept: 'application/json' },
+    })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => {
+        const payloadMessages = payload?.data?.messages || payload?.messages || []
+        if (!Array.isArray(payloadMessages) || payloadMessages.length === 0) return
+        const latestMessage = payloadMessages[payloadMessages.length - 1]
+        writeMessengerLastSeenChatKey(String(latestMessage?.chat_key || ''))
+      })
+      .catch(() => {})
+  }, [enabled, messengerOpen])
+
+  React.useEffect(() => {
+    if (!enabled) return
+    window.addEventListener(messengerMessageReceivedEvent, handleReceived)
+    return () => window.removeEventListener(messengerMessageReceivedEvent, handleReceived)
+  }, [enabled, handleReceived])
+
+  React.useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+
+    async function pollForReceivedMessages() {
+      if (cancelled || messengerOpen) return
+      const projectGroups = Array.isArray(portalData?.projectGroups) ? portalData.projectGroups : []
+      const selectedGroupKey = readMessengerSelectedGroupKey() || String(projectGroups[0]?.group_key || '')
+      if (!selectedGroupKey) return
+
+      try {
+        const body = new FormData()
+        body.append('csrf', messengerCsrfToken())
+        body.append('action', 'messenger_load_messages')
+        body.append('group_key', selectedGroupKey)
+        const response = await fetch(messengerEndpoint(), {
+          method: 'POST',
+          body,
+          headers: { Accept: 'application/json' },
+        })
+        const payload = await response.json()
+        if (!response.ok || !payload?.ok) return
+        const payloadMessages = payload?.data?.messages || payload?.messages || []
+        if (!Array.isArray(payloadMessages) || payloadMessages.length === 0) return
+        const latestMessage = payloadMessages[payloadMessages.length - 1]
+        const latestChatKey = String(latestMessage?.chat_key || '')
+        if (!latestChatKey) return
+
+        const lastSeenChatKey = readMessengerLastSeenChatKey()
+        if (!lastSeenChatKey) {
+          writeMessengerLastSeenChatKey(latestChatKey)
+          return
+        }
+
+        if (latestChatKey !== lastSeenChatKey) {
+          writeMessengerLastSeenChatKey(latestChatKey)
+          if (String(latestMessage?.sender_user_key || '') !== messengerSenderKey()) {
+            handleReceived()
+          }
+        }
+      } catch {
+        // Header notifications are best-effort until a Firebase listener is connected.
+      }
+    }
+
+    void pollForReceivedMessages()
+    const interval = window.setInterval(() => void pollForReceivedMessages(), 15000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [enabled, handleReceived, messengerOpen])
+
+  return { unreadCount, clearUnread }
+}
+
+function readMessengerSelectedGroupKey(): string {
+  try {
+    if (typeof window === 'undefined') return ''
+    return window.localStorage.getItem(messengerSelectedGroupStorageKey) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeMessengerSelectedGroupKey(groupKey: string) {
+  try {
+    if (typeof window === 'undefined') return
+    if (groupKey) window.localStorage.setItem(messengerSelectedGroupStorageKey, groupKey)
+    else window.localStorage.removeItem(messengerSelectedGroupStorageKey)
+  } catch {
+    // Blocked storage should not break group switching.
+  }
+}
+
+function usePersistentMessengerOpen(canRestore = true) {
+  const [messengerOpen, setMessengerOpenState] = React.useState(() => canRestore ? readMessengerOpenState() : false)
+
+  React.useEffect(() => {
+    if (canRestore) return
+    writeMessengerOpenState(false)
+    setMessengerOpenState(false)
+  }, [canRestore])
+
+  const setMessengerOpen = React.useCallback((open: boolean) => {
+    if (open && !canRestore) {
+      writeMessengerOpenState(false)
+      setMessengerOpenState(false)
+      return
+    }
+    writeMessengerOpenState(open)
+    setMessengerOpenState(open)
+  }, [canRestore])
+
+  return [messengerOpen, setMessengerOpen] as const
+}
+
+function messengerGroupImageUrl(group?: Record<string, any> | null, sizeTokens = 'XS'): string {
+  const rawImageUrl = groupImageSourceUrl(group || undefined)
+  if (rawImageUrl === '') return ''
+  const viewerImageUrl = rawImageUrl.replace(/^http:\/\/localhost\/rbms\.com\//i, 'https://localhost/rbms.com/')
+  return uploadedImageViewerUrl(viewerImageUrl, sizeTokens)
+}
+
+function messengerClientId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function messengerEndpoint(): string {
+  return portalData?.projectBasePath || './'
+}
+
+function messengerCsrfToken(): string {
+  return portalData?.csrf || data?.csrf || phaseData?.csrf || ''
+}
+
+function normalizeMessengerStreamStatus(value: any): MessengerStreamServiceStatus {
+  if (!value || typeof value !== 'object') {
+    return {
+      running: null,
+      status: 'checking',
+      label: 'Checking Firebase stream',
+      detail: 'Checking Firebase-to-MySQL stream service.',
+    }
+  }
+
+  const runningValue = value.running
+  const running = typeof runningValue === 'boolean' ? runningValue : null
+  return {
+    running,
+    status: String(value.status || (running ? 'running' : running === false ? 'stopped' : 'unknown')),
+    label: String(value.label || (running ? 'Firebase stream running' : running === false ? 'Firebase stream stopped' : 'Firebase stream unknown')),
+    detail: String(value.detail || ''),
+    service: value.service ? String(value.service) : undefined,
+    configured: typeof value.configured === 'boolean' ? value.configured : undefined,
+    unit_installed: typeof value.unit_installed === 'boolean' ? value.unit_installed : undefined,
+    checked_at: value.checked_at ? String(value.checked_at) : undefined,
+  }
+}
+
+function messengerStreamDotClass(status: MessengerStreamServiceStatus): string {
+  if (status.running === true) return 'bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.18)]'
+  if (status.running === false) return 'bg-destructive shadow-[0_0_0_3px_rgba(239,68,68,0.16)]'
+  return 'bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]'
+}
+
+function normalizeMessengerGroupMember(value: any): MessengerGroupMember {
+  return {
+    user_key: String(value?.user_key || value?.id || messengerClientId()),
+    user_login: String(value?.user_login || ''),
+    user_name: String(value?.user_name || value?.user_login || 'Unnamed user'),
+    user_chat_name: String(value?.user_chat_name || ''),
+    user_avatar_path: String(value?.user_avatar_path || ''),
+    user_status: String(value?.user_status || 'ACTIVE'),
+  }
+}
+
+function messengerDateFromValue(value: string): Date | null {
+  const text = String(value || '').trim()
+  if (text === '') return null
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? text.replace(' ', 'T') : text
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function messengerRelativeTime(value: string, nowMs = Date.now()): string {
+  const date = messengerDateFromValue(value)
+  if (!date) return 'No messages'
+  const seconds = Math.max(0, Math.floor((nowMs - date.getTime()) / 1000))
+  if (seconds < 60) return 'now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} min${minutes === 1 ? '' : 's'}`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hr${hours === 1 ? '' : 's'}`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'}`
+  const weeks = Math.floor(days / 7)
+  return `${weeks} wk${weeks === 1 ? '' : 's'}`
+}
+
+function latestMessengerMessageAt(messages: MessengerMessage[]): string {
+  const latest = [...messages]
+    .map((message) => String(message.created_at || ''))
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right))
+    .at(-1)
+  return latest || ''
+}
+
+function mergeMessengerMessages(current: MessengerMessage[], incoming: MessengerMessage[]): MessengerMessage[] {
+  const incomingByKey = new Map(incoming.map((message) => [String(message.chat_key || message.id), message]))
+  const merged = current.map((message) => incomingByKey.get(String(message.chat_key || message.id)) || message)
+  const existingKeys = new Set(merged.map((message) => String(message.chat_key || message.id)))
+  incoming.forEach((message) => {
+    const key = String(message.chat_key || message.id)
+    if (!existingKeys.has(key)) merged.push(message)
+  })
+  return merged
+}
+
+function messengerSenderKey(): string {
+  return String(portalData?.messengerSenderKey || portalData?.currentUser?.user_key || (data as any)?.currentUser?.user_key || '')
+}
+
+function messengerMediaUploaderTargetUrl(): string {
+  return String(portalData?.mediaUploaderTargetUrl || adminSettingValue('media_uploader_target_url') || '').trim()
+}
+
+function parseMediaUploadResponse(payload: any): string {
+  if (typeof payload === 'string') return payload.trim()
+  if (!payload || typeof payload !== 'object') return ''
+  return String(
+    payload.url
+    || payload.image_url
+    || payload.uploaded_image_url
+    || payload.uploadedUrl
+    || payload.src
+    || payload.data?.url
+    || payload.data?.image_url
+    || '',
+  ).trim()
+}
+
+function mediaUploadPayloadMeta(payload: any, fallbackFile: File) {
+  return {
+    image_original_name: String((typeof payload === 'object' && (payload.original_name || payload.originalName)) || fallbackFile.name || 'image'),
+    image_mime_type: String((typeof payload === 'object' && (payload.mime_type || payload.mimeType)) || fallbackFile.type || ''),
+    image_byte_size: Number((typeof payload === 'object' && (payload.byte_size || payload.byteSize)) || fallbackFile.size || 0),
+    image_sha256: String((typeof payload === 'object' && payload.sha256) || ''),
+  }
+}
+
+function normalizeMessengerMessage(raw: Record<string, any>): MessengerMessage {
+  const senderKey = String(raw.sender_user_key || '')
+  const removed = String(raw.message_status || 'ACTIVE') === 'REMOVED'
+  const attachments = Array.isArray(raw.attachments) ? raw.attachments.map((attachment: Record<string, any>): MessengerAttachment => ({
+    id: String(attachment.attachment_key || attachment.uploaded_image_url || messengerClientId()),
+    uploaded_image_url: String(attachment.uploaded_image_url || ''),
+    previewUrl: String(attachment.uploaded_image_url || ''),
+    image_original_name: String(attachment.image_original_name || ''),
+    image_mime_type: String(attachment.image_mime_type || ''),
+    image_byte_size: Number(attachment.image_byte_size || 0),
+    image_sha256: String(attachment.image_sha256 || ''),
+  })) : []
+  const reactions = Array.isArray(raw.reactions) ? raw.reactions.map((reaction: Record<string, any>): MessengerReaction => ({
+    reaction_value: String(reaction.reaction_value || ''),
+    reaction_count: Math.max(0, Number(reaction.reaction_count || 0)),
+    reacted_by_me: reaction.reacted_by_me === true || reaction.reacted_by_me === '1' || reaction.reacted_by_me === 1,
+  })).filter((reaction) => reaction.reaction_value !== '' && reaction.reaction_count > 0) : []
+
+  return {
+    id: String(raw.chat_key || messengerClientId()),
+    chat_key: String(raw.chat_key || ''),
+    project_key: String(raw.project_key || ''),
+    group_key: String(raw.group_key || ''),
+    conversation_type: String(raw.conversation_type || 'group'),
+    direct_recipient_user_key: String(raw.direct_recipient_user_key || ''),
+    sender_user_key: senderKey,
+    sender_name: String(raw.sender_name || 'Portal User'),
+    side: senderKey !== '' && senderKey === messengerSenderKey() ? 'me' : 'them',
+    text: removed ? 'Message has been removed' : String(raw.message_text || ''),
+    message_type: String(raw.message_type || 'text'),
+    message_status: String(raw.message_status || 'ACTIVE'),
+    created_at: String(raw.created_at || ''),
+    attachments,
+    reply: raw.reply && typeof raw.reply === 'object' ? {
+      chat_key: String(raw.reply.chat_key || ''),
+      sender_name: String(raw.reply.sender_name || ''),
+      message_text: String(raw.reply.message_text || ''),
+      message_status: String(raw.reply.message_status || 'ACTIVE'),
+    } : null,
+    reply_to_chat_key: String(raw.reply_to_chat_key || ''),
+    firebase_sync_status: String(raw.firebase_sync_status || 'PENDING'),
+    reactions,
+  }
+}
+
+function messengerImageViewerUrl(uploadedUrl: string, sizeToken = 'XS'): string {
+  const imageUrl = String(uploadedUrl || '').replace(/^http:\/\/localhost\/rbms\.com\//i, 'https://localhost/rbms.com/')
+  return uploadedImageViewerUrl(imageUrl, sizeToken)
+}
+
+function messengerFirebaseOptions(): FirebaseOptions | null {
+  const config = portalData?.firebaseConfig || {}
+  if (config.enabled !== true || config.clientStreamEnabled !== true) return null
+  const projectId = String(config.projectId || '').trim()
+  if (projectId === '') return null
+
+  return {
+    apiKey: String(config.apiKey || '').trim() || undefined,
+    authDomain: String(config.authDomain || '').trim() || undefined,
+    projectId,
+    storageBucket: String(config.storageBucket || '').trim() || undefined,
+    messagingSenderId: String(config.messagingSenderId || '').trim() || undefined,
+    appId: String(config.appId || '').trim() || undefined,
+    measurementId: String(config.measurementId || '').trim() || undefined,
+  }
+}
+
+function messengerFirestore(): Firestore | null {
+  try {
+    const options = messengerFirebaseOptions()
+    if (!options?.projectId) return null
+    const app = getApps().find((item) => item.name === 'rbmsv4-messenger') || initializeApp(options, 'rbmsv4-messenger')
+    return getFirestore(app)
+  } catch {
+    return null
+  }
+}
+
+function firebaseMessengerPayload(message: MessengerMessage): Record<string, any> {
+  return {
+    chat_key: message.chat_key || message.id,
+    project_key: String((message as any).project_key || ''),
+    group_key: String((message as any).group_key || ''),
+    conversation_type: String((message as any).conversation_type || 'group'),
+    direct_recipient_user_key: String((message as any).direct_recipient_user_key || ''),
+    reply_to_chat_key: message.reply_to_chat_key || '',
+    sender_user_key: message.sender_user_key || '',
+    sender_name: message.sender_name || 'Portal User',
+    message_text: message.message_status === 'REMOVED' ? '' : message.text,
+    message_type: message.message_type || ((message.attachments || []).length > 0 ? 'image' : 'text'),
+    message_status: message.message_status || 'ACTIVE',
+    firebase_collection: 'project_messenger_chat',
+    firebase_sync_status: 'SYNCED',
+    created_at: message.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    client_synced_at: serverTimestamp(),
+  }
+}
+
+async function mirrorMessengerMessageToFirestore(rawMessage: Record<string, any>) {
+  const db = messengerFirestore()
+  const chatKey = String(rawMessage.chat_key || '')
+  if (!db || chatKey === '') return false
+  if (portalData?.firebaseConfig?.clientWriteEnabled !== true) return false
+
+  const message = normalizeMessengerMessage(rawMessage)
+  await setDoc(doc(db, 'project_messenger_chat', chatKey), {
+    ...firebaseMessengerPayload({ ...message, ...(rawMessage as any) }),
+    project_key: String(rawMessage.project_key || ''),
+    group_key: String(rawMessage.group_key || ''),
+    removed_at: String(rawMessage.removed_at || ''),
+  }, { merge: true })
+
+  const attachments = Array.isArray(rawMessage.attachments) ? rawMessage.attachments : []
+  await Promise.all(attachments.map(async (attachment: Record<string, any>) => {
+    const attachmentKey = String(attachment.attachment_key || '')
+    if (attachmentKey === '') return
+    await setDoc(doc(db, 'project_messenger_chat_attachment', attachmentKey), {
+      attachment_key: attachmentKey,
+      chat_key: chatKey,
+      project_key: String(attachment.project_key || rawMessage.project_key || ''),
+      group_key: String(attachment.group_key || rawMessage.group_key || ''),
+      uploaded_image_url: String(attachment.uploaded_image_url || ''),
+      image_original_name: String(attachment.image_original_name || ''),
+      image_mime_type: String(attachment.image_mime_type || ''),
+      image_byte_size: Number(attachment.image_byte_size || 0),
+      image_sha256: String(attachment.image_sha256 || ''),
+      sort_order: Number(attachment.sort_order || 0),
+      attachment_status: String(attachment.attachment_status || 'ACTIVE'),
+      firebase_collection: 'project_messenger_chat_attachment',
+      firebase_sync_status: 'SYNCED',
+      created_at: String(attachment.created_at || ''),
+      client_synced_at: serverTimestamp(),
+    }, { merge: true })
+  }))
+
+  return true
+}
+
+function normalizeFirestoreMessengerMessages(docs: Array<{ id: string; data: () => Record<string, any> }>): MessengerMessage[] {
+  return docs
+    .map((snapshot) => normalizeMessengerMessage({ ...snapshot.data(), chat_key: snapshot.data().chat_key || snapshot.id }))
+    .sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || '')))
+}
+
+function MessengerGroupAvatar({
+  group,
+  groupName,
+  className,
+  iconClassName = 'size-4',
+  viewerSizeTokens = 'M',
+  linked = false,
+}: {
+  group?: Record<string, any> | null
+  groupName: string
+  className: string
+  iconClassName?: string
+  viewerSizeTokens?: string
+  linked?: boolean
+}) {
+  const imageUrl = messengerGroupImageUrl(group, 'XS')
+  const content = imageUrl !== '' ? (
+    <img
+      src={imageUrl}
+      alt={`${groupName} group icon`}
+      className="size-full object-cover"
+      loading="lazy"
+    />
+  ) : (
+    <Users className={cn(iconClassName, 'text-muted-foreground')} aria-hidden="true" />
+  )
+  const baseClassName = cn('relative grid shrink-0 place-items-center overflow-hidden rounded-full bg-muted/50', className)
+
+  if (linked && imageUrl !== '') {
+    return (
+      <a
+        href={messengerGroupImageUrl(group, viewerSizeTokens)}
+        target="_blank"
+        rel="noreferrer"
+        className={baseClassName}
+        title="Open image viewer"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {content}
+      </a>
+    )
+  }
+
+  return (
+    <span className={baseClassName}>
+      {content}
+    </span>
+  )
+}
+
+function MessengerWorkspace({ onClose }: { onClose: () => void }) {
+  const projectGroups = React.useMemo(() => {
+    const portalGroups = Array.isArray(portalData?.projectGroups) ? portalData.projectGroups : []
+    const adminGroups = Array.isArray(data?.groups) ? data.groups.filter((group) => String(group.group_status || '') === 'ACTIVE') : []
+    return (portalGroups.length > 0 ? portalGroups : adminGroups).filter((group) => String(group.group_status || '') === 'ACTIVE')
+  }, [])
+  const [selectedGroupKey, setSelectedGroupKey] = React.useState(() => {
+    const storedGroupKey = readMessengerSelectedGroupKey()
+    if (storedGroupKey && projectGroups.some((group) => String(group.group_key || group.group_name || '') === storedGroupKey)) {
+      return storedGroupKey
+    }
+    return String(projectGroups[0]?.group_key || projectGroups[0]?.group_name || '')
+  })
+  const selectedGroup = projectGroups.find((group) => String(group.group_key || '') === selectedGroupKey) || projectGroups[0] || null
+  const selectedGroupName = String(selectedGroup?.group_name || 'Select a group')
+  const selectedGroupProject = String(selectedGroup?.project_name || selectedGroup?.project_code || 'Current project')
+  const [groupLastMessageAt, setGroupLastMessageAt] = React.useState<Record<string, string>>(() => Object.fromEntries(
+    projectGroups.map((group) => [String(group.group_key || group.group_name || ''), String(group.latest_message_at || '')]),
+  ))
+  const [relativeTimeNow, setRelativeTimeNow] = React.useState(() => Date.now())
+  const [draft, setDraft] = React.useState('')
+  const [messages, setMessages] = React.useState<MessengerMessage[]>([])
+  const [groupMembers, setGroupMembers] = React.useState<MessengerGroupMember[]>([])
+  const [selectedDirectUserKey, setSelectedDirectUserKey] = React.useState('')
+  const [messagesLoading, setMessagesLoading] = React.useState(false)
+  const [conversationSwitching, setConversationSwitching] = React.useState(false)
+  const [olderMessagesLoading, setOlderMessagesLoading] = React.useState(false)
+  const [hasOlderMessages, setHasOlderMessages] = React.useState(false)
+  const [messageStatus, setMessageStatus] = React.useState('')
+  const [, setFirebaseStreamStatus] = React.useState('')
+  const [streamServiceStatus, setStreamServiceStatus] = React.useState<MessengerStreamServiceStatus>(() => normalizeMessengerStreamStatus(null))
+  const [sending, setSending] = React.useState(false)
+  const [replyTarget, setReplyTarget] = React.useState<MessengerMessage | null>(null)
+  const [pendingAttachments, setPendingAttachments] = React.useState<MessengerAttachment[]>([])
+  const [imageViewerAttachment, setImageViewerAttachment] = React.useState<MessengerAttachment | null>(null)
+  const [imageViewerSize, setImageViewerSize] = React.useState<'XS' | 'S' | 'M' | 'L' | 'XL'>('M')
+  const [deleteTarget, setDeleteTarget] = React.useState<MessengerMessage | null>(null)
+  const [emojiPickerOpen, setEmojiPickerOpen] = React.useState(false)
+  const [reactionPickerMessageKey, setReactionPickerMessageKey] = React.useState('')
+  const [reactingMessageKey, setReactingMessageKey] = React.useState('')
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+  const messageInputRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const messagesScrollRef = React.useRef<HTMLDivElement | null>(null)
+  const pendingAttachmentUrlsRef = React.useRef<Set<string>>(new Set())
+  const suppressNextMessageScrollRef = React.useRef(false)
+  const selectedDirectMember = selectedDirectUserKey !== '' ? groupMembers.find((member) => member.user_key === selectedDirectUserKey) || null : null
+  const selectedDirectName = selectedDirectMember ? String(selectedDirectMember.user_chat_name || selectedDirectMember.user_name || selectedDirectMember.user_login || 'Direct user') : ''
+  const messengerSignedIn = Boolean(portalData?.currentUser?.user_key || (data as any)?.currentUser?.user_key)
+  const messengerAuthBlocked = !messengerSignedIn
+  const conversationTitle = selectedDirectMember ? selectedDirectName : selectedGroupName
+  const conversationSubtitle = selectedDirectMember
+    ? `${selectedGroupName} · Direct message`
+    : (selectedGroup ? `${selectedGroupProject} · ${messages.length} message${messages.length === 1 ? '' : 's'}` : 'No active group selected')
+  const threadLoading = messagesLoading || conversationSwitching
+
+  const refreshMessages = React.useCallback(async (options: { silent?: boolean; beforeChatKey?: string; prepend?: boolean } = {}) => {
+    const silent = options.silent === true
+    const prepend = options.prepend === true
+    const beforeChatKey = String(options.beforeChatKey || '').trim()
+    if (!selectedGroupKey) {
+      setMessages([])
+      setGroupMembers([])
+      setHasOlderMessages(false)
+      setConversationSwitching(false)
+      return
+    }
+
+    const scrollElement = messagesScrollRef.current
+    const previousScrollHeight = scrollElement?.scrollHeight || 0
+    const previousScrollTop = scrollElement?.scrollTop || 0
+    if (!silent) {
+      setMessagesLoading(true)
+      setMessageStatus('')
+    }
+    if (prepend) setOlderMessagesLoading(true)
+    try {
+      const body = new FormData()
+      body.append('csrf', messengerCsrfToken())
+      body.append('action', 'messenger_load_messages')
+      body.append('group_key', selectedGroupKey)
+      body.append('limit', String(messengerPageSize))
+      if (selectedDirectUserKey !== '') body.append('direct_user_key', selectedDirectUserKey)
+      if (beforeChatKey !== '') body.append('before_chat_key', beforeChatKey)
+      const response = await fetch(messengerEndpoint(), {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload?.ok) {
+        throw new Error(String(payload?.message || 'Messenger messages could not be loaded.'))
+      }
+      const payloadMessages = payload?.data?.messages || payload?.messages || []
+      const payloadMembers = payload?.data?.members || payload?.members || []
+      const pagination = payload?.data?.pagination || payload?.pagination || {}
+      const serverMessage = String(payload?.data?.message || payload?.message || '').trim()
+      const normalizedMessages = Array.isArray(payloadMessages) ? payloadMessages.map(normalizeMessengerMessage) : []
+      setMessages((current) => {
+        if (prepend) {
+          const currentKeys = new Set(current.map((message) => String(message.chat_key || message.id)))
+          return [...normalizedMessages.filter((message) => !currentKeys.has(String(message.chat_key || message.id))), ...current]
+        }
+        return silent && current.length > 0 ? mergeMessengerMessages(current, normalizedMessages) : normalizedMessages
+      })
+      setGroupMembers(Array.isArray(payloadMembers) ? payloadMembers.map(normalizeMessengerGroupMember) : [])
+      setHasOlderMessages(Boolean(pagination.has_more))
+      if (!prepend) {
+        setGroupLastMessageAt((current) => ({
+          ...current,
+          [selectedGroupKey]: latestMessengerMessageAt(normalizedMessages),
+        }))
+      }
+      if (serverMessage !== '') setMessageStatus(serverMessage)
+      if (prepend && scrollElement) {
+        suppressNextMessageScrollRef.current = true
+        window.requestAnimationFrame(() => {
+          scrollElement.scrollTop = scrollElement.scrollHeight - previousScrollHeight + previousScrollTop
+        })
+      }
+    } catch (error) {
+      if (!silent) {
+        setMessages([])
+        setGroupMembers([])
+        setMessageStatus(error instanceof Error ? error.message : 'Messenger messages could not be loaded.')
+      }
+    } finally {
+      if (!silent) {
+        setMessagesLoading(false)
+        setConversationSwitching(false)
+      }
+      if (prepend) setOlderMessagesLoading(false)
+    }
+  }, [selectedDirectUserKey, selectedGroupKey])
+
+  const loadOlderMessages = React.useCallback(() => {
+    if (!hasOlderMessages || olderMessagesLoading || messagesLoading) return
+    const oldestChatKey = String(messages[0]?.chat_key || '')
+    if (oldestChatKey === '') return
+    void refreshMessages({ silent: true, prepend: true, beforeChatKey: oldestChatKey })
+  }, [hasOlderMessages, messages, messagesLoading, olderMessagesLoading, refreshMessages])
+
+  const refreshStreamServiceStatus = React.useCallback(async () => {
+    try {
+      const body = new FormData()
+      body.append('csrf', messengerCsrfToken())
+      body.append('action', 'messenger_stream_status')
+      const response = await fetch(messengerEndpoint(), {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload?.ok) {
+        throw new Error(String(payload?.message || 'Stream service status could not be loaded.'))
+      }
+      setStreamServiceStatus(normalizeMessengerStreamStatus(payload?.data?.stream_status || payload?.stream_status))
+    } catch (error) {
+      setStreamServiceStatus({
+        running: false,
+        status: 'unavailable',
+        label: 'Firebase stream unavailable',
+        detail: error instanceof Error ? error.message : 'Stream service status could not be loaded.',
+      })
+    }
+  }, [])
+
+  React.useEffect(() => {
+    void refreshMessages()
+  }, [refreshMessages])
+
+  React.useEffect(() => {
+    const interval = window.setInterval(() => void refreshMessages({ silent: true }), 8000)
+    return () => window.clearInterval(interval)
+  }, [refreshMessages])
+
+  React.useEffect(() => {
+    const interval = window.setInterval(() => setRelativeTimeNow(Date.now()), 60000)
+    return () => window.clearInterval(interval)
+  }, [])
+
+  React.useEffect(() => {
+    void refreshStreamServiceStatus()
+    const interval = window.setInterval(() => void refreshStreamServiceStatus(), 15000)
+    return () => window.clearInterval(interval)
+  }, [refreshStreamServiceStatus])
+
+  React.useEffect(() => {
+    const db = messengerFirestore()
+    if (!db || !selectedGroupKey) {
+      setFirebaseStreamStatus('Server sync ready')
+      return
+    }
+
+    let unsubscribe: (() => void) | undefined
+    let cancelled = false
+    setFirebaseStreamStatus('Firebase connecting')
+    unsubscribe = onSnapshot(
+      query(collection(db, 'project_messenger_chat'), where('group_key', '==', selectedGroupKey)),
+      (snapshot) => {
+        if (cancelled) return
+      const streamMessages = normalizeFirestoreMessengerMessages(snapshot.docs).filter((message) => {
+        if (selectedDirectUserKey === '') return String(message.conversation_type || 'group') !== 'direct'
+        if (String(message.conversation_type || 'group') !== 'direct') return false
+        const senderKey = String(message.sender_user_key || '')
+        const recipientKey = String(message.direct_recipient_user_key || '')
+        return (senderKey === messengerSenderKey() && recipientKey === selectedDirectUserKey)
+          || (senderKey === selectedDirectUserKey && recipientKey === messengerSenderKey())
+      })
+        window.setTimeout(() => {
+          if (!cancelled) void refreshMessages({ silent: true })
+        }, 800)
+        if (streamMessages.length > 0) {
+          setMessages((current) => current.length > 0 ? mergeMessengerMessages(current, streamMessages) : streamMessages)
+          setFirebaseStreamStatus('Firebase read stream')
+        } else {
+          setFirebaseStreamStatus('Firebase read stream, waiting for rows')
+        }
+      },
+      (error) => {
+        if (!cancelled) setFirebaseStreamStatus(`Firebase read blocked: ${error.message}`)
+      },
+    )
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [refreshMessages, selectedDirectUserKey, selectedGroupKey])
+
+  React.useEffect(() => {
+    if (suppressNextMessageScrollRef.current) {
+      suppressNextMessageScrollRef.current = false
+      return
+    }
+    messagesScrollRef.current?.scrollTo({ top: messagesScrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [messages.length, threadLoading])
+
+  React.useEffect(() => () => {
+    pendingAttachmentUrlsRef.current.forEach((previewUrl) => URL.revokeObjectURL(previewUrl))
+    pendingAttachmentUrlsRef.current.clear()
+  }, [])
+
+  function addPendingFiles(files: File[]) {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/')).slice(0, Math.max(0, 10 - pendingAttachments.length))
+    if (imageFiles.length === 0) return
+    const nextAttachments = imageFiles.map((file) => {
+      const previewUrl = URL.createObjectURL(file)
+      pendingAttachmentUrlsRef.current.add(previewUrl)
+      return {
+        id: messengerClientId(),
+        file,
+        previewUrl,
+        image_original_name: file.name,
+        image_mime_type: file.type,
+        image_byte_size: file.size,
+      }
+    })
+    setPendingAttachments((current) => [
+      ...current,
+      ...nextAttachments,
+    ])
+  }
+
+  function removePendingAttachment(attachmentId: string) {
+    setPendingAttachments((current) => {
+      const removed = current.find((attachment) => attachment.id === attachmentId)
+      if (removed?.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(removed.previewUrl)
+        pendingAttachmentUrlsRef.current.delete(removed.previewUrl)
+      }
+      return current.filter((attachment) => attachment.id !== attachmentId)
+    })
+  }
+
+  function handleComposerPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'))
+    if (files.length === 0) return
+    event.preventDefault()
+    addPendingFiles(files)
+    setMessageStatus('')
+  }
+
+  function insertEmoji(emoji: string) {
+    const input = messageInputRef.current
+    const start = input?.selectionStart ?? draft.length
+    const end = input?.selectionEnd ?? draft.length
+    const nextDraft = `${draft.slice(0, start)}${emoji}${draft.slice(end)}`
+    setDraft(nextDraft.slice(0, 8000))
+    setEmojiPickerOpen(false)
+    window.requestAnimationFrame(() => {
+      input?.focus()
+      const nextCaret = Math.min(start + emoji.length, 8000)
+      input?.setSelectionRange(nextCaret, nextCaret)
+    })
+  }
+
+  async function uploadMessengerAttachment(attachment: MessengerAttachment) {
+    if (!attachment.file) throw new Error('Attachment file is missing.')
+    const uploadUrl = messengerMediaUploaderTargetUrl()
+    if (uploadUrl === '') {
+      throw new Error('Setup required: set media_uploader_target_url before sending image attachments.')
+    }
+
+    setPendingAttachments((current) => current.map((item) => item.id === attachment.id ? { ...item, uploading: true, error: '' } : item))
+    const preparedImage = await resizeImageForMediaUpload(attachment.file)
+    const body = new FormData()
+    body.append('image', preparedImage.file)
+    body.append('source_table', 'project_messenger_chat_attachment')
+    body.append('source_field', 'uploaded_image_url')
+    const response = await fetch(uploadUrl, {
+      method: 'POST',
+      body,
+      headers: { Accept: 'application/json' },
+    })
+    const contentType = response.headers.get('content-type') || ''
+    const payload = contentType.includes('application/json') ? await response.json() : await response.text()
+    if (!response.ok) {
+      const message = typeof payload === 'object' && payload?.message ? String(payload.message) : 'Image upload failed.'
+      throw new Error(message)
+    }
+    const uploadedImageUrl = parseMediaUploadResponse(payload)
+    if (!/^https?:\/\//i.test(uploadedImageUrl)) {
+      throw new Error('Upload endpoint did not return a full uploaded image URL.')
+    }
+    const meta = mediaUploadPayloadMeta(payload, preparedImage.file)
+    return { uploaded_image_url: uploadedImageUrl, ...meta }
+  }
+
+  async function sendMessage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const text = draft.trim()
+    if ((!text && pendingAttachments.length === 0) || sending || !selectedGroupKey) return
+
+    setSending(true)
+    setMessageStatus('')
+    try {
+      const uploadedAttachments = []
+      for (const attachment of pendingAttachments) {
+        uploadedAttachments.push(await uploadMessengerAttachment(attachment))
+      }
+
+      const body = new FormData()
+      body.append('csrf', messengerCsrfToken())
+      body.append('action', 'messenger_send_message')
+      body.append('group_key', selectedGroupKey)
+      if (selectedDirectUserKey !== '') body.append('direct_user_key', selectedDirectUserKey)
+      body.append('message_text', text)
+      body.append('reply_to_chat_key', replyTarget?.chat_key || '')
+      body.append('attachments_json', JSON.stringify(uploadedAttachments))
+      const response = await fetch(messengerEndpoint(), {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload?.ok) {
+        throw new Error(String(payload?.message || 'Message could not be sent.'))
+      }
+
+      const savedMessage = payload?.data?.message || payload?.message
+      const serverSync = payload?.data?.firebase_sync
+      if (serverSync?.ok === true) {
+        setFirebaseStreamStatus('Firebase server synced')
+      } else if (serverSync?.skipped) {
+        setFirebaseStreamStatus('Firebase server sync disabled')
+      } else if (serverSync?.message) {
+        setFirebaseStreamStatus(`Firebase server sync failed: ${serverSync.message}`)
+      }
+      if (portalData?.firebaseConfig?.clientWriteEnabled === true && savedMessage && typeof savedMessage === 'object') {
+        void mirrorMessengerMessageToFirestore(savedMessage)
+          .then((synced) => {
+            if (synced) setFirebaseStreamStatus('Firebase client mirrored')
+          })
+          .catch((error) => setFirebaseStreamStatus(`Firebase mirror failed: ${error instanceof Error ? error.message : 'write rejected'}`))
+      }
+      pendingAttachments.forEach((attachment) => {
+        if (attachment.previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(attachment.previewUrl)
+          pendingAttachmentUrlsRef.current.delete(attachment.previewUrl)
+        }
+      })
+      const payloadMessages = payload?.data?.messages || payload?.messages || []
+      const normalizedMessages = Array.isArray(payloadMessages) ? payloadMessages.map(normalizeMessengerMessage) : []
+      setMessages(normalizedMessages)
+      setGroupLastMessageAt((current) => ({
+        ...current,
+        [selectedGroupKey]: latestMessengerMessageAt(normalizedMessages),
+      }))
+      setDraft('')
+      setReplyTarget(null)
+      setPendingAttachments([])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Message could not be sent.'
+      setMessageStatus(message)
+      setPendingAttachments((current) => current.map((attachment) => attachment.uploading ? { ...attachment, uploading: false, error: message } : attachment))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function removeMessage(message: MessengerMessage) {
+    if (!message.chat_key) return
+    setSending(true)
+    setMessageStatus('')
+    try {
+      const body = new FormData()
+      body.append('csrf', messengerCsrfToken())
+      body.append('action', 'messenger_remove_message')
+      body.append('chat_key', message.chat_key)
+      if (selectedDirectUserKey !== '') body.append('direct_user_key', selectedDirectUserKey)
+      const response = await fetch(messengerEndpoint(), {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload?.ok) {
+        throw new Error(String(payload?.message || 'Message could not be removed.'))
+      }
+      const savedMessage = payload?.data?.message || payload?.message
+      const serverSync = payload?.data?.firebase_sync
+      if (serverSync?.ok === true) {
+        setFirebaseStreamStatus('Firebase server synced')
+      } else if (serverSync?.skipped) {
+        setFirebaseStreamStatus('Firebase server sync disabled')
+      } else if (serverSync?.message) {
+        setFirebaseStreamStatus(`Firebase server sync failed: ${serverSync.message}`)
+      }
+      if (portalData?.firebaseConfig?.clientWriteEnabled === true && savedMessage && typeof savedMessage === 'object') {
+        void mirrorMessengerMessageToFirestore(savedMessage)
+          .then((synced) => {
+            if (synced) setFirebaseStreamStatus('Firebase client mirrored')
+          })
+          .catch((error) => setFirebaseStreamStatus(`Firebase mirror failed: ${error instanceof Error ? error.message : 'write rejected'}`))
+      }
+      const payloadMessages = payload?.data?.messages || payload?.messages || []
+      const normalizedMessages = Array.isArray(payloadMessages) ? payloadMessages.map(normalizeMessengerMessage) : []
+      setMessages(normalizedMessages)
+      setGroupLastMessageAt((current) => ({
+        ...current,
+        [String(message.group_key || selectedGroupKey)]: latestMessengerMessageAt(normalizedMessages),
+      }))
+      if (replyTarget?.chat_key === message.chat_key) setReplyTarget(null)
+      setDeleteTarget(null)
+    } catch (error) {
+      setMessageStatus(error instanceof Error ? error.message : 'Message could not be removed.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function toggleReaction(message: MessengerMessage, reactionValue: string) {
+    if (!message.chat_key || reactingMessageKey) return
+    setReactingMessageKey(message.chat_key)
+    setMessageStatus('')
+    try {
+      const body = new FormData()
+      body.append('csrf', messengerCsrfToken())
+      body.append('action', 'messenger_toggle_reaction')
+      body.append('chat_key', message.chat_key)
+      body.append('reaction_value', reactionValue)
+      const response = await fetch(messengerEndpoint(), {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload?.ok) {
+        throw new Error(String(payload?.message || 'Reaction could not be saved.'))
+      }
+
+      const savedMessage = normalizeMessengerMessage(payload?.data?.message || payload?.message || {})
+      if (savedMessage.chat_key) {
+        setMessages((current) => current.map((item) => String(item.chat_key || '') === savedMessage.chat_key ? savedMessage : item))
+      }
+      setReactionPickerMessageKey('')
+    } catch (error) {
+      setMessageStatus(error instanceof Error ? error.message : 'Reaction could not be saved.')
+    } finally {
+      setReactingMessageKey('')
+    }
+  }
+
+  return (
+    <section className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-lg border bg-background text-foreground">
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove message</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will keep the chat record and show “Message has been removed” in the conversation.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={sending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={sending} onClick={() => deleteTarget && void removeMessage(deleteTarget)}>
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog open={Boolean(imageViewerAttachment)} onOpenChange={(open) => {
+        if (!open) setImageViewerAttachment(null)
+      }}>
+        <DialogContent className="sm:max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>{imageViewerAttachment?.image_original_name || 'Attached image'}</DialogTitle>
+            <DialogDescription>Image preview</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-1">
+              {(['XS', 'S', 'M', 'L', 'XL'] as const).map((size) => (
+                <Button key={size} type="button" variant={imageViewerSize === size ? 'default' : 'outline'} size="sm" onClick={() => setImageViewerSize(size)}>
+                  {size}
+                </Button>
+              ))}
+            </div>
+            {imageViewerAttachment?.uploaded_image_url ? (
+              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={messengerImageViewerUrl(imageViewerAttachment.uploaded_image_url, imageViewerSize)} target="_blank" rel="noreferrer">
+                <ExternalLink data-icon="inline-start" />
+                Open
+              </a>
+            ) : null}
+          </div>
+          <div className="grid max-h-[70vh] place-items-center overflow-auto rounded-md bg-muted/30 p-2">
+            {imageViewerAttachment?.uploaded_image_url ? (
+              <img
+                src={messengerImageViewerUrl(imageViewerAttachment.uploaded_image_url, imageViewerSize)}
+                alt={imageViewerAttachment.image_original_name || 'Attached image'}
+                className="max-h-[66vh] max-w-full rounded-md object-contain"
+              />
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className="hidden w-80 shrink-0 border-r bg-card md:flex md:flex-col" aria-label="Conversations">
+          <div className="flex min-h-16 items-center justify-between gap-3 border-b px-4">
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="text-xl font-semibold tracking-normal">Chats</h2>
+              <span
+                className={cn('size-2.5 shrink-0 rounded-full', messengerStreamDotClass(streamServiceStatus))}
+                title={`${streamServiceStatus.label}${streamServiceStatus.detail ? `: ${streamServiceStatus.detail}` : ''}`}
+                aria-label={streamServiceStatus.label}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Refresh chats" onClick={() => {
+                void refreshMessages()
+                void refreshStreamServiceStatus()
+              }}><RotateCcw /></Button>
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Close Messenger" onClick={onClose}><X /></Button>
+            </div>
+          </div>
+          <div className="border-b p-3">
+            <div className="flex items-center gap-2 rounded-full bg-muted px-3 py-2 text-sm text-muted-foreground">
+              <Search className="size-4" />
+              <span>Search Messenger</span>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {projectGroups.length > 0 ? projectGroups.map((group) => {
+              const groupKey = String(group.group_key || group.group_name || '')
+              const groupName = String(group.group_name || 'Unnamed group')
+              const projectName = String(group.project_name || group.project_code || 'Current project')
+              const active = selectedGroup ? groupKey === String(selectedGroup.group_key || selectedGroup.group_name || '') : false
+              const lastMessageLabel = messengerRelativeTime(groupLastMessageAt[groupKey] || String(group.latest_message_at || ''), relativeTimeNow)
+              return (
+              <button key={groupKey || groupName} type="button" className={cn('grid w-full grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md p-2 text-left hover:bg-muted/70', active && 'bg-muted')} onClick={() => {
+                if (active && selectedDirectUserKey === '') return
+                setConversationSwitching(true)
+		                setSelectedGroupKey(groupKey)
+		                writeMessengerSelectedGroupKey(groupKey)
+		                setSelectedDirectUserKey('')
+		                setHasOlderMessages(false)
+                setOlderMessagesLoading(false)
+                setReplyTarget(null)
+                setReactionPickerMessageKey('')
+                setMessageStatus('')
+              }}>
+                <MessengerGroupAvatar group={group} groupName={groupName} className="size-11" />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">{groupName}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{projectName}</span>
+                </span>
+                <span className="max-w-20 truncate text-right text-xs text-muted-foreground">{lastMessageLabel}</span>
+              </button>
+              )
+            }) : (
+              <div className="grid place-items-center gap-2 rounded-md bg-muted/40 px-4 py-8 text-center">
+                <Users className="size-8 text-muted-foreground" />
+                <p className="text-sm font-medium">No active groups</p>
+                <p className="text-xs leading-5 text-muted-foreground">No active groups are currently available.</p>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="flex min-h-16 items-center justify-between gap-3 border-b bg-card px-4">
+            <div className="flex min-w-0 items-center gap-3">
+	              {selectedDirectMember ? (
+	                <Avatar className="size-10 border bg-muted">
+	                  {uploadedImageViewerUrl(String(selectedDirectMember.user_avatar_path || ''), 'XS') !== '' ? <AvatarImage src={uploadedImageViewerUrl(String(selectedDirectMember.user_avatar_path || ''), 'XS')} alt="" className="size-full object-cover" /> : <AvatarImage src={emptyUserAvatarUrl} alt="" className="p-1.5 opacity-80" />}
+	                  <AvatarFallback className="text-xs">{userInitials(selectedDirectMember as unknown as Record<string, string>)}</AvatarFallback>
+	                </Avatar>
+	              ) : (
+	                <MessengerGroupAvatar group={selectedGroup} groupName={selectedGroupName} className="size-10" linked viewerSizeTokens="S" />
+	              )}
+	              <div className="min-w-0">
+	                <h2 className="truncate text-sm font-semibold">{conversationTitle}</h2>
+	                <p className="truncate text-xs text-muted-foreground">{conversationSubtitle}</p>
+	              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Refresh messages" onClick={() => {
+                void refreshMessages()
+                void refreshStreamServiceStatus()
+              }}><RotateCcw /></Button>
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Attach image" onClick={() => fileInputRef.current?.click()}><Camera /></Button>
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Close Messenger" onClick={onClose}><X /></Button>
+            </div>
+          </header>
+
+          <div
+            ref={messagesScrollRef}
+            className="min-h-0 flex-1 overflow-y-auto bg-background p-4"
+            onScroll={(event) => {
+              if (event.currentTarget.scrollTop <= 80) loadOlderMessages()
+            }}
+          >
+            <div className="mx-auto flex max-w-3xl flex-col gap-2">
+              {olderMessagesLoading ? (
+                <div className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground">
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                  Loading older messages
+                </div>
+              ) : null}
+              <p className="self-center py-2 text-xs text-muted-foreground">Today</p>
+              {threadLoading ? (
+                <div className="grid place-items-center gap-2 rounded-md bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+                  <LoaderCircle className="size-5 animate-spin" />
+                  Loading messages
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="grid place-items-center gap-2 rounded-md bg-muted/30 p-8 text-center">
+                  <MessageCircle className="size-8 text-muted-foreground" />
+                  <p className="text-sm font-medium">No messages yet</p>
+                  <p className="text-xs text-muted-foreground">Start the group conversation below.</p>
+                </div>
+              ) : messages.map((message) => {
+                const removed = message.message_status === 'REMOVED'
+                const messageAttachments = removed ? [] : (message.attachments || []).filter((attachment) => attachment.uploaded_image_url)
+                const photoCount = messageAttachments.length
+                const messageReactions = (message.reactions || []).filter((reaction) => reaction.reaction_count > 0)
+                const reactionPickerOpen = reactionPickerMessageKey !== '' && reactionPickerMessageKey === String(message.chat_key || message.id)
+                return (
+                  <div key={message.id} className={cn('group flex items-end gap-2', message.side === 'me' ? 'justify-end' : 'justify-start')}>
+                    {message.side !== 'me' ? <MessengerGroupAvatar group={selectedGroup} groupName={selectedGroupName} className="size-7" iconClassName="size-3.5" /> : null}
+                    <div className={cn('grid max-w-[min(34rem,82%)] gap-1', message.side === 'me' && 'justify-items-end')}>
+                      <div className={cn('flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100', message.side === 'me' ? 'justify-end' : 'justify-start')}>
+                        {!removed ? (
+                          <Button type="button" variant="ghost" size="icon-sm" aria-label="Reply to message" onClick={() => setReplyTarget(message)}>
+                            <Undo2 />
+                          </Button>
+                        ) : null}
+                        {!removed ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="React to message"
+                            aria-expanded={reactionPickerOpen}
+                            onClick={() => setReactionPickerMessageKey((current) => current === String(message.chat_key || message.id) ? '' : String(message.chat_key || message.id))}
+                          >
+                            <Smile />
+                          </Button>
+                        ) : null}
+                        {!removed && message.side === 'me' ? (
+                          <Button type="button" variant="ghost" size="icon-sm" className="text-destructive hover:text-destructive" aria-label="Remove message" onClick={() => setDeleteTarget(message)}>
+                            <Trash2 />
+                          </Button>
+                        ) : null}
+                      </div>
+                      {reactionPickerOpen ? (
+                        <div className={cn('flex items-center gap-1 rounded-full border bg-popover p-1 shadow-lg', message.side === 'me' ? 'justify-self-end' : 'justify-self-start')}>
+                          {messengerReactionChoices.map((reactionValue) => (
+                            <button
+                              key={reactionValue}
+                              type="button"
+                              className="grid size-7 place-items-center rounded-full text-base hover:bg-muted disabled:opacity-60"
+                              aria-label={`React ${reactionValue}`}
+                              disabled={reactingMessageKey === String(message.chat_key || '')}
+                              onClick={() => void toggleReaction(message, reactionValue)}
+                            >
+                              {reactionValue}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                      {photoCount > 1 ? (
+                        <span className="px-2 text-xs text-muted-foreground">
+                          {message.side === 'me' ? 'You' : (message.sender_name || 'Portal User')} sent {photoCount} photos
+                        </span>
+                      ) : null}
+                      {message.reply || message.text ? (
+                        <div className={cn('grid gap-2 rounded-2xl px-3 py-2 text-sm leading-5', message.side === 'me' ? 'rounded-br-md bg-blue-600 text-white' : 'rounded-bl-md bg-muted text-foreground', removed && 'bg-muted text-muted-foreground')}>
+                          {message.reply ? (
+                            <button
+                              type="button"
+                              className={cn('grid gap-0.5 rounded-md border-l-2 px-2 py-1 text-left text-xs', message.side === 'me' ? 'border-white/70 bg-white/10 text-blue-50' : 'border-primary/70 bg-background/70 text-muted-foreground')}
+                              onClick={() => setReplyTarget(message)}
+                            >
+                              <span className="font-medium">{message.reply.sender_name || 'Reply'}</span>
+                              <span className="line-clamp-2">{message.reply.message_status === 'REMOVED' ? 'Original message removed' : message.reply.message_text}</span>
+                            </button>
+                          ) : null}
+                          {message.text ? (
+                            <p className={cn('whitespace-pre-wrap', removed && 'italic')}>{message.text}</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {photoCount > 0 ? (
+                        <div className={cn(
+                          'grid overflow-hidden rounded-2xl bg-muted/40 p-0.5',
+                          photoCount === 1 ? 'w-[min(18rem,72vw)] grid-cols-1' : photoCount === 2 ? 'w-[min(22rem,76vw)] grid-cols-2 gap-0.5' : 'w-[min(24rem,80vw)] grid-cols-3 gap-0.5',
+                          message.side === 'me' ? 'rounded-br-md' : 'rounded-bl-md'
+                        )}>
+                          {messageAttachments.map((attachment, index) => (
+                            <button
+                              key={attachment.id}
+                              type="button"
+                              className="relative overflow-hidden bg-background/20"
+                              onClick={() => {
+                                setImageViewerAttachment(attachment)
+                                setImageViewerSize('M')
+                              }}
+                            >
+                              <img
+                                src={messengerImageViewerUrl(attachment.uploaded_image_url || '', 'XS')}
+                                alt={attachment.image_original_name || `Attached photo ${index + 1}`}
+                                className={cn('w-full object-cover', photoCount === 1 ? 'max-h-80 rounded-[inherit]' : 'aspect-square')}
+                                loading="lazy"
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                      {messageReactions.length > 0 ? (
+                        <div className={cn('flex flex-wrap gap-1 px-2', message.side === 'me' ? 'justify-end' : 'justify-start')}>
+                          {messageReactions.map((reaction) => (
+                            <button
+                              key={reaction.reaction_value}
+                              type="button"
+                              className={cn('inline-flex h-6 items-center gap-1 rounded-full border bg-background px-2 text-xs shadow-sm hover:bg-muted', reaction.reacted_by_me && 'border-primary bg-primary/10 text-primary')}
+                              aria-label={`${reaction.reaction_count} reaction${reaction.reaction_count === 1 ? '' : 's'} ${reaction.reaction_value}`}
+                              disabled={reactingMessageKey === String(message.chat_key || '')}
+                              onClick={() => void toggleReaction(message, reaction.reaction_value)}
+                            >
+                              <span>{reaction.reaction_value}</span>
+                              <span>{reaction.reaction_count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                      <span className="px-2 text-[10px] text-muted-foreground">{message.sender_name || 'Portal User'}{message.created_at ? ` · ${message.created_at}` : ''}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <form onSubmit={(event) => void sendMessage(event)} data-skip-submit-confirmation="true" className="grid gap-2 border-t bg-card p-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              className="sr-only"
+              onChange={(event) => {
+                addPendingFiles(Array.from(event.currentTarget.files || []))
+                event.currentTarget.value = ''
+              }}
+            />
+            {replyTarget ? (
+              <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium">Reply to {replyTarget.sender_name || 'message'}</p>
+                  <p className="truncate text-xs text-muted-foreground">{replyTarget.message_status === 'REMOVED' ? 'Message has been removed' : replyTarget.text}</p>
+                </div>
+                <Button type="button" variant="ghost" size="icon-sm" aria-label="Cancel reply" onClick={() => setReplyTarget(null)}><X /></Button>
+              </div>
+            ) : null}
+            {pendingAttachments.length > 0 ? (
+              <div className="flex flex-wrap gap-2 rounded-md bg-muted/30 p-2">
+                {pendingAttachments.map((attachment) => (
+                  <div key={attachment.id} className="relative size-16 overflow-hidden rounded-md border bg-background">
+                    <img src={attachment.previewUrl} alt={attachment.image_original_name || 'Pending attachment'} className="size-full object-cover" />
+                    {attachment.uploading ? <div className="absolute inset-0 grid place-items-center bg-background/70"><LoaderCircle className="size-4 animate-spin" /></div> : null}
+                    <button type="button" className="absolute right-1 top-1 rounded-full bg-background/90 p-0.5 text-destructive shadow" aria-label="Remove attachment" onClick={() => removePendingAttachment(attachment.id)}>
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div className="grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-end gap-2">
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Attach image file" onClick={() => fileInputRef.current?.click()} disabled={sending || pendingAttachments.length >= 10}><ImagePlus /></Button>
+              <div className="relative">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Insert emoji"
+                  aria-expanded={emojiPickerOpen}
+                  onClick={() => setEmojiPickerOpen((open) => !open)}
+                  disabled={sending || !selectedGroup}
+                >
+                  <Smile />
+                </Button>
+                {emojiPickerOpen ? (
+                  <div className="absolute bottom-full left-0 z-40 mb-2 grid w-44 grid-cols-6 gap-1 rounded-md border bg-popover p-2 shadow-lg">
+                    {messengerEmojiChoices.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        className="grid size-6 place-items-center rounded text-base hover:bg-muted"
+                        aria-label={`Insert ${emoji}`}
+                        onClick={() => insertEmoji(emoji)}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <Textarea
+                ref={messageInputRef}
+                aria-label="Message"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onPaste={handleComposerPaste}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    event.currentTarget.form?.requestSubmit()
+                  }
+                }}
+                placeholder={messengerAuthBlocked ? 'Sign in to send messages' : (selectedDirectMember ? `Message ${selectedDirectName}` : 'Aa')}
+                maxLength={8000}
+                rows={1}
+                className="max-h-28 min-h-10 resize-none rounded-2xl"
+                disabled={sending || !selectedGroup || messengerAuthBlocked}
+              />
+              <Button type="submit" size="icon-sm" aria-label="Send message" disabled={sending || !selectedGroup || messengerAuthBlocked || (!draft.trim() && pendingAttachments.length === 0)}>
+                {sending ? <LoaderCircle className="animate-spin" /> : <Send />}
+              </Button>
+            </div>
+            {messageStatus ? <p className="text-xs text-destructive">{messageStatus}</p> : null}
+          </form>
+        </div>
+
+        <aside className="hidden w-72 shrink-0 border-l bg-card p-4 lg:grid lg:content-start lg:gap-4" aria-label="Conversation details">
+          <div className="grid justify-items-center gap-2 text-center">
+	            {selectedDirectMember ? (
+	              <Avatar className="size-16 border bg-muted">
+	                {uploadedImageViewerUrl(String(selectedDirectMember.user_avatar_path || ''), 'S') !== '' ? <AvatarImage src={uploadedImageViewerUrl(String(selectedDirectMember.user_avatar_path || ''), 'S')} alt="" className="size-full object-cover" /> : <AvatarImage src={emptyUserAvatarUrl} alt="" className="p-3 opacity-80" />}
+	                <AvatarFallback className="text-sm">{userInitials(selectedDirectMember as unknown as Record<string, string>)}</AvatarFallback>
+	              </Avatar>
+	            ) : (
+	              <MessengerGroupAvatar group={selectedGroup} groupName={selectedGroupName} className="size-16" iconClassName="size-5" linked viewerSizeTokens="L" />
+	            )}
+	            <div>
+	              <h2 className="text-sm font-semibold">{conversationTitle}</h2>
+	              <p className="text-xs text-muted-foreground">{selectedDirectMember ? 'Direct message' : (selectedGroup ? 'Active group' : 'No active group')}</p>
+	            </div>
+	          </div>
+	          <div className="grid gap-3 border-t pt-4">
+	            <div className="flex items-center justify-between gap-2">
+	              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Users</h3>
+	              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{groupMembers.length}</Badge>
+	            </div>
+	            {selectedDirectUserKey !== '' ? (
+	              <Button type="button" variant="outline" size="sm" className="min-w-0 justify-start" onClick={() => {
+	                setConversationSwitching(true)
+	                setSelectedDirectUserKey('')
+	                setHasOlderMessages(false)
+	                setReplyTarget(null)
+	                setReactionPickerMessageKey('')
+	                setMessageStatus('')
+	              }}>
+	                <Users data-icon="inline-start" />
+	                <span className="truncate">{selectedGroupName || 'Group chat'}</span>
+	              </Button>
+	            ) : null}
+	            {groupMembers.length > 0 ? (
+	              <div className="grid gap-2">
+	                {groupMembers.map((member) => {
+	                  const avatarUrl = uploadedImageViewerUrl(String(member.user_avatar_path || ''), 'XS')
+	                  const chatName = String(member.user_chat_name || '').trim()
+	                  const activeDirect = selectedDirectUserKey === member.user_key
+	                  return (
+	                    <button key={member.user_key} type="button" className={cn('flex min-w-0 items-center gap-3 rounded-md px-2 py-1 text-left hover:bg-muted/70', activeDirect && 'bg-muted')} onClick={() => {
+                        if (activeDirect) return
+                        setConversationSwitching(true)
+	                      setSelectedDirectUserKey(member.user_key)
+	                      setHasOlderMessages(false)
+	                      setReplyTarget(null)
+	                      setReactionPickerMessageKey('')
+	                      setMessageStatus('')
+	                    }}>
+	                      <Avatar className="size-9 border bg-muted">
+	                        {avatarUrl !== '' ? <AvatarImage src={avatarUrl} alt="" className="size-full object-cover" /> : <AvatarImage src={emptyUserAvatarUrl} alt="" className="p-1.5 opacity-80" />}
+	                        <AvatarFallback className="text-xs">{userInitials(member as unknown as Record<string, string>)}</AvatarFallback>
+	                      </Avatar>
+	                      <div className="min-w-0">
+	                        <p className="truncate text-sm font-medium">{member.user_name}</p>
+	                        <p className="truncate text-xs text-muted-foreground">{activeDirect ? 'Direct message open' : (chatName !== '' ? chatName : 'No chat name')}</p>
+	                      </div>
+	                    </button>
+	                  )
+	                })}
+              </div>
+            ) : (
+              <p className="text-xs leading-5 text-muted-foreground">No active users in this group.</p>
+            )}
+          </div>
+        </aside>
+      </div>
+    </section>
+  )
+}
+
 function Shell({
   children,
   activeView,
@@ -777,10 +2562,22 @@ function Shell({
   onThemeToggle: () => void
 }) {
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  const [messengerOpen, setMessengerOpen] = usePersistentMessengerOpen()
+  const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen)
   const defaultSidebarOpen = React.useMemo(
     () => readBooleanCookie(sidebarCookieName) ?? true,
     [],
   )
+  const openMessenger = React.useCallback(() => {
+    clearUnread()
+    setMessengerOpen(true)
+  }, [clearUnread, setMessengerOpen])
+  const handleViewChange = React.useCallback((view: string) => {
+    setMessengerOpen(false)
+    onViewChange(view)
+  }, [onViewChange, setMessengerOpen])
+  const displayTitle = messengerOpen ? 'Messenger' : title
+  const displayBreadcrumbItems = messengerOpen ? [...breadcrumbItems.slice(0, 1), 'Messenger'] : breadcrumbItems
 
   return (
     <TooltipProvider>
@@ -792,17 +2589,17 @@ function Shell({
         } as React.CSSProperties}
       >
         <AdminSidebarMobilePersistence defaultOpen={defaultSidebarOpen} />
-        <AppSidebar activeView={activeView} onViewChange={onViewChange} />
+        <AppSidebar activeView={activeView} onViewChange={handleViewChange} theme={theme} onThemeToggle={onThemeToggle} onNavigate={() => setMessengerOpen(false)} />
         <SidebarInset>
-          <header className="sticky top-0 z-20 flex min-h-16 shrink-0 flex-col items-stretch justify-center gap-2 border-b bg-background/95 px-4 py-2 backdrop-blur transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:min-h-12 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex min-w-0 items-center gap-2">
+          <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
+            <div className="flex min-w-0 items-center gap-3">
               <SidebarTrigger className="-ml-1" />
-              <Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-auto" />
+              <Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" />
               <div className="min-w-0">
-                <h1 className="truncate text-base font-medium tracking-normal">{title}</h1>
+                <h1 className="truncate text-sm font-semibold tracking-normal">{displayTitle}</h1>
                 <ShadcnBreadcrumb>
                   <BreadcrumbList>
-                    {breadcrumbItems.map((item, index) => (
+                    {displayBreadcrumbItems.map((item, index) => (
                       <React.Fragment key={`${item}-${index}`}>
                         {index > 0 && <BreadcrumbSeparator />}
                         <BreadcrumbItem>
@@ -814,12 +2611,9 @@ function Shell({
                 </ShadcnBreadcrumb>
               </div>
             </div>
-            <nav className="flex min-w-0 items-center justify-start gap-2 overflow-x-auto pb-1 sm:justify-end sm:pb-0">
-              <SharinganHeaderToggle />
-              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href="https://ui.shadcn.com/" target="_blank" rel="noreferrer">
-                <ExternalLink data-icon="inline-start" />
-                shadcn/ui
-              </a>
+            <nav className="ml-auto flex min-w-0 items-center justify-end gap-2" aria-label="Display controls">
+              <MessengerHeaderButton onOpen={openMessenger} unreadCount={unreadCount} />
+              <HeaderControlSeparator />
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -830,19 +2624,15 @@ function Shell({
                 </TooltipTrigger>
                 <TooltipContent>{nextThemeLabel}</TooltipContent>
               </Tooltip>
-              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={projectUrl()}>User Portal</a>
-              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href="./foundation.php">Foundation</a>
-              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={projectUrl('phases/?view=flow&ui_ux_flow=admin&ui_ux_section=body')}><Sparkles data-icon="inline-start" />UI - UX Flow</a>
-              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={projectUrl('phases/?phase=')}>Phase Manager</a>
             </nav>
           </header>
 
           <main className={cn(
-            'mx-auto flex w-full max-w-[1600px] flex-1 flex-col',
-            'gap-4 p-4'
+            'flex w-full flex-1 flex-col',
+            'gap-4 p-4',
+            (activeView === 'bed-lookup' || activeView === 'health' || messengerOpen) && 'min-h-0 overflow-hidden'
           )}>
-            <FlashMessage />
-            {children}
+            {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><FlashMessage />{children}</>}
           </main>
 
           <AdminDebugBar activeView={activeView} buildTarget={buildTarget} title={title} />
@@ -966,19 +2756,26 @@ function AdminDebugBar({ activeView, buildTarget, title }: { activeView: string;
 function AppSidebar({
   activeView,
   onViewChange,
+  theme,
+  onThemeToggle,
+  onNavigate,
   ...props
 }: React.ComponentProps<typeof Sidebar> & {
   activeView: string
   onViewChange: (view: string) => void
+  theme: AdminThemeMode
+  onThemeToggle: () => void
+  onNavigate?: () => void
 }) {
   return (
-    <Sidebar collapsible="icon" {...props}>
-      <SidebarHeader>
+    <Sidebar collapsible="icon" onClickCapture={(event) => {
+      if ((event.target as HTMLElement).closest('a')) onNavigate?.()
+    }} {...props}>
+      <SidebarHeader className="h-14 border-b border-sidebar-border/70 p-1">
         <TeamSwitcher />
       </SidebarHeader>
       <SidebarContent>
-        <NavMain activeView={activeView} onViewChange={onViewChange} />
-        <NavProjects activeView={activeView} onViewChange={onViewChange} />
+        <NavMain activeView={activeView} onViewChange={onViewChange} theme={theme} onThemeToggle={onThemeToggle} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser />
@@ -1032,20 +2829,20 @@ function TeamSwitcher() {
 function NavMain({
   activeView,
   onViewChange,
+  theme,
+  onThemeToggle,
 }: {
   activeView: string
   onViewChange: (view: string) => void
+  theme: AdminThemeMode
+  onThemeToggle: () => void
 }) {
+  const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+
   return (
     <SidebarGroup>
       <SidebarGroupLabel>Platform</SidebarGroupLabel>
       <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton tooltip="Phase Builder" render={<a href={projectUrl('phases/?phase=')} />}>
-            <FolderKanban />
-            <span>Phase Builder</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
         {sidebarSections.map((item) => {
           const Icon = item.icon
           const isActive = item.key === activeView || item.items?.some((subItem) => subItem.key === activeView)
@@ -1069,47 +2866,52 @@ function NavMain({
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <SidebarMenuSub>
-                  {item.items.map((subItem) => (
-                    <SidebarMenuSubItem key={subItem.key}>
-                      <SidebarMenuSubButton isActive={activeView === subItem.key} onClick={() => onViewChange(subItem.key)}>
-                        <span>{subItem.label}</span>
-                      </SidebarMenuSubButton>
-                    </SidebarMenuSubItem>
-                  ))}
+                  {item.items.map((subItem) => {
+                    const SubIcon = subItem.icon
+
+                    return (
+                      <SidebarMenuSubItem key={subItem.key}>
+                        <SidebarMenuSubButton isActive={activeView === subItem.key} onClick={() => onViewChange(subItem.key)}>
+                          {SubIcon ? <SubIcon /> : null}
+                          <span>{subItem.label}</span>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                    )
+                  })}
+                  {item.key === 'settings-group' ? (
+                    <>
+                      <SidebarMenuSubItem>
+                        <div className="my-1 border-t border-sidebar-border/70" />
+                      </SidebarMenuSubItem>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton render={<a href={projectUrl()} />}>
+                          <span>User Portal</span>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton render={<a href="./foundation.php" />}>
+                          <span>Foundation</span>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton render={<a href="https://ui.shadcn.com/" target="_blank" rel="noreferrer" />}>
+                          <span>shadcn/ui</span>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                      <SidebarMenuSubItem>
+                        <div className="grid gap-2 px-2 py-2">
+                          <SharinganSidebarToggle />
+                          <Button type="button" variant="outline" size="sm" className="w-full justify-start" aria-label={nextThemeLabel} onClick={onThemeToggle}>
+                            {theme === 'dark' ? <Sun data-icon="inline-start" /> : <Moon data-icon="inline-start" />}
+                            {nextThemeLabel}
+                          </Button>
+                        </div>
+                      </SidebarMenuSubItem>
+                    </>
+                  ) : null}
                 </SidebarMenuSub>
               </CollapsibleContent>
             </Collapsible>
-          )
-        })}
-      </SidebarMenu>
-    </SidebarGroup>
-  )
-}
-
-function NavProjects({
-  activeView,
-  onViewChange,
-}: {
-  activeView: string
-  onViewChange: (view: string) => void
-}) {
-  return (
-    <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-      <SidebarGroupLabel>Projects</SidebarGroupLabel>
-      <SidebarMenu>
-        {projectSidebarSections.map((item) => {
-          const Icon = item.icon
-          return (
-            <SidebarMenuItem key={item.key}>
-              <SidebarMenuButton isActive={activeView === item.key} onClick={() => onViewChange(item.key)}>
-                <Icon />
-                <span>{item.label}</span>
-              </SidebarMenuButton>
-              <SidebarMenuAction showOnHover>
-                <MoreHorizontal />
-                <span className="sr-only">More</span>
-              </SidebarMenuAction>
-            </SidebarMenuItem>
           )
         })}
       </SidebarMenu>
@@ -1259,16 +3061,20 @@ function AuthLanding({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeT
             <p className="truncate text-xs text-muted-foreground">{loginSettingValue('header_subtitle', 'Administrator Portal')}</p>
           </div>
         </div>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={onThemeToggle} />
-            }
-          >
-            {theme === 'dark' ? <Sun /> : <Moon />}
-          </TooltipTrigger>
-          <TooltipContent>{nextThemeLabel}</TooltipContent>
-        </Tooltip>
+        <div className="flex items-center gap-2">
+          <MessengerHeaderButton />
+          <HeaderControlSeparator />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={onThemeToggle} />
+              }
+            >
+              {theme === 'dark' ? <Sun /> : <Moon />}
+            </TooltipTrigger>
+            <TooltipContent>{nextThemeLabel}</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -1350,17 +3156,22 @@ function FoundationTable({ headers, children }: { headers: string[]; children: R
 function DashboardPanel({
   title,
   description,
+  action,
   children,
 }: {
   title: string
   description?: string
+  action?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <section className="overflow-hidden rounded-lg border bg-card">
-      <div className="border-b px-4 py-3">
-        <h3 className="text-base font-semibold tracking-normal">{title}</h3>
-        {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
+      <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold tracking-normal">{title}</h3>
+          {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
       {children}
     </section>
@@ -1375,24 +3186,31 @@ type ConfirmationState = {
   onConfirm: () => void
 } | null
 
+function formatDisplayTitle(value: string): string {
+  return value.replace(/[A-Za-z][^\s-]*/g, (word) => {
+    if (word.length > 1 && word === word.toUpperCase()) return word
+    return word.charAt(0).toUpperCase() + word.slice(1)
+  })
+}
+
 function ConfirmationModal({ confirmation, onClose }: { confirmation: ConfirmationState; onClose: () => void }) {
   if (!confirmation) return null
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 px-4 backdrop-blur-[1px]" role="dialog" aria-modal="true" aria-labelledby="confirmation-title">
       <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-2xl">
-        <h2 id="confirmation-title" className="text-lg font-bold tracking-normal">{confirmation.title}</h2>
+        <h2 id="confirmation-title" className="text-lg font-bold tracking-normal">{formatDisplayTitle(confirmation.title)}</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">{confirmation.message}</p>
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             type="button"
-            variant={confirmation.destructive ? 'destructive' : 'default'}
-            onClick={() => {
-              const onConfirm = confirmation.onConfirm
-              onClose()
-              window.setTimeout(onConfirm, 0)
-            }}
+	            variant={confirmation.destructive ? 'destructive' : 'default'}
+	            onClick={() => {
+	              const onConfirm = confirmation.onConfirm
+	              onConfirm()
+	              window.setTimeout(onClose, 0)
+	            }}
           >
             {confirmation.confirmLabel}
           </Button>
@@ -1442,28 +3260,43 @@ function Dashboard() {
         </div>
 
         <TabsContent value="overview" className="m-0">
-          <DashboardPanel title="Foundation" description="Secure access and administrator boundaries for this build.">
-            <div className="grid gap-0 lg:grid-cols-2">
-              <div className="border-b p-4 lg:border-b-0 lg:border-r">
-                <div className="mb-2 flex items-center gap-2">
-                  <ShieldCheck className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                  <h3 className="text-sm font-semibold">Authentication Foundation</h3>
+          <div className="grid gap-4">
+            <DashboardPanel title="Foundation" description="Secure access and administrator boundaries for this build.">
+              <div className="grid gap-0 lg:grid-cols-2">
+                <div className="border-b p-4 lg:border-b-0 lg:border-r">
+                  <div className="mb-2 flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                    <h3 className="text-sm font-semibold">Authentication Foundation</h3>
+                  </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Secure sessions, CSRF validation, password hashing, failed-login tracking, account lockout, login history, session records, and logout revocation are implemented.
+                  </p>
                 </div>
-                <p className="text-sm leading-6 text-muted-foreground">
-                  Secure sessions, CSRF validation, password hashing, failed-login tracking, account lockout, login history, session records, and logout revocation are implemented.
-                </p>
-              </div>
-              <div className="p-4">
-                <div className="mb-2 flex items-center gap-2">
-                  <FolderKanban className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                  <h3 className="text-sm font-semibold">Phase 1 Boundaries</h3>
+                <div className="p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <FolderKanban className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                    <h3 className="text-sm font-semibold">Administrator Boundaries</h3>
+                  </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Management screens stay inside the administrator shell with active-record filters, configuration forms, audit visibility, and confirmation-gated status changes.
+                  </p>
                 </div>
-                <p className="text-sm leading-6 text-muted-foreground">
-                  This target establishes the React/shadcn-style administrator template. CRUD screens for branches, projects, users, roles, permissions, settings, and audit logs remain separate Build Target IDs.
-                </p>
               </div>
-            </div>
-          </DashboardPanel>
+            </DashboardPanel>
+            <DashboardPanel title="Management Readiness" description="Admin areas, active records, and confirmation behavior available in this workspace.">
+              <div className="grid gap-2 p-4 md:grid-cols-2 xl:grid-cols-4">
+                {(Array.isArray(data.managementReadiness) ? data.managementReadiness : []).map((item) => (
+                  <a key={phaseField(item, 'key')} className="grid gap-2 rounded-md border bg-muted/10 p-3 hover:bg-muted/40" href={projectUrl(`administrator/?tab=${phaseField(item, 'route', 'dashboard')}`)}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate text-sm font-medium">{phaseField(item, 'label', 'Management')}</span>
+                      <Badge variant="outline">{Number(item.active_records || 0)}</Badge>
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">{formatSettingLabel(phaseField(item, 'confirmation', 'confirmation'))}</p>
+                  </a>
+                ))}
+              </div>
+            </DashboardPanel>
+          </div>
         </TabsContent>
 
         <TabsContent value="access" className="m-0">
@@ -1563,42 +3396,6 @@ function Dashboard() {
   )
 }
 
-function FamilyReportsView() {
-  const report = data.familyReport || { allowed: false, filters: {}, summary: {}, rows: [], pagination: {} }
-  const filters = report.filters || {}
-  const currentPage = Number(report.pagination.page || 1)
-  const totalPages = Number(report.pagination.pages || 1)
-  const exportParams = new URLSearchParams({ tab: 'family-reports', family_report_export: 'csv' })
-  Object.entries(filters).forEach(([key, value]) => { if (value) exportParams.set(key, value) })
-  const pageHref = (page: number) => {
-    const params = new URLSearchParams({ tab: 'family-reports', family_report_page: String(page) })
-    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value) })
-    return `./?${params.toString()}`
-  }
-
-  if (!report.allowed) {
-    return <Card><CardHeader><CardTitle>Family Reports</CardTitle><CardDescription>Your account does not have permission to view family member reports.</CardDescription></CardHeader></Card>
-  }
-
-  return (
-    <div className="flex flex-1 flex-col gap-4">
-      <section className="flex flex-col gap-3 rounded-lg border bg-card p-4 lg:flex-row lg:items-end lg:justify-between">
-        <div><Badge variant="secondary" className="w-fit">Administrator / Read Only</Badge><h2 className="mt-2 text-2xl font-semibold tracking-normal">Family Member Reports</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Review family member coverage, vehicle totals, and education records with privacy-safe contact values.</p></div>
-        <div className="flex flex-wrap gap-2"><a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={projectUrl()}><Users data-icon="inline-start" />User Portal</a><a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={`./?${exportParams.toString()}`}><Download data-icon="inline-start" />Export CSV</a></div>
-      </section>
-
-      <section className="grid gap-0 rounded-lg border bg-card md:grid-cols-3"><div className="border-b p-4 md:border-b-0 md:border-r"><p className="text-xs text-muted-foreground">Family members</p><strong className="mt-1 block text-2xl">{Number(report.summary.members || 0)}</strong></div><div className="border-b p-4 md:border-b-0 md:border-r"><p className="text-xs text-muted-foreground">Vehicles</p><strong className="mt-1 block text-2xl">{Number(report.summary.vehicles || 0)}</strong></div><div className="p-4"><p className="text-xs text-muted-foreground">Education records</p><strong className="mt-1 block text-2xl">{Number(report.summary.education || 0)}</strong></div></section>
-
-      <Card>
-        <CardHeader><CardTitle>Filters</CardTitle><CardDescription>Search and filter the read-only report. Contact values are masked in the report and export.</CardDescription></CardHeader>
-        <CardContent><form method="get" className="grid gap-4"><input type="hidden" name="tab" value="family-reports" /><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><div className="grid gap-2 md:col-span-2"><Label htmlFor="family_report_search">Search</Label><Input id="family_report_search" name="family_report_search" defaultValue={filters.family_report_search || ''} placeholder="Name, relationship, email, phone, or key" /></div><div className="grid gap-2"><Label htmlFor="family_report_status">Status</Label><Input id="family_report_status" name="family_report_status" defaultValue={filters.family_report_status || ''} placeholder="ACTIVE" /></div><div className="grid gap-2"><Label htmlFor="family_report_relationship">Relationship</Label><Input id="family_report_relationship" name="family_report_relationship" defaultValue={filters.family_report_relationship || ''} placeholder="Child, parent, spouse" /></div><div className="grid gap-2"><Label htmlFor="family_report_date_from">Created from</Label><Input id="family_report_date_from" name="family_report_date_from" type="date" defaultValue={filters.family_report_date_from || ''} /></div><div className="grid gap-2"><Label htmlFor="family_report_date_to">Created to</Label><Input id="family_report_date_to" name="family_report_date_to" type="date" defaultValue={filters.family_report_date_to || ''} /></div></div><div className="flex flex-wrap gap-2"><Button type="submit"><Search data-icon="inline-start" />Apply Filters</Button><a className={buttonClassName({ variant: 'ghost' })} href="./?tab=family-reports">Clear</a></div></form></CardContent>
-      </Card>
-
-      <Card><CardHeader><CardTitle>Member Coverage</CardTitle><CardDescription>Page {currentPage} of {totalPages} · {Number(report.pagination.total || 0)} matching members</CardDescription></CardHeader><CardContent><div className="overflow-auto"><Table><TableHeader><TableRow><TableHead>Member</TableHead><TableHead>Relationship</TableHead><TableHead>Contact</TableHead><TableHead>Vehicles</TableHead><TableHead>Education</TableHead><TableHead>Status</TableHead><TableHead>Updated</TableHead></TableRow></TableHeader><TableBody>{report.rows.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No family member records match the current filters.</TableCell></TableRow> : report.rows.map((row) => <TableRow key={String(row.member_key)}><TableCell><strong>{String(row.full_name || '')}</strong><p className="font-mono text-xs text-muted-foreground">{String(row.member_key || '')}</p></TableCell><TableCell>{String(row.relationship_to_user || '')}</TableCell><TableCell><div>{String(row.contact_email || 'Hidden')}</div><div className="text-xs text-muted-foreground">{String(row.contact_phone || 'Hidden')}</div></TableCell><TableCell><Badge variant="outline">{Number(row.vehicle_count || 0)}</Badge></TableCell><TableCell><Badge variant="outline">{Number(row.education_count || 0)}</Badge></TableCell><TableCell><Badge variant={String(row.member_status) === 'ACTIVE' ? 'default' : 'secondary'}>{String(row.member_status || '')}</Badge></TableCell><TableCell className="whitespace-nowrap text-xs">{String(row.member_updated_at || row.member_created_at || '')}</TableCell></TableRow>)}</TableBody></Table></div><div className="mt-4 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">Showing up to 25 records per page.</span><div className="flex gap-2">{currentPage > 1 ? <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={pageHref(currentPage - 1)}>Previous</a> : null}{currentPage < totalPages ? <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={pageHref(currentPage + 1)}>Next</a> : null}</div></div></CardContent></Card>
-    </div>
-  )
-}
-
 function BranchCrudView() {
   const [editingBranchKey, setEditingBranchKey] = React.useState('')
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
@@ -1608,7 +3405,7 @@ function BranchCrudView() {
   return (
     <>
       <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <div className="shrink-0 flex flex-wrap items-end justify-between gap-3">
         <div>
           <Badge>Administrator Branch CRUD</Badge>
           <h2 className="mt-2 text-2xl font-bold tracking-normal">Branches & Projects</h2>
@@ -1990,6 +3787,17 @@ function csvToArray(value: string | undefined): string[] {
   return (value || '').split(',').map((item) => item.trim()).filter(Boolean)
 }
 
+function jsonStringArray(value: string | undefined): string[] {
+  const source = (value || '').trim()
+  if (source === '') return []
+  try {
+    const decoded = JSON.parse(source)
+    return Array.isArray(decoded) ? decoded.map((item) => String(item).trim()).filter(Boolean) : []
+  } catch {
+    return csvToArray(source)
+  }
+}
+
 function MultiSelect({
   id,
   name,
@@ -2023,6 +3831,242 @@ function MultiSelect({
           </option>
         ))}
       </select>
+    </div>
+  )
+}
+
+function DragAssignSelect({
+  id,
+  name,
+  label,
+  options,
+  valueKey,
+  labelKey,
+  iconUrlKey,
+  iconSizeTokens = 'XS',
+  defaultValues,
+  bypassName,
+  bypassDefaultValues = [],
+  bypassDescription,
+}: {
+  id: string
+  name: string
+  label: string
+  options: Array<Record<string, string>>
+  valueKey: string
+  labelKey: string
+  iconUrlKey?: string
+  iconSizeTokens?: string
+  defaultValues: string[]
+  bypassName?: string
+  bypassDefaultValues?: string[]
+  bypassDescription?: string
+}) {
+  const normalizedOptions = React.useMemo(() => {
+    const seen = new Set<string>()
+
+    return options.reduce<Array<{ value: string; label: string; iconUrl: string }>>((rows, option) => {
+      const value = String(option[valueKey] ?? '').trim()
+      if (value === '' || seen.has(value)) return rows
+      seen.add(value)
+      const rawIconUrl = iconUrlKey ? String(option[iconUrlKey] ?? '').trim() : ''
+      rows.push({
+        value,
+        label: String(option[labelKey] ?? value).trim() || value,
+        iconUrl: rawIconUrl !== '' ? uploadedImageViewerUrl(rawIconUrl, iconSizeTokens) : '',
+      })
+
+      return rows
+    }, [])
+  }, [options, valueKey, labelKey, iconUrlKey, iconSizeTokens])
+  const optionValuesKey = React.useMemo(() => normalizedOptions.map((option) => option.value).join('|'), [normalizedOptions])
+  const defaultValuesKey = React.useMemo(() => defaultValues.join('|'), [defaultValues])
+  const bypassDefaultValuesKey = React.useMemo(() => bypassDefaultValues.join('|'), [bypassDefaultValues])
+  const [assignedValues, setAssignedValues] = React.useState<string[]>(() => {
+    const valid = new Set(normalizedOptions.map((option) => option.value))
+    return defaultValues.filter((value, index, values) => valid.has(value) && values.indexOf(value) === index)
+  })
+  const [bypassValues, setBypassValues] = React.useState<string[]>(() => {
+    const assigned = new Set(defaultValues)
+    return bypassDefaultValues.filter((value, index, values) => assigned.has(value) && values.indexOf(value) === index)
+  })
+  const [markedAvailableValues, setMarkedAvailableValues] = React.useState<string[]>([])
+  const [markedAssignedValues, setMarkedAssignedValues] = React.useState<string[]>([])
+  const [dragValues, setDragValues] = React.useState<string[]>([])
+
+  React.useEffect(() => {
+    const valid = new Set(normalizedOptions.map((option) => option.value))
+    const nextAssignedValues = defaultValues.filter((value, index, values) => valid.has(value) && values.indexOf(value) === index)
+    const assigned = new Set(nextAssignedValues)
+    setAssignedValues(nextAssignedValues)
+    setBypassValues(bypassDefaultValues.filter((value, index, values) => assigned.has(value) && values.indexOf(value) === index))
+    setMarkedAvailableValues([])
+    setMarkedAssignedValues([])
+    setDragValues([])
+  }, [defaultValuesKey, bypassDefaultValuesKey, optionValuesKey])
+
+  const assignedSet = new Set(assignedValues)
+  const availableOptions = normalizedOptions.filter((option) => !assignedSet.has(option.value))
+  const assignedOptions = assignedValues
+    .map((value) => normalizedOptions.find((option) => option.value === value))
+    .filter((option): option is { value: string; label: string; iconUrl: string } => Boolean(option))
+  const availableMarkedSet = new Set(markedAvailableValues)
+  const assignedMarkedSet = new Set(markedAssignedValues)
+  const selectedAvailableCount = markedAvailableValues.filter((value) => !assignedSet.has(value)).length
+  const selectedAssignedCount = markedAssignedValues.filter((value) => assignedSet.has(value)).length
+  const addValues = (values: string[]) => {
+    const validAvailable = values.filter((value, index) => !assignedSet.has(value) && normalizedOptions.some((option) => option.value === value) && values.indexOf(value) === index)
+    if (validAvailable.length === 0) return
+    setAssignedValues((current) => [...current, ...validAvailable.filter((value) => !current.includes(value))])
+    setMarkedAvailableValues((current) => current.filter((value) => !validAvailable.includes(value)))
+  }
+  const removeValues = (values: string[]) => {
+    const removable = values.filter((value, index) => assignedSet.has(value) && values.indexOf(value) === index)
+    if (removable.length === 0) return
+    setAssignedValues((current) => current.filter((value) => !removable.includes(value)))
+    setBypassValues((current) => current.filter((value) => !removable.includes(value)))
+    setMarkedAssignedValues((current) => current.filter((value) => !removable.includes(value)))
+  }
+  const toggleBypass = (value: string) => {
+    setBypassValues((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])
+  }
+  const toggleMarked = (value: string, side: 'available' | 'assigned') => {
+    const setter = side === 'available' ? setMarkedAvailableValues : setMarkedAssignedValues
+    setter((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])
+  }
+  const dragStart = (event: React.DragEvent<HTMLElement>, value: string, side: 'available' | 'assigned') => {
+    const sourceMarked = side === 'available' ? markedAvailableValues : markedAssignedValues
+    const values = sourceMarked.includes(value) ? sourceMarked : [value]
+    setDragValues(values)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', values.join(','))
+  }
+  const dropValues = (event: React.DragEvent<HTMLDivElement>, side: 'available' | 'assigned') => {
+    event.preventDefault()
+    const values = dragValues.length > 0 ? dragValues : event.dataTransfer.getData('text/plain').split(',').map((value) => value.trim()).filter(Boolean)
+    if (side === 'assigned') {
+      addValues(values)
+    } else {
+      removeValues(values)
+    }
+    setDragValues([])
+  }
+  const optionIcon = (option: { value: string; label: string; iconUrl: string }) => (
+    <span className="relative grid size-6 shrink-0 place-items-center overflow-hidden rounded-md bg-muted text-muted-foreground ring-1 ring-border/60" aria-hidden="true">
+      <Users className="size-3.5" />
+      {option.iconUrl !== '' ? (
+        <img
+          src={option.iconUrl}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          loading="lazy"
+          onError={(event) => {
+            event.currentTarget.style.display = 'none'
+          }}
+        />
+      ) : null}
+    </span>
+  )
+  const optionRow = (option: { value: string; label: string; iconUrl: string }, side: 'available' | 'assigned') => {
+    const checked = side === 'available' ? availableMarkedSet.has(option.value) : assignedMarkedSet.has(option.value)
+    if (side === 'assigned') {
+      const bypassChecked = bypassValues.includes(option.value)
+
+      return (
+        <div
+          key={option.value}
+          draggable
+          className={cn(
+            'flex min-h-9 w-full cursor-grab items-center gap-2 rounded-md bg-background/70 px-2 text-left text-sm text-muted-foreground transition active:cursor-grabbing hover:bg-background hover:text-foreground',
+            checked && 'bg-primary/10 text-foreground ring-1 ring-primary/20',
+            bypassChecked && 'bg-emerald-500/10 text-emerald-100 ring-1 ring-emerald-300/20',
+          )}
+          onClick={() => toggleMarked(option.value, side)}
+          onDoubleClick={() => removeValues([option.value])}
+          onDragStart={(event) => dragStart(event, option.value, side)}
+          role="button"
+          tabIndex={0}
+          aria-pressed={checked}
+        >
+          <Checkbox
+            checked={bypassChecked}
+            onCheckedChange={() => toggleBypass(option.value)}
+            onClick={(event) => event.stopPropagation()}
+            aria-label={`Allow ${option.label} to bypass task stages`}
+	          />
+	          {optionIcon(option)}
+	          <span className="min-w-0 flex-1 truncate">{option.label}</span>
+          {bypassChecked ? <Badge variant="outline" className="shrink-0 border-emerald-300/25 bg-emerald-500/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-emerald-100">Bypass</Badge> : null}
+          <GripVertical className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </div>
+      )
+    }
+
+    return (
+      <button
+        key={option.value}
+        type="button"
+        draggable
+        className={cn(
+          'flex min-h-9 w-full cursor-grab items-center gap-2 rounded-md px-2 text-left text-sm transition active:cursor-grabbing',
+          checked ? 'bg-primary/15 text-foreground ring-1 ring-primary/25' : 'bg-background/70 text-muted-foreground hover:bg-background hover:text-foreground',
+        )}
+        onClick={() => toggleMarked(option.value, side)}
+        onDoubleClick={() => side === 'available' ? addValues([option.value]) : removeValues([option.value])}
+        onDragStart={(event) => dragStart(event, option.value, side)}
+        aria-pressed={checked}
+      >
+        {optionIcon(option)}
+        <span className="min-w-0 flex-1 truncate">{option.label}</span>
+        {checked ? <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] uppercase tracking-wide">Selected</Badge> : null}
+        <GripVertical className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </button>
+    )
+  }
+
+  return (
+    <div className="grid gap-2">
+      <Label id={`${id}-label`}>{label}</Label>
+      {assignedValues.map((value) => <input key={value} type="hidden" name={name} value={value} />)}
+      {bypassName ? bypassValues.map((value) => <input key={value} type="hidden" name={bypassName} value={value} />) : null}
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" aria-labelledby={`${id}-label`}>
+        <div
+          id={id}
+          className="grid min-h-44 grid-rows-[auto_minmax(0,1fr)] gap-2 rounded-md bg-muted/20 p-3"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => dropValues(event, 'available')}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Available</span>
+            <Badge variant="outline">{availableOptions.length}</Badge>
+          </div>
+          <div className="grid max-h-48 content-start gap-1 overflow-y-auto pr-1">
+            {availableOptions.length > 0 ? availableOptions.map((option) => optionRow(option, 'available')) : <p className="rounded-md bg-background/50 px-3 py-4 text-xs text-muted-foreground">No available groups.</p>}
+          </div>
+        </div>
+        <div className="flex items-center justify-center gap-2 sm:flex-col">
+          <Button type="button" variant="outline" size="icon-sm" className="rounded-full" disabled={selectedAvailableCount === 0} onClick={() => addValues(markedAvailableValues)} aria-label="Move selected groups right" title="Move selected groups right">
+            <ArrowRight />
+          </Button>
+          <Button type="button" variant="outline" size="icon-sm" className="rounded-full" disabled={selectedAssignedCount === 0} onClick={() => removeValues(markedAssignedValues)} aria-label="Move selected groups left" title="Move selected groups left">
+            <ArrowLeft />
+          </Button>
+        </div>
+        <div
+          className="grid min-h-44 grid-rows-[auto_minmax(0,1fr)] gap-2 rounded-md bg-primary/5 p-3"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => dropValues(event, 'assigned')}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Selected</span>
+            <Badge variant="outline">{assignedOptions.length}</Badge>
+          </div>
+          <div className="grid max-h-48 content-start gap-1 overflow-y-auto pr-1">
+            {assignedOptions.length > 0 ? assignedOptions.map((option) => optionRow(option, 'assigned')) : <p className="rounded-md bg-background/50 px-3 py-4 text-xs text-muted-foreground">Drag selected groups here.</p>}
+          </div>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">{bypassDescription || 'Click one or more groups, then drag or use the arrow button to assign them.'}</p>
     </div>
   )
 }
@@ -2092,23 +4136,921 @@ function AssignmentCheckboxGrid({
   )
 }
 
+function UserPositionCrudView({ embedded = false, scopedGroupKey = '' }: { embedded?: boolean; scopedGroupKey?: string } = {}) {
+  const [editingPositionKey, setEditingPositionKey] = React.useState('')
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const positionFormRef = React.useRef<HTMLFormElement>(null)
+  const scopedGroup = scopedGroupKey ? data.groups.find((group) => group.group_key === scopedGroupKey) : undefined
+  const scopedPositions = scopedGroupKey ? data.positions.filter((position) => position.group_key === scopedGroupKey) : data.positions
+  const visiblePositions = scopedPositions.filter((position) => position.position_status !== 'DELETED')
+  const editingPosition = scopedPositions.find((position) => position.position_key === editingPositionKey)
+  const activeGroups = scopedGroup ? [scopedGroup] : data.groups.filter((group) => group.group_status !== 'DELETED')
+  const activeProjects = data.projects.filter((project) => project.project_status !== 'DELETED')
+  const positionGroupValue = editingPosition?.group_key || scopedGroup?.group_key || ''
+  const positionProjectValue = editingPosition?.project_key || scopedGroup?.project_key || activeProjects[0]?.project_key || ''
+  const inactivePositionActionReason = 'Deactivated positions only allow restore or delete.'
+  const activePositionRestoreReason = 'Position is already active.'
+
+  return (
+    <>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+
+      {!embedded ? <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <Badge>Administrator Position CRUD</Badge>
+          <h2 className="mt-2 text-2xl font-bold tracking-normal">Positions</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Maintain job positions under their owning user group.</p>
+        </div>
+        <Button type="button" onClick={() => setEditingPositionKey('')}>
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          New Position
+        </Button>
+      </div> : null}
+
+      <div className="grid gap-4 lg:grid-cols-12">
+	        <div className={embedded ? 'order-2 lg:col-span-4' : 'lg:col-span-4'}>
+	          <DashboardPanel title="Position Form" description="Each position belongs to one group. Users with this position must also be assigned to that group.">
+            <div className="p-4">
+              <form key={editingPosition?.position_key || 'new-position'} ref={positionFormRef} method="post" data-skip-submit-confirmation="true" className="grid gap-4">
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value="save_user_position" />
+                <input type="hidden" name="position_key" value={editingPosition?.position_key || ''} />
+                <input type="hidden" name="return_tab" value={embedded ? 'groups' : 'positions'} />
+                {scopedGroup ? <input type="hidden" name="project_key" value={positionProjectValue} /> : null}
+                <div className="grid gap-2">
+                  <Label htmlFor="position_code">Code</Label>
+                  <Input id="position_code" name="position_code" defaultValue={editingPosition?.position_code || ''} placeholder="NURSE" required />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="position_name">Name</Label>
+                  <Input id="position_name" name="position_name" defaultValue={editingPosition?.position_name || ''} placeholder="Nurse" required />
+                </div>
+                {!scopedGroup ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="position_project_key">Project</Label>
+                    <select
+                      id="position_project_key"
+                      name="project_key"
+                      defaultValue={positionProjectValue}
+                      required
+                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                    >
+                      <option value="">Select project</option>
+                      {activeProjects.map((project) => (
+                        <option key={project.project_key} value={project.project_key}>{project.project_code} - {project.project_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+	                {scopedGroup ? (
+	                  <input type="hidden" name="group_key" value={positionGroupValue} />
+	                ) : (
+                  <div className="grid gap-2">
+                    <Label htmlFor="position_group_key">Group</Label>
+                    <select
+                      id="position_group_key"
+                      name="group_key"
+                      defaultValue={positionGroupValue}
+                      required
+                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                    >
+                      <option value="">Select group</option>
+                      {activeGroups.map((group) => (
+                        <option key={group.group_key} value={group.group_key}>{group.group_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div className="grid gap-2">
+                  <Label htmlFor="position_status">Status</Label>
+                  <select
+                    id="position_status"
+                    name="position_status"
+                    defaultValue={editingPosition?.position_status || 'ACTIVE'}
+                    className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="INACTIVE">INACTIVE</option>
+                    <option value="DELETED">DELETED</option>
+                  </select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="position_description">Description</Label>
+                  <Textarea id="position_description" name="position_description" defaultValue={editingPosition?.position_description || ''} rows={4} />
+                </div>
+	                <div className="flex flex-wrap justify-end gap-2">
+	                  <Button
+	                    type="button"
+	                    onClick={() => setConfirmation({
+	                      title: editingPosition ? 'Confirm position update' : 'Confirm position creation',
+	                      message: editingPosition
+	                        ? `Update position ${editingPosition.position_code}?`
+	                        : 'Create this user position?',
+	                      confirmLabel: 'Save Position',
+	                      onConfirm: () => positionFormRef.current?.requestSubmit(),
+	                    })}
+	                  >
+	                    <Save className="h-4 w-4" aria-hidden="true" />
+	                    Save Position
+	                  </Button>
+                  {editingPosition ? (
+                    <button type="button" className={buttonClassName({ variant: 'outline' })} onClick={() => setEditingPositionKey('')}>
+                      Clear
+                    </button>
+                  ) : null}
+                </div>
+              </form>
+            </div>
+          </DashboardPanel>
+        </div>
+
+        <div className={embedded ? 'order-1 lg:col-span-8' : 'lg:col-span-8'}>
+          <DashboardPanel title="User Positions" description="Positions are grouped first, then assigned from the Users screen. Delete is blocked while active users reference the position.">
+            <div className="overflow-auto">
+              <FoundationTable headers={['Position', 'Group', 'Status', 'Description', 'Actions']}>
+                {visiblePositions.map((position) => {
+                  const positionActive = position.position_status === 'ACTIVE'
+                  const positionInactive = position.position_status === 'INACTIVE'
+                  const editDisabledReason = positionInactive ? inactivePositionActionReason : ''
+
+                  return (
+                    <TableRow key={position.position_key}>
+                      <TableCell>
+                        <strong>{position.position_code}</strong>
+                        <p className="text-muted-foreground">{position.position_name}</p>
+                      </TableCell>
+                      <TableCell>{position.group_name || 'No group assigned'}</TableCell>
+                      <TableCell><Badge>{position.position_status}</Badge></TableCell>
+                      <TableCell>{position.position_description || 'None'}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <Tooltip>
+                            <TooltipTrigger render={<Button
+                              type="button"
+                              variant="outline"
+                              size="icon-sm"
+                              className={cn(
+                                'rounded-full border-blue-500/60 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 hover:text-blue-600 dark:text-blue-300 dark:hover:text-blue-200',
+                                positionInactive && 'opacity-45 shadow-none hover:bg-blue-500/10 hover:text-blue-500',
+                              )}
+                              aria-label={`Edit ${position.position_code}`}
+                              title={editDisabledReason || 'Edit Position'}
+                              disabled={positionInactive}
+                              onClick={() => {
+                                if (positionInactive) {
+                                  return
+                                }
+                                setEditingPositionKey(position.position_key)
+                              }}
+                            />}>
+                              <Pencil className="h-4 w-4" aria-hidden="true" />
+                            </TooltipTrigger>
+                            <TooltipContent>{editDisabledReason || 'Edit Position'}</TooltipContent>
+                          </Tooltip>
+                          <PositionStatusButton
+                            position={position}
+                            status="ACTIVE"
+                            label="Restore"
+                            icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                            returnTab={embedded ? 'groups' : 'positions'}
+                            disabled={positionActive}
+                            disabledReason={activePositionRestoreReason}
+                            setConfirmation={setConfirmation}
+                          />
+                          <PositionStatusButton
+                            position={position}
+                            status="INACTIVE"
+                            label="Deactivate"
+                            icon={<Ban className="h-4 w-4" aria-hidden="true" />}
+                            returnTab={embedded ? 'groups' : 'positions'}
+                            disabled={positionInactive}
+                            disabledReason={inactivePositionActionReason}
+                            setConfirmation={setConfirmation}
+                          />
+                          <PositionStatusButton position={position} status="DELETED" label="Delete" icon={<Trash2 className="h-4 w-4" aria-hidden="true" />} returnTab={embedded ? 'groups' : 'positions'} setConfirmation={setConfirmation} />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </FoundationTable>
+            </div>
+          </DashboardPanel>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function PositionStatusButton({
+  position,
+  status,
+  label,
+  icon,
+  returnTab = 'positions',
+  disabled = false,
+  disabledReason = '',
+  setConfirmation,
+}: {
+  position: Record<string, string>
+  status: string
+  label: string
+  icon: React.ReactNode
+  returnTab?: 'groups' | 'positions'
+  disabled?: boolean
+  disabledReason?: string
+  setConfirmation: (confirmation: ConfirmationState) => void
+}) {
+  const formRef = React.useRef<HTMLFormElement>(null)
+  const destructive = status === 'DELETED' || status === 'INACTIVE'
+  const colorClass = status === 'DELETED'
+    ? 'border-red-500/60 bg-red-500/10 text-red-500 shadow-[0_0_12px_rgba(239,68,68,0.18)] hover:bg-red-500/20 hover:text-red-600 dark:text-red-300 dark:hover:text-red-200'
+    : status === 'INACTIVE'
+      ? 'border-amber-500/60 bg-amber-500/10 text-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.18)] hover:bg-amber-500/20 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-200'
+      : 'border-cyan-500/60 bg-cyan-500/10 text-cyan-500 shadow-[0_0_12px_rgba(6,182,212,0.18)] hover:bg-cyan-500/20 hover:text-cyan-600 dark:text-cyan-300 dark:hover:text-cyan-200'
+
+  return (
+    <form ref={formRef} method="post" data-skip-submit-confirmation="true">
+      <input type="hidden" name="csrf" value={data.csrf} />
+      <input type="hidden" name="action" value="set_user_position_status" />
+      <input type="hidden" name="position_key" value={position.position_key} />
+      <input type="hidden" name="position_status" value={status} />
+      <input type="hidden" name="return_tab" value={returnTab} />
+      <Tooltip>
+        <TooltipTrigger render={<Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          className={cn('rounded-full', colorClass, disabled && 'opacity-45 shadow-none')}
+          aria-label={`${label} ${position.position_code}`}
+          title={disabled ? disabledReason : label}
+          disabled={disabled}
+          onClick={() => {
+            if (disabled) {
+              return
+            }
+            setConfirmation({
+              title: `${label} position`,
+              message: destructive
+                ? `${label} position ${position.position_code}? Delete is blocked while active users still reference it.`
+                : `${label} position ${position.position_code}?`,
+              confirmLabel: label,
+              destructive,
+              onConfirm: () => formRef.current?.requestSubmit(),
+            })
+          }}
+        />}>
+          {icon}
+        </TooltipTrigger>
+        <TooltipContent>{disabled ? disabledReason : label}</TooltipContent>
+      </Tooltip>
+    </form>
+  )
+}
+
+function adminSettingValue(settingName: string): string {
+  const setting = (data?.settings || []).find((item: Record<string, string>) => item.setting_name === settingName)
+  return String(setting?.setting_value || '').trim()
+}
+
+function mediaImageViewerBaseUrl(): string {
+  return adminSettingValue('media_image_viewer_url') || String(portalData?.mediaImageViewerUrl || '').trim() || 'http://localhost/rbms.com/view.php'
+}
+
+function uploadedImageSourceUrl(uploadedImageUrl: string): string {
+  return String(uploadedImageUrl || '').trim()
+}
+
+function uploadedImageViewerUrl(uploadedImageUrl: string, sizeTokens = ''): string {
+  const imageUrl = String(uploadedImageUrl || '').trim()
+  if (imageUrl === '') return ''
+
+  let viewerUrl = mediaImageViewerBaseUrl()
+  if (viewerUrl === '') return imageUrl
+  if (sizeTokens !== '') {
+    if (/[?&]d=/i.test(viewerUrl)) {
+      viewerUrl = viewerUrl.replace(/([?&]d=)[^&]*/i, `$1${encodeURIComponent(sizeTokens)}`)
+    } else {
+      const separator = viewerUrl.includes('?') ? '&' : '?'
+      viewerUrl = `${viewerUrl}${separator}d=${encodeURIComponent(sizeTokens)}`
+    }
+  }
+
+  const encodedImageUrl = encodeURIComponent(imageUrl)
+  if (viewerUrl.includes('{{url}}')) return viewerUrl.replace('{{url}}', encodedImageUrl)
+  if (viewerUrl.includes('{url}')) return viewerUrl.replace('{url}', encodedImageUrl)
+  if (viewerUrl.includes('%s')) return viewerUrl.replace('%s', encodedImageUrl)
+  if (/[?&]url=/i.test(viewerUrl)) return `${viewerUrl}${encodedImageUrl}`
+  const separator = viewerUrl.includes('?') ? '&' : '?'
+  return `${viewerUrl}${separator}url=${encodedImageUrl}`
+}
+
+function groupImageSourceUrl(group?: Record<string, string>): string {
+  return uploadedImageSourceUrl(String(group?.group_image_path || ''))
+}
+
+function groupImageViewerUrl(group?: Record<string, string>, sizeTokens = 'M'): string {
+  return uploadedImageViewerUrl(String(group?.group_image_path || ''), sizeTokens)
+}
+
+function userAvatarViewerUrl(user?: Record<string, string>, sizeTokens = 'M'): string {
+  return uploadedImageViewerUrl(String(user?.user_avatar_path || ''), sizeTokens)
+}
+
+const groupImageViewerSizes = ['XS', 'S', 'M', 'L', 'XL'] as const
+
+const mediaUploadMaxLongSide = 1024
+
+function mediaResizedFilename(filename: string, mimeType: string): string {
+  const extension = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg'
+  const base = filename.replace(/\.[^.]+$/, '') || 'image'
+  return `${base}-${mediaUploadMaxLongSide}.${extension}`
+}
+
+function imageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    const objectUrl = URL.createObjectURL(file)
+    image.onload = () => {
+      const width = image.naturalWidth || image.width
+      const height = image.naturalHeight || image.height
+      URL.revokeObjectURL(objectUrl)
+      if (width < 1 || height < 1) {
+        reject(new Error('Image dimensions could not be read.'))
+        return
+      }
+      resolve({ width, height })
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('Image dimensions could not be read.'))
+    }
+    image.src = objectUrl
+  })
+}
+
+async function resizeImageForMediaUpload(file: File): Promise<{ file: File; resized: boolean; originalWidth: number; originalHeight: number; width: number; height: number }> {
+  const { width: originalWidth, height: originalHeight } = await imageDimensions(file)
+  const longestSide = Math.max(originalWidth, originalHeight)
+  if (longestSide <= mediaUploadMaxLongSide) {
+    return { file, resized: false, originalWidth, originalHeight, width: originalWidth, height: originalHeight }
+  }
+
+  const scale = mediaUploadMaxLongSide / longestSide
+  const width = Math.max(1, Math.round(originalWidth * scale))
+  const height = Math.max(1, Math.round(originalHeight * scale))
+  const bitmap = await createImageBitmap(file)
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('Image resize could not start.')
+  }
+  context.drawImage(bitmap, 0, 0, width, height)
+  bitmap.close()
+
+  const outputMimeType = file.type === 'image/png' ? 'image/png' : file.type === 'image/webp' ? 'image/webp' : 'image/jpeg'
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((result) => {
+      if (!result) {
+        reject(new Error('Image resize could not finish.'))
+        return
+      }
+      resolve(result)
+    }, outputMimeType, outputMimeType === 'image/png' ? undefined : 0.88)
+  })
+
+  return {
+    file: new File([blob], mediaResizedFilename(file.name, outputMimeType), { type: outputMimeType, lastModified: Date.now() }),
+    resized: true,
+    originalWidth,
+    originalHeight,
+    width,
+    height,
+  }
+}
+
+function GroupImageUploadField({ group }: { group?: Record<string, string> }) {
+  const [pendingFile, setPendingFile] = React.useState<File | null>(null)
+  const [uploadedUrl, setUploadedUrl] = React.useState(String(group?.group_image_path || ''))
+  const [uploadedMeta, setUploadedMeta] = React.useState({
+    originalName: String(group?.group_image_original_name || ''),
+    mimeType: String(group?.group_image_mime_type || ''),
+    byteSize: String(group?.group_image_byte_size || '0'),
+    sha256: String(group?.group_image_sha256 || ''),
+  })
+  const [uploading, setUploading] = React.useState(false)
+  const [statusText, setStatusText] = React.useState('')
+  const inputRef = React.useRef<HTMLInputElement | null>(null)
+  const pasteRef = React.useRef<HTMLDivElement | null>(null)
+  const mediaUploaderTargetUrl = adminSettingValue('media_uploader_target_url')
+  const uploadDisabled = mediaUploaderTargetUrl === '' || uploading
+  const existingPreviewUrl = uploadedImageViewerUrl(uploadedUrl, 'M')
+  const existingViewerUrl = uploadedImageViewerUrl(uploadedUrl, 'XL')
+  const pendingPreview = React.useMemo(() => pendingFile ? URL.createObjectURL(pendingFile) : '', [pendingFile])
+  const previewUrl = pendingPreview || existingPreviewUrl
+
+  React.useEffect(() => {
+    setPendingFile(null)
+    setUploadedUrl(String(group?.group_image_path || ''))
+    setUploadedMeta({
+      originalName: String(group?.group_image_original_name || ''),
+      mimeType: String(group?.group_image_mime_type || ''),
+      byteSize: String(group?.group_image_byte_size || '0'),
+      sha256: String(group?.group_image_sha256 || ''),
+    })
+    setStatusText('')
+  }, [group?.group_key, group?.group_image_path, group?.group_image_original_name, group?.group_image_mime_type, group?.group_image_byte_size, group?.group_image_sha256])
+
+  React.useEffect(() => {
+    const input = inputRef.current
+    if (!input || pendingFile) return
+    input.value = ''
+  }, [pendingFile])
+
+  React.useEffect(() => () => {
+    if (pendingPreview !== '') URL.revokeObjectURL(pendingPreview)
+  }, [pendingPreview])
+
+  function parseUploadResponse(payload: any): string {
+    if (typeof payload === 'string') return payload
+    if (!payload || typeof payload !== 'object') return ''
+    return String(
+      payload.url
+      || payload.image_url
+      || payload.uploaded_image_url
+      || payload.uploadedUrl
+      || payload.src
+      || payload.data?.url
+      || payload.data?.image_url
+      || '',
+    ).trim()
+  }
+
+  async function uploadImage(file: File) {
+    if (mediaUploaderTargetUrl === '') {
+      setStatusText('Setup required: set media_uploader_target_url in System Settings > Media before uploading images.')
+      return
+    }
+
+    setUploading(true)
+
+    try {
+      setStatusText('Preparing image...')
+      const preparedImage = await resizeImageForMediaUpload(file)
+      setPendingFile(preparedImage.file)
+      setStatusText(preparedImage.resized
+        ? `Resized ${preparedImage.originalWidth}x${preparedImage.originalHeight} to ${preparedImage.width}x${preparedImage.height}. Uploading image...`
+        : `Image is ${preparedImage.width}x${preparedImage.height}. Uploading original image...`)
+
+      const body = new FormData()
+      body.append('image', preparedImage.file)
+      body.append('source_table', 'project_group')
+      body.append('source_field', 'group_image')
+
+      const response = await fetch(mediaUploaderTargetUrl, {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const contentType = response.headers.get('content-type') || ''
+      const payload = contentType.includes('application/json') ? await response.json() : await response.text()
+      if (!response.ok) {
+        const message = typeof payload === 'object' && payload?.message ? String(payload.message) : 'Image upload failed.'
+        throw new Error(message)
+      }
+
+      const nextUploadedUrl = parseUploadResponse(payload)
+      if (!/^https?:\/\//i.test(nextUploadedUrl)) {
+        throw new Error('Upload endpoint did not return a full uploaded image URL.')
+      }
+
+      setUploadedUrl(nextUploadedUrl)
+      setUploadedMeta({
+        originalName: String((typeof payload === 'object' && (payload.original_name || payload.originalName)) || preparedImage.file.name || 'image'),
+        mimeType: String((typeof payload === 'object' && (payload.mime_type || payload.mimeType)) || preparedImage.file.type || ''),
+        byteSize: String((typeof payload === 'object' && (payload.byte_size || payload.byteSize)) || preparedImage.file.size || 0),
+        sha256: String((typeof payload === 'object' && payload.sha256) || ''),
+      })
+      setStatusText('Image uploaded. Save the group to store the returned image URL.')
+    } catch (error) {
+      setPendingFile(null)
+      setStatusText(error instanceof Error ? error.message : 'Image upload failed.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  function acceptImage(file: File | null | undefined) {
+    if (!file || !file.type.startsWith('image/')) {
+      setStatusText('Select or paste one PNG, JPEG, WEBP, or GIF image.')
+      return
+    }
+    void uploadImage(file)
+  }
+
+  async function pasteFromClipboard() {
+    if (navigator.clipboard && 'read' in navigator.clipboard) {
+      try {
+        const items = await navigator.clipboard.read()
+        for (const item of items) {
+          const imageType = item.types.find((type) => type.startsWith('image/'))
+          if (!imageType) continue
+          const blob = await item.getType(imageType)
+          const extension = imageType.split('/')[1] || 'png'
+          acceptImage(new File([blob], `group-image-${Date.now()}.${extension}`, { type: imageType }))
+          return
+        }
+        setStatusText('No image was found in the clipboard.')
+      } catch {
+        setStatusText('Clipboard access was blocked. Click the paste area, then press Ctrl+V.')
+      }
+    } else {
+      setStatusText('Click the paste area, then press Ctrl+V to paste an image.')
+    }
+    pasteRef.current?.focus()
+  }
+
+  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    const files = Array.from(event.clipboardData.files || [])
+    const image = files.find((file) => file.type.startsWith('image/'))
+    if (image) {
+      event.preventDefault()
+      acceptImage(image)
+    }
+  }
+
+  return (
+    <div className="grid gap-3">
+      <Label>Group Image</Label>
+      <input type="hidden" name="group_image_url" value={uploadedUrl} />
+      <input type="hidden" name="group_image_original_name" value={uploadedMeta.originalName} />
+      <input type="hidden" name="group_image_mime_type" value={uploadedMeta.mimeType} />
+      <input type="hidden" name="group_image_byte_size" value={uploadedMeta.byteSize} />
+      <input type="hidden" name="group_image_sha256" value={uploadedMeta.sha256} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        disabled={uploadDisabled}
+        onChange={(event) => acceptImage(event.currentTarget.files?.[0])}
+      />
+      <div className="grid gap-3 rounded-md bg-muted/20 p-3 sm:grid-cols-[auto_minmax(0,1fr)]">
+        <div className="grid size-24 place-items-center overflow-hidden rounded-full bg-background">
+          {previewUrl !== '' ? (
+            <img
+              src={previewUrl}
+              alt={pendingFile ? 'Pending group image' : `${group?.group_name || 'Group'} image`}
+              className="size-full object-cover"
+            />
+          ) : (
+            <ImagePlus className="size-8 text-muted-foreground" aria-hidden="true" />
+          )}
+        </div>
+        <div className="min-w-0 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={uploadDisabled} onClick={() => inputRef.current?.click()}>
+              {uploading ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : <Upload data-icon="inline-start" />}Upload Image
+            </Button>
+            <Button type="button" variant="outline" size="sm" disabled={uploadDisabled} onClick={pasteFromClipboard}>
+              <ClipboardList data-icon="inline-start" />Paste Image
+            </Button>
+          </div>
+          <div
+            ref={pasteRef}
+            role="button"
+            tabIndex={0}
+            onPaste={handlePaste}
+            className="rounded-md bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground outline-none focus:ring-2 focus:ring-ring/25"
+          >
+            {mediaUploaderTargetUrl === ''
+              ? 'Setup required: set media_uploader_target_url in System Settings > Media.'
+              : 'Click here and press Ctrl+V to paste a clipboard image. Saving the group stores the returned full image URL.'}
+          </div>
+          {statusText !== '' ? <p className="text-xs text-muted-foreground">{statusText}</p> : null}
+          {uploadedUrl !== '' ? (
+            <p className="text-xs text-muted-foreground">Current image is saved and rendered through the PHP image viewer.</p>
+          ) : null}
+          {previewUrl !== '' ? (
+            <div className="overflow-hidden rounded-md bg-background/70">
+              <div className="border-b border-border/60 px-3 py-2 text-xs font-semibold uppercase tracking-normal text-muted-foreground">Preview</div>
+              <div className="grid min-h-44 place-items-center p-3">
+                <img
+                  src={previewUrl}
+                  alt={pendingFile ? 'Pending group image preview' : `${group?.group_name || 'Group'} image preview`}
+                  className="max-h-72 w-full rounded-md object-contain"
+                />
+              </div>
+              {existingViewerUrl !== '' && !pendingFile ? (
+                <a
+                  href={existingViewerUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block border-t border-border/60 px-3 py-2 text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200"
+                >
+                  Open image viewer
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function userInitials(user: Record<string, string>): string {
+  const source = user.user_name || user.user_login || user.user_email || 'User'
+  return source
+    .trim()
+    .split(/[\s._@-]+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'U'
+}
+
+function UserAvatarUploadField({ user, onViewAvatar }: { user?: Record<string, string>; onViewAvatar?: () => void }) {
+  const [pendingFile, setPendingFile] = React.useState<File | null>(null)
+  const [uploadedUrl, setUploadedUrl] = React.useState(String(user?.user_avatar_path || ''))
+  const [uploadedMeta, setUploadedMeta] = React.useState({
+    originalName: String(user?.user_avatar_original_name || ''),
+    mimeType: String(user?.user_avatar_mime_type || ''),
+    byteSize: String(user?.user_avatar_byte_size || '0'),
+    sha256: String(user?.user_avatar_sha256 || ''),
+  })
+  const [uploading, setUploading] = React.useState(false)
+  const [statusText, setStatusText] = React.useState('')
+  const inputRef = React.useRef<HTMLInputElement | null>(null)
+  const pasteRef = React.useRef<HTMLDivElement | null>(null)
+  const mediaUploaderTargetUrl = adminSettingValue('media_uploader_target_url')
+  const uploadDisabled = mediaUploaderTargetUrl === '' || uploading
+  const existingPreviewUrl = uploadedImageViewerUrl(uploadedUrl, 'M')
+  const pendingPreview = React.useMemo(() => pendingFile ? URL.createObjectURL(pendingFile) : '', [pendingFile])
+  const previewUrl = pendingPreview || existingPreviewUrl
+
+  React.useEffect(() => {
+    setPendingFile(null)
+    setUploadedUrl(String(user?.user_avatar_path || ''))
+    setUploadedMeta({
+      originalName: String(user?.user_avatar_original_name || ''),
+      mimeType: String(user?.user_avatar_mime_type || ''),
+      byteSize: String(user?.user_avatar_byte_size || '0'),
+      sha256: String(user?.user_avatar_sha256 || ''),
+    })
+    setStatusText('')
+  }, [user?.user_key, user?.user_avatar_path, user?.user_avatar_original_name, user?.user_avatar_mime_type, user?.user_avatar_byte_size, user?.user_avatar_sha256])
+
+  React.useEffect(() => {
+    const input = inputRef.current
+    if (!input || pendingFile) return
+    input.value = ''
+  }, [pendingFile])
+
+  React.useEffect(() => () => {
+    if (pendingPreview !== '') URL.revokeObjectURL(pendingPreview)
+  }, [pendingPreview])
+
+  function parseUploadResponse(payload: any): string {
+    if (typeof payload === 'string') return payload
+    if (!payload || typeof payload !== 'object') return ''
+    return String(
+      payload.url
+      || payload.image_url
+      || payload.uploaded_image_url
+      || payload.uploadedUrl
+      || payload.src
+      || payload.data?.url
+      || payload.data?.image_url
+      || '',
+    ).trim()
+  }
+
+  async function uploadImage(file: File) {
+    if (mediaUploaderTargetUrl === '') {
+      setStatusText('Setup required: set media_uploader_target_url in System Settings > Media before uploading images.')
+      return
+    }
+
+    setUploading(true)
+
+    try {
+      setStatusText('Preparing avatar...')
+      const preparedImage = await resizeImageForMediaUpload(file)
+      setPendingFile(preparedImage.file)
+      setStatusText(preparedImage.resized
+        ? `Resized ${preparedImage.originalWidth}x${preparedImage.originalHeight} to ${preparedImage.width}x${preparedImage.height}. Uploading avatar...`
+        : `Avatar is ${preparedImage.width}x${preparedImage.height}. Uploading original image...`)
+
+      const body = new FormData()
+      body.append('image', preparedImage.file)
+      body.append('source_table', 'project_user')
+      body.append('source_field', 'user_avatar')
+
+      const response = await fetch(mediaUploaderTargetUrl, {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json' },
+      })
+      const contentType = response.headers.get('content-type') || ''
+      const payload = contentType.includes('application/json') ? await response.json() : await response.text()
+      if (!response.ok) {
+        const message = typeof payload === 'object' && payload?.message ? String(payload.message) : 'Avatar upload failed.'
+        throw new Error(message)
+      }
+
+      const nextUploadedUrl = parseUploadResponse(payload)
+      if (!/^https?:\/\//i.test(nextUploadedUrl)) {
+        throw new Error('Upload endpoint did not return a full uploaded image URL.')
+      }
+
+      setUploadedUrl(nextUploadedUrl)
+      setUploadedMeta({
+        originalName: String((typeof payload === 'object' && (payload.original_name || payload.originalName)) || preparedImage.file.name || 'image'),
+        mimeType: String((typeof payload === 'object' && (payload.mime_type || payload.mimeType)) || preparedImage.file.type || ''),
+        byteSize: String((typeof payload === 'object' && (payload.byte_size || payload.byteSize)) || preparedImage.file.size || 0),
+        sha256: String((typeof payload === 'object' && payload.sha256) || ''),
+      })
+      setStatusText('Avatar uploaded. Save the user to store the returned image URL.')
+    } catch (error) {
+      setPendingFile(null)
+      setStatusText(error instanceof Error ? error.message : 'Avatar upload failed.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  function acceptImage(file: File | null | undefined) {
+    if (!file || !file.type.startsWith('image/')) {
+      setStatusText('Select or paste one PNG, JPEG, WEBP, or GIF image.')
+      return
+    }
+    void uploadImage(file)
+  }
+
+  async function pasteFromClipboard() {
+    if (navigator.clipboard && 'read' in navigator.clipboard) {
+      try {
+        const items = await navigator.clipboard.read()
+        for (const item of items) {
+          const imageType = item.types.find((type) => type.startsWith('image/'))
+          if (!imageType) continue
+          const blob = await item.getType(imageType)
+          const extension = imageType.split('/')[1] || 'png'
+          acceptImage(new File([blob], `user-avatar-${Date.now()}.${extension}`, { type: imageType }))
+          return
+        }
+        setStatusText('No image was found in the clipboard.')
+      } catch {
+        setStatusText('Clipboard access was blocked. Click the paste area, then press Ctrl+V.')
+      }
+    } else {
+      setStatusText('Click the paste area, then press Ctrl+V to paste an image.')
+    }
+    pasteRef.current?.focus()
+  }
+
+  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    const files = Array.from(event.clipboardData.files || [])
+    const image = files.find((file) => file.type.startsWith('image/'))
+    if (image) {
+      event.preventDefault()
+      acceptImage(image)
+    }
+  }
+
+  return (
+    <div className="grid gap-3">
+      <Label>User Avatar</Label>
+      <input type="hidden" name="user_avatar_url" value={uploadedUrl} />
+      <input type="hidden" name="user_avatar_original_name" value={uploadedMeta.originalName} />
+      <input type="hidden" name="user_avatar_mime_type" value={uploadedMeta.mimeType} />
+      <input type="hidden" name="user_avatar_byte_size" value={uploadedMeta.byteSize} />
+      <input type="hidden" name="user_avatar_sha256" value={uploadedMeta.sha256} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        disabled={uploadDisabled}
+        onChange={(event) => acceptImage(event.currentTarget.files?.[0])}
+      />
+      <div className="grid gap-3 rounded-md bg-muted/20 p-4">
+        <div className="grid justify-items-center gap-3 text-center">
+          <div className="grid size-24 shrink-0 place-items-center overflow-hidden rounded-full bg-background">
+            {previewUrl !== '' ? (
+              <img
+                src={previewUrl}
+                alt={pendingFile ? 'Pending user avatar' : `${user?.user_name || user?.user_login || 'User'} avatar`}
+                className="size-full object-cover"
+              />
+            ) : (
+              <img src={emptyUserAvatarUrl} alt="" className="size-14 opacity-80" />
+            )}
+          </div>
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-semibold">{user?.user_name || user?.user_login || 'New User'}</p>
+            <p className="text-xs leading-5 text-muted-foreground">Images larger than 1024px are resized locally before upload.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={uploadDisabled} onClick={() => inputRef.current?.click()}>
+            {uploading ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : <Upload data-icon="inline-start" />}Upload Avatar
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled={uploadDisabled} onClick={pasteFromClipboard}>
+            <ClipboardList data-icon="inline-start" />Paste Avatar
+          </Button>
+          {uploadedUrl !== '' && !pendingFile && onViewAvatar ? (
+            <Button type="button" variant="outline" size="sm" onClick={onViewAvatar}>
+              <Eye data-icon="inline-start" />View Avatar
+            </Button>
+          ) : null}
+        </div>
+        <div
+          ref={pasteRef}
+          role="button"
+          tabIndex={0}
+          onPaste={handlePaste}
+          className="rounded-md bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground outline-none focus:ring-2 focus:ring-ring/25"
+        >
+          {mediaUploaderTargetUrl === ''
+            ? 'Setup required: set media_uploader_target_url in System Settings > Media.'
+            : 'Click here and press Ctrl+V to paste a clipboard image. Saving the user stores the returned full image URL.'}
+        </div>
+        {statusText !== '' ? <p className="text-xs text-muted-foreground">{statusText}</p> : null}
+      </div>
+    </div>
+  )
+}
+
+function formatLoginHistoryDate(value: string | null | undefined): string {
+  if (!value) return ''
+  const match = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::\d{2})?)?/)
+  if (!match) return String(value)
+
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+  const year = match[1]
+  const monthIndex = Number(match[2]) - 1
+  const day = match[3]
+  const hour24 = Number(match[4] || '0')
+  const minute = match[5] || '00'
+  const hour12 = hour24 % 12 || 12
+  const period = hour24 >= 12 ? 'PM' : 'AM'
+
+  return `${months[monthIndex] || match[2]}-${day}-${year} ${String(hour12).padStart(2, '0')}:${minute} ${period}`
+}
+
+function normalizeProjectMobileNumberInput(value: string): string {
+  const cleaned = value.replace(/[^\d+]/g, '')
+  if (cleaned === '' || cleaned === '+') return '+63'
+  if (cleaned.startsWith('+')) return `+${cleaned.slice(1).replace(/\D/g, '').slice(0, 15)}`
+  const digits = cleaned.replace(/\D/g, '').slice(0, 15)
+  if (digits.startsWith('00')) return `+${digits.slice(2)}`
+  if (digits.startsWith('0')) return `+63${digits.replace(/^0+/, '')}`
+  if (digits.startsWith('63')) return `+${digits}`
+  return `+${digits}`
+}
+
 function UserCrudView() {
-  const [activeTab, setActiveTab] = React.useState<'standard' | 'gui'>('standard')
+  const [userDialogMode, setUserDialogMode] = React.useState<'create' | 'edit' | null>(null)
   const [editingUserKey, setEditingUserKey] = React.useState('')
   const [assignmentUserKey, setAssignmentUserKey] = React.useState('')
+  const [resetUserKey, setResetUserKey] = React.useState('')
+  const [historyUserKey, setHistoryUserKey] = React.useState('')
+  const [avatarViewerUserKey, setAvatarViewerUserKey] = React.useState('')
+  const [avatarViewerSize, setAvatarViewerSize] = React.useState<(typeof groupImageViewerSizes)[number]>('M')
+  const [userFormGroupKey, setUserFormGroupKey] = React.useState('')
+  const [userFormPositionKey, setUserFormPositionKey] = React.useState('')
+  const [userFormMobileNumber, setUserFormMobileNumber] = React.useState('+63')
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
   const userFormRef = React.useRef<HTMLFormElement>(null)
   const assignmentFormRef = React.useRef<HTMLFormElement>(null)
   const resetFormRef = React.useRef<HTMLFormElement>(null)
-  const editingUser = data.users.find((user) => user.user_key === editingUserKey)
-  const assignmentUser = data.users.find((user) => user.user_key === assignmentUserKey) || data.users[0]
-  const activeRoles = data.roles.filter((role) => role.role_status !== 'DELETED')
+  const editingUser = userDialogMode === 'edit' ? data.users.find((user) => user.user_key === editingUserKey) : undefined
+  const assignmentUser = data.users.find((user) => user.user_key === assignmentUserKey)
+  const resetUser = data.users.find((user) => user.user_key === resetUserKey)
+  const historyUser = data.users.find((user) => user.user_key === historyUserKey)
+  const avatarViewerUser = data.users.find((user) => user.user_key === avatarViewerUserKey)
+  const activePositions = data.positions.filter((position) => position.position_status !== 'DELETED')
   const activeGroups = data.groups.filter((group) => group.group_status !== 'DELETED')
-  const activeBranches = data.branches.filter((branch) => branch.branch_status !== 'DELETED')
   const activeProjects = data.projects.filter((project) => project.project_status !== 'DELETED')
-  const loginHistory = editingUser
-    ? data.loginHistory.filter((entry) => entry.user_key === editingUser.user_key)
+  const selectedUserFormGroupKey = userDialogMode !== null ? userFormGroupKey : editingUser?.group_key || ''
+  const visibleUserFormPositions = activePositions.filter((position) => selectedUserFormGroupKey && position.group_key === selectedUserFormGroupKey)
+  const selectedUserFormPositionKey = visibleUserFormPositions.some((position) => position.position_key === userFormPositionKey)
+    ? userFormPositionKey
+    : ''
+  const loginHistory = historyUser
+    ? data.loginHistory.filter((entry) => entry.user_key === historyUser.user_key)
     : data.loginHistory.slice(0, 12)
+
+  function openUserAvatarViewer(user: Record<string, string>, size: (typeof groupImageViewerSizes)[number] = 'M') {
+    if (userAvatarViewerUrl(user, size) === '') return
+    setAvatarViewerUserKey(user.user_key)
+    setAvatarViewerSize(size)
+  }
 
   return (
     <>
@@ -2116,189 +5058,79 @@ function UserCrudView() {
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <Badge>Administrator User CRUD</Badge>
-          <h2 className="mt-2 text-2xl font-bold tracking-normal">Users</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Create, edit, activate, deactivate, lock users, reset passwords, assign access, and inspect login history.</p>
+          <h2 className="text-2xl font-bold tracking-normal">Users</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Create project users, assign project group and position, manage status, reset passwords, and inspect login history.</p>
         </div>
-        <Button type="button" onClick={() => setEditingUserKey('')}>
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          New User
-        </Button>
       </div>
 
-      <ViewTabs activeTab={activeTab} onChange={setActiveTab} />
+      <div className="grid gap-4 xl:grid-cols-12">
+        <div className="xl:col-span-8">
+        <DashboardPanel
+          title="Users"
+	          description="Use modal actions for project user records, group and position assignment, password resets, and status changes."
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              className="rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.18)] hover:bg-emerald-500/20 hover:text-emerald-300"
+              aria-label="Add user"
+              title="Add user"
+              onClick={() => {
+                setEditingUserKey('')
+                setUserFormGroupKey('')
+                setUserFormPositionKey('')
+                setUserFormMobileNumber('+63')
+                setUserDialogMode('create')
+              }}
+            >
+              <UserPlus className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          }
+        >
+          <div className="overflow-auto">
+            <FoundationTable headers={['User', 'Status', 'Assignments', 'Actions']}>
+              {data.users.map((user) => {
+                const userStatus = String(user.user_status || '').toUpperCase()
+                const userActive = userStatus === 'ACTIVE'
+                const userInactive = userStatus === 'INACTIVE'
+                const userLocked = userStatus === 'LOCKED'
+                const userDeleted = userStatus === 'DELETED'
+                const userRestricted = userInactive || userLocked || userDeleted
+                const userRestrictedReason = userInactive
+                  ? 'Inactive User Requires Activation'
+                  : userLocked
+                    ? 'Locked User Requires Activation'
+                    : userDeleted
+                      ? 'Deleted User Cannot Be Changed'
+                      : ''
+                const userActiveReason = 'User Is Already Active'
+                const userAvatarPreviewUrl = userAvatarViewerUrl(user, 'XS')
 
-      {activeTab === 'gui' ? (
-        <DashboardPanel title="User Assignment GUI" description="Select one user, then assign roles, groups, branches, and projects using searchable panels.">
-          <div className="p-4">
-            {assignmentUser ? (
-              <form key={assignmentUser.user_key} ref={assignmentFormRef} method="post" className="grid gap-4">
-                <input type="hidden" name="csrf" value={data.csrf} />
-                <input type="hidden" name="action" value="save_user" />
-                <input type="hidden" name="user_key" value={assignmentUser.user_key} />
-                <input type="hidden" name="user_login" value={assignmentUser.user_login} />
-                <input type="hidden" name="user_name" value={assignmentUser.user_name} />
-                <input type="hidden" name="user_email" value={assignmentUser.user_email} />
-                <input type="hidden" name="user_status" value={assignmentUser.user_status} />
-                <div className="grid gap-2">
-                  <Label htmlFor="assignment_user_key">User</Label>
-                  <select
-                    id="assignment_user_key"
-                    value={assignmentUser.user_key}
-                    onChange={(event) => setAssignmentUserKey(event.target.value)}
-                    className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
-                  >
-                    {data.users.filter((user) => user.user_status !== 'DELETED').map((user) => (
-                      <option key={user.user_key} value={user.user_key}>{user.user_name} - {user.user_login}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="grid gap-4 xl:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label>Roles</Label>
-                    <AssignmentCheckboxGrid name="role_keys[]" options={activeRoles} valueKey="role_key" labelKey="role_name" descriptionKey="role_description" defaultValues={csvToArray(assignmentUser.role_keys)} emptyText="No roles found." />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Groups</Label>
-                    <AssignmentCheckboxGrid name="group_keys[]" options={activeGroups} valueKey="group_key" labelKey="group_name" descriptionKey="group_description" defaultValues={csvToArray(assignmentUser.group_keys)} emptyText="No groups found." />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Branches</Label>
-                    <AssignmentCheckboxGrid name="branch_keys[]" options={activeBranches} valueKey="branch_key" labelKey="branch_code" descriptionKey="branch_name" defaultValues={csvToArray(assignmentUser.branch_keys)} emptyText="No branches found." />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Projects</Label>
-                    <AssignmentCheckboxGrid name="project_keys[]" options={activeProjects} valueKey="project_key" labelKey="project_code" descriptionKey="project_name" defaultValues={csvToArray(assignmentUser.project_keys)} emptyText="No projects found." />
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  onClick={() => setConfirmation({
-                    title: 'Confirm user assignment update',
-                    message: `Replace assignments for ${assignmentUser.user_login}?`,
-                    confirmLabel: 'Save Assignments',
-                    onConfirm: () => assignmentFormRef.current?.requestSubmit(),
-                  })}
-                >
-                  Save Assignments
-                </Button>
-              </form>
-            ) : (
-              <p className="text-sm text-muted-foreground">No users available for assignment.</p>
-            )}
-          </div>
-        </DashboardPanel>
-      ) : (
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="grid gap-4 lg:col-span-3">
-          <DashboardPanel title={editingUser ? 'Edit User' : 'Create User'} description="Assign roles, groups, branches, and projects from the same user record.">
-            <div className="p-4">
-              <form key={editingUser?.user_key || 'new-user'} ref={userFormRef} method="post" className="grid gap-4">
-                <input type="hidden" name="csrf" value={data.csrf} />
-                <input type="hidden" name="action" value="save_user" />
-                <input type="hidden" name="user_key" value={editingUser?.user_key || ''} />
-                <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
-                  <div className="grid gap-2">
-                    <Label htmlFor="user_login">Username</Label>
-                    <Input id="user_login" name="user_login" defaultValue={editingUser?.user_login || ''} required />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="user_status">Status</Label>
-                    <select
-                      id="user_status"
-                      name="user_status"
-                      defaultValue={editingUser?.user_status || 'ACTIVE'}
-                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
-                    >
-                      <option value="DRAFT">DRAFT</option>
-                      <option value="ACTIVE">ACTIVE</option>
-                      <option value="INACTIVE">INACTIVE</option>
-                      <option value="LOCKED">LOCKED</option>
-                      <option value="DELETED">DELETED</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="user_name">Full Name</Label>
-                  <Input id="user_name" name="user_name" defaultValue={editingUser?.user_name || ''} required />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="user_email">Email</Label>
-                  <Input id="user_email" name="user_email" type="email" defaultValue={editingUser?.user_email || ''} required />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="password">{editingUser ? 'New Password' : 'Password'}</Label>
-                  <Input id="password" name="password" type="password" minLength={10} required={!editingUser} />
-                </div>
-                <MultiSelect id="role_keys" name="role_keys[]" label="Roles" options={activeRoles} valueKey="role_key" labelKey="role_name" defaultValues={csvToArray(editingUser?.role_keys)} />
-                <MultiSelect id="group_keys" name="group_keys[]" label="Groups" options={activeGroups} valueKey="group_key" labelKey="group_name" defaultValues={csvToArray(editingUser?.group_keys)} />
-                <MultiSelect id="branch_keys" name="branch_keys[]" label="Branches" options={activeBranches} valueKey="branch_key" labelKey="branch_code" defaultValues={csvToArray(editingUser?.branch_keys)} />
-                <MultiSelect id="project_keys" name="project_keys[]" label="Projects" options={activeProjects} valueKey="project_key" labelKey="project_code" defaultValues={csvToArray(editingUser?.project_keys)} />
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => setConfirmation({
-                      title: editingUser ? 'Confirm user update' : 'Confirm user creation',
-                      message: editingUser
-                        ? `Update user ${editingUser.user_login} and replace selected assignments?`
-                        : 'Create this user with the selected assignments?',
-                      confirmLabel: editingUser ? 'Update User' : 'Create User',
-                      onConfirm: () => userFormRef.current?.requestSubmit(),
-                    })}
-                  >
-                    <Plus className="h-4 w-4" aria-hidden="true" />
-                    {editingUser ? 'Save User' : 'Create User'}
-                  </Button>
-                  {editingUser && (
-                    <button type="button" className={buttonClassName({ variant: 'outline' })} onClick={() => setEditingUserKey('')}>
-                      Clear
-                    </button>
-                  )}
-                </div>
-              </form>
-            </div>
-          </DashboardPanel>
-
-          {editingUser && (
-            <DashboardPanel title="Reset Password" description="Sets a new password and flags the password as not yet changed by the user.">
-              <div className="p-4">
-                <form ref={resetFormRef} method="post" className="grid gap-4">
-                  <input type="hidden" name="csrf" value={data.csrf} />
-                  <input type="hidden" name="action" value="reset_user_password" />
-                  <input type="hidden" name="user_key" value={editingUser.user_key} />
-                  <div className="grid gap-2">
-                    <Label htmlFor="reset_password">New Password</Label>
-                    <Input id="reset_password" name="password" type="password" minLength={10} required />
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setConfirmation({
-                      title: 'Confirm password reset',
-                      message: `Reset password for ${editingUser.user_login}? Share the new password securely outside the system.`,
-                      confirmLabel: 'Reset Password',
-                      destructive: true,
-                      onConfirm: () => resetFormRef.current?.requestSubmit(),
-                    })}
-                  >
-                    <KeyRound className="h-4 w-4" aria-hidden="true" />
-                    Reset Password
-                  </Button>
-                </form>
-              </div>
-            </DashboardPanel>
-          )}
-        </div>
-
-        <div className="grid gap-4 lg:col-span-9">
-          <DashboardPanel title="Users" description="Manage user account state and access assignments.">
-            <div className="overflow-auto">
-            <FoundationTable headers={['User', 'Status', 'Assignments', 'Last Login', 'Actions']}>
-              {data.users.map((user) => (
+                return (
                 <TableRow key={user.user_key}>
                   <TableCell>
-                    <strong>{user.user_name}</strong>
-                    <p className="text-muted-foreground">{user.user_login} - {user.user_email}</p>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar className="size-14 border border-emerald-500/30 bg-emerald-500/10 text-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.12)]" aria-label={`${user.user_name || user.user_login || 'User'} avatar`}>
+                        {userAvatarPreviewUrl !== '' ? (
+                          <button
+                            type="button"
+                            className="block size-full"
+                            title="View Avatar"
+                            onClick={() => openUserAvatarViewer(user, 'M')}
+                          >
+                            <AvatarImage src={userAvatarPreviewUrl} alt="" className="size-full object-cover" />
+                          </button>
+                        ) : (
+                          <AvatarImage src={emptyUserAvatarUrl} alt="" className="p-2 opacity-90" />
+                        )}
+                        <AvatarFallback className="bg-transparent text-sm font-semibold text-emerald-500 dark:text-emerald-300">{userInitials(user)}</AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0">
+                        <strong className="block truncate">{user.user_name}</strong>
+                        <p className="truncate text-muted-foreground">{user.user_login} - {user.user_mobile_number || 'No mobile number'}</p>
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Badge>{user.user_status}</Badge>
@@ -2307,36 +5139,70 @@ function UserCrudView() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <p><strong>Roles:</strong> {user.role_names || 'None'}</p>
-                    <p className="text-muted-foreground">Groups: {user.group_names || 'None'}</p>
-                    <p className="text-muted-foreground">Branches: {user.branch_codes || 'None'}</p>
-                    <p className="text-muted-foreground">Projects: {user.project_codes || 'None'}</p>
+	                    <p><strong>Project:</strong> {user.project_codes || 'None'}</p>
+	                    <p className="text-muted-foreground">Group: {user.group_names || 'None'}</p>
+	                    <p className="text-muted-foreground">Position: {user.position_name ? `${user.position_code} - ${user.position_name}${user.position_group_name ? ` (${user.position_group_name})` : ''}` : 'None'}</p>
                   </TableCell>
-                  <TableCell>{user.user_last_login_at || 'Never'}</TableCell>
                   <TableCell>
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" className={buttonClassName({ variant: 'outline', size: 'sm' })} onClick={() => setEditingUserKey(user.user_key)}>
-                        <Pencil className="h-4 w-4" aria-hidden="true" />
-                        Edit
-                      </button>
-                      <UserStatusButton user={user} status="ACTIVE" label="Activate" icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
-                      <UserStatusButton user={user} status="INACTIVE" label="Deactivate" icon={<Ban className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
-                      <UserStatusButton user={user} status="LOCKED" label="Lock" icon={<LockKeyhole className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
-                      <UserStatusButton user={user} status="DELETED" label="Delete" icon={<Trash2 className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-blue-500/60 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300 dark:hover:text-blue-200" aria-label={`Edit ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'Edit User'} disabled={userRestricted} onClick={() => {
+                          setEditingUserKey(user.user_key)
+                          setUserFormGroupKey(user.group_key || '')
+                          setUserFormPositionKey(user.position_key || '')
+                          setUserFormMobileNumber(normalizeProjectMobileNumberInput(user.user_mobile_number || '+63'))
+                          setHistoryUserKey(user.user_key)
+                          setUserDialogMode('edit')
+                        }} />}>
+                          <Pencil className="h-4 w-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>{userRestricted ? userRestrictedReason : 'Edit User'}</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-emerald-500/60 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300 dark:hover:text-emerald-200" aria-label={`Manage access for ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'Manage Access'} disabled={userRestricted} onClick={() => {
+                          setAssignmentUserKey(user.user_key)
+                          setHistoryUserKey(user.user_key)
+                        }} />}>
+                          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>{userRestricted ? userRestrictedReason : 'Manage Access'}</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-amber-500/60 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-300 dark:hover:text-amber-200" aria-label={`Reset password for ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'Reset Password'} disabled={userRestricted} onClick={() => {
+                          setResetUserKey(user.user_key)
+                          setHistoryUserKey(user.user_key)
+                        }} />}>
+                          <KeyRound className="h-4 w-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>{userRestricted ? userRestrictedReason : 'Reset Password'}</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full bg-sky-500/10 text-sky-500 hover:bg-sky-500/20 hover:text-sky-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-sky-300 dark:hover:text-sky-200" aria-label={`View login history for ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'View Login History'} disabled={userRestricted} onClick={() => setHistoryUserKey(user.user_key)} />}>
+                          <Eye className="h-4 w-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>{userRestricted ? userRestrictedReason : 'View Login History'}</TooltipContent>
+                      </Tooltip>
+                      <UserStatusButton user={user} status="ACTIVE" label="Activate" icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />} disabled={userActive || userDeleted} disabledReason={userActive ? userActiveReason : userRestrictedReason} setConfirmation={setConfirmation} />
+                      <UserStatusButton user={user} status="INACTIVE" label="Deactivate" icon={<Ban className="h-4 w-4" aria-hidden="true" />} disabled={!userActive} disabledReason={userRestrictedReason || 'Only Active Users Can Be Deactivated'} setConfirmation={setConfirmation} />
+                      <UserStatusButton user={user} status="LOCKED" label="Lock" icon={<LockKeyhole className="h-4 w-4" aria-hidden="true" />} disabled={!userActive} disabledReason={userRestrictedReason || 'Only Active Users Can Be Locked'} setConfirmation={setConfirmation} />
+                      <UserStatusButton user={user} status="DELETED" label="Delete" icon={<Trash2 className="h-4 w-4" aria-hidden="true" />} disabled={userDeleted} disabledReason={userRestrictedReason} setConfirmation={setConfirmation} />
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
             </FoundationTable>
-            </div>
-          </DashboardPanel>
+          </div>
+        </DashboardPanel>
+        </div>
 
-          <DashboardPanel title="Login History" description={editingUser ? `Recent activity for ${editingUser.user_login}.` : 'Select a user to focus this table.'}>
-            <div className="overflow-auto">
+        <div className="xl:col-span-4">
+        <DashboardPanel title="Login History" description={historyUser ? `Recent activity for ${historyUser.user_login}.` : 'Select History on a user row to focus this table.'}>
+          <div className="overflow-auto">
             <FoundationTable headers={['Time', 'Login', 'Status', 'IP', 'Reason']}>
               {loginHistory.map((entry) => (
                 <TableRow key={entry.login_key || `${entry.created_at}-${entry.user_login}`}>
-                  <TableCell>{entry.created_at}</TableCell>
+                  <TableCell className="whitespace-nowrap">{formatLoginHistoryDate(entry.created_at)}</TableCell>
                   <TableCell>{entry.user_login || ''}</TableCell>
                   <TableCell><Badge>{entry.login_status || ''}</Badge></TableCell>
                   <TableCell>{entry.ip_address || ''}</TableCell>
@@ -2344,11 +5210,305 @@ function UserCrudView() {
                 </TableRow>
               ))}
             </FoundationTable>
-            </div>
-          </DashboardPanel>
+          </div>
+        </DashboardPanel>
         </div>
       </div>
-      )}
+
+      <Dialog open={Boolean(avatarViewerUser)} onOpenChange={(open) => {
+        if (!open) {
+          setAvatarViewerUserKey('')
+          setAvatarViewerSize('M')
+        }
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close avatar viewer" title="Close avatar viewer" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>Avatar Viewer</DialogTitle>
+            <DialogDescription>{avatarViewerUser ? `${avatarViewerUser.user_login} avatar rendered through the PHP image viewer.` : 'User avatar viewer.'}</DialogDescription>
+          </DialogHeader>
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-6 py-5 pb-16">
+            <div className="flex flex-wrap items-center gap-2">
+              {groupImageViewerSizes.map((size) => (
+                <Button
+                  key={size}
+                  type="button"
+                  variant={avatarViewerSize === size ? 'default' : 'outline'}
+                  size="sm"
+                  className="min-w-12 rounded-full"
+                  onClick={() => setAvatarViewerSize(size)}
+                  aria-pressed={avatarViewerSize === size}
+                >
+                  {size}
+                </Button>
+              ))}
+            </div>
+            <div className="grid min-h-[24rem] place-items-center overflow-hidden rounded-md bg-muted/20 p-4">
+              {avatarViewerUser ? (
+                <img
+                  key={`${avatarViewerUser.user_key}-${avatarViewerSize}`}
+                  src={userAvatarViewerUrl(avatarViewerUser, avatarViewerSize)}
+                  alt={`${avatarViewerUser.user_login} ${avatarViewerSize} avatar`}
+                  className="max-h-[65dvh] max-w-full rounded-md object-contain"
+                />
+              ) : null}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={userDialogMode !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setUserDialogMode(null)
+            setEditingUserKey('')
+            setUserFormGroupKey('')
+            setUserFormPositionKey('')
+            setUserFormMobileNumber('+63')
+          }
+        }}
+      >
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close user form" title="Close user form" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2">
+              {editingUser ? <Pencil className="size-4 text-muted-foreground" /> : <Plus className="size-4 text-muted-foreground" />}
+              {editingUser ? 'Edit User' : 'Create User'}
+            </DialogTitle>
+	            <DialogDescription>Save the project user profile and project-level assignments after reviewing the confirmation prompt.</DialogDescription>
+          </DialogHeader>
+          <form key={editingUser?.user_key || 'new-user'} ref={userFormRef} method="post" encType="multipart/form-data" className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid items-start gap-6 lg:grid-cols-12">
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value="save_user" />
+                <input type="hidden" name="user_key" value={editingUser?.user_key || ''} />
+                <input type="hidden" name="project_key" value={editingUser?.project_key || activeProjects[0]?.project_key || ''} />
+                <div className="self-start border-b border-border/70 pb-5 lg:col-span-3 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-6">
+                  <UserAvatarUploadField user={editingUser} onViewAvatar={editingUser ? () => openUserAvatarViewer(editingUser, 'L') : undefined} />
+                </div>
+                <div className="grid content-start gap-4 lg:col-span-9 lg:pl-1">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="user_login">Username</Label>
+                    <Input id="user_login" name="user_login" defaultValue={editingUser?.user_login || ''} required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="password">{editingUser ? 'New Password' : 'Password'}</Label>
+                    <Input id="password" name="password" type="password" minLength={8} defaultValue={editingUser ? '' : 'RBMS2026'} required={!editingUser} autoComplete="new-password" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="password_confirm">Confirm Password</Label>
+                    <Input id="password_confirm" name="password_confirm" type="password" minLength={8} defaultValue={editingUser ? '' : 'RBMS2026'} required={!editingUser} autoComplete="new-password" />
+                  </div>
+                </div>
+                <Separator />
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+	                  <div className="grid gap-2">
+	                    <Label htmlFor="user_name">Full Name</Label>
+	                    <Input id="user_name" name="user_name" defaultValue={editingUser?.user_name || ''} required />
+	                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="user_chat_name">Chat Name</Label>
+                    <Input id="user_chat_name" name="user_chat_name" defaultValue={editingUser?.user_chat_name || ''} maxLength={160} />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="user_mobile_number">Mobile Number</Label>
+                    <Input
+                      id="user_mobile_number"
+                      name="user_mobile_number"
+                      value={userFormMobileNumber}
+                      onChange={(event) => setUserFormMobileNumber(normalizeProjectMobileNumberInput(event.target.value))}
+                      inputMode="tel"
+                      placeholder="+639171234567"
+                      pattern="\+[1-9][0-9]{7,14}"
+	                      required
+		                    />
+		                  </div>
+		                </div>
+                <Separator />
+		                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+		                  <div className="grid gap-2">
+		                    <Label htmlFor="group_keys">Group</Label>
+		                    <select
+                        id="group_keys"
+                        name="group_keys[]"
+                        value={selectedUserFormGroupKey}
+                        onChange={(event) => {
+                          setUserFormGroupKey(event.target.value)
+                          setUserFormPositionKey('')
+                        }}
+                        className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                      >
+	                      <option value="">No group</option>
+	                      {activeGroups.map((group) => (
+	                        <option key={group.group_key} value={group.group_key}>{group.group_name}</option>
+	                      ))}
+	                    </select>
+	                  </div>
+	                  <div className="grid gap-2">
+	                    <Label htmlFor="position_key">Position</Label>
+	                    <select
+	                      id="position_key"
+	                      name="position_key"
+	                      value={selectedUserFormPositionKey}
+                        onChange={(event) => setUserFormPositionKey(event.target.value)}
+	                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+	                    >
+	                      <option value="">{selectedUserFormGroupKey ? 'No position' : 'Select group first'}</option>
+	                      {visibleUserFormPositions.map((position) => (
+	                        <option key={position.position_key} value={position.position_key}>
+	                          {position.position_code} - {position.position_name}
+	                        </option>
+	                      ))}
+	                    </select>
+	                  </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="user_status">Status</Label>
+                      <select
+                        id="user_status"
+                        name="user_status"
+                        defaultValue={editingUser?.user_status || 'ACTIVE'}
+                        className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                      >
+                        <option value="DRAFT">DRAFT</option>
+                        <option value="ACTIVE">ACTIVE</option>
+                        <option value="INACTIVE">INACTIVE</option>
+                        <option value="LOCKED">LOCKED</option>
+                        <option value="DELETED">DELETED</option>
+                      </select>
+                    </div>
+		                </div>
+		              </div>
+	            </div>
+            </div>
+            <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+              <span className="text-xs text-muted-foreground">User changes are verified server-side before success is reported.</span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  onClick={() => setConfirmation({
+                    title: editingUser ? 'Confirm user update' : 'Confirm user creation',
+                    message: editingUser
+                      ? `Update user ${editingUser.user_login} and replace selected assignments?`
+                      : 'Create this user with the selected assignments?',
+                    confirmLabel: editingUser ? 'Update User' : 'Create User',
+                    onConfirm: () => userFormRef.current?.requestSubmit(),
+                  })}
+                >
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {editingUser ? 'Save User' : 'Create User'}
+                </Button>
+              </div>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(assignmentUser)} onOpenChange={(open) => !open && setAssignmentUserKey('')}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close access assignment" title="Close access assignment" />}>
+              <X />
+            </DialogClose>
+	            <DialogTitle className="flex items-center gap-2"><ShieldCheck className="size-4 text-muted-foreground" />Project Assignment</DialogTitle>
+	            <DialogDescription>{assignmentUser ? `Replace project group assignment for ${assignmentUser.user_login}.` : 'Select a project user before assigning access.'}</DialogDescription>
+          </DialogHeader>
+          {assignmentUser ? (
+            <form key={assignmentUser.user_key} ref={assignmentFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                <div className="grid gap-4">
+                  <input type="hidden" name="csrf" value={data.csrf} />
+                  <input type="hidden" name="action" value="save_user" />
+                  <input type="hidden" name="user_key" value={assignmentUser.user_key} />
+                  <input type="hidden" name="user_login" value={assignmentUser.user_login} />
+                  <input type="hidden" name="user_name" value={assignmentUser.user_name} />
+                  <input type="hidden" name="user_chat_name" value={assignmentUser.user_chat_name || ''} />
+                  <input type="hidden" name="user_mobile_number" value={assignmentUser.user_mobile_number || ''} />
+                  <input type="hidden" name="user_email" value={assignmentUser.user_email || ''} />
+                  <input type="hidden" name="position_key" value="" />
+                  <input type="hidden" name="project_key" value={assignmentUser.project_key || activeProjects[0]?.project_key || ''} />
+                  <input type="hidden" name="user_status" value={assignmentUser.user_status} />
+	                  <div className="grid gap-4">
+	                    <div className="grid gap-2">
+	                      <Label>Groups</Label>
+	                      <AssignmentCheckboxGrid name="group_keys[]" options={activeGroups} valueKey="group_key" labelKey="group_name" descriptionKey="group_description" defaultValues={csvToArray(assignmentUser.group_keys)} emptyText="No groups found." />
+	                    </div>
+                  </div>
+                </div>
+              </div>
+              <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+                <span className="text-xs text-muted-foreground">Assignments are replaced as one verified user save.</span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    onClick={() => setConfirmation({
+                      title: 'Confirm user assignment update',
+                      message: `Replace assignments for ${assignmentUser.user_login}?`,
+                      confirmLabel: 'Save Assignments',
+                      onConfirm: () => assignmentFormRef.current?.requestSubmit(),
+                    })}
+                  >
+                    <Save className="h-4 w-4" aria-hidden="true" />
+                    Save Assignments
+                  </Button>
+                </div>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(resetUser)} onOpenChange={(open) => !open && setResetUserKey('')}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close password reset" title="Close password reset" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2"><KeyRound className="size-4 text-muted-foreground" />Reset Password</DialogTitle>
+            <DialogDescription>{resetUser ? `Set a temporary password for ${resetUser.user_login}.` : 'Select a user before resetting a password.'}</DialogDescription>
+          </DialogHeader>
+          {resetUser ? (
+            <form key={resetUser.user_key} ref={resetFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                <div className="grid gap-4">
+                  <input type="hidden" name="csrf" value={data.csrf} />
+                  <input type="hidden" name="action" value="reset_user_password" />
+                  <input type="hidden" name="user_key" value={resetUser.user_key} />
+                  <div className="grid gap-2">
+                    <Label htmlFor="reset_password">New Password</Label>
+                    <Input id="reset_password" name="password" type="password" minLength={10} required />
+                  </div>
+                </div>
+              </div>
+              <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+                <span className="text-xs text-muted-foreground">Share the new password securely outside the system.</span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setConfirmation({
+                      title: 'Confirm password reset',
+                      message: `Reset password for ${resetUser.user_login}? Share the new password securely outside the system.`,
+                      confirmLabel: 'Reset Password',
+                      destructive: true,
+                      onConfirm: () => resetFormRef.current?.requestSubmit(),
+                    })}
+                  >
+                    <KeyRound className="h-4 w-4" aria-hidden="true" />
+                    Reset Password
+                  </Button>
+                </div>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
@@ -2358,16 +5518,29 @@ function UserStatusButton({
   status,
   label,
   icon,
+  disabled = false,
+  disabledReason = '',
   setConfirmation,
 }: {
   user: Record<string, string>
   status: string
   label: string
   icon: React.ReactNode
+  disabled?: boolean
+  disabledReason?: string
   setConfirmation: (confirmation: ConfirmationState) => void
 }) {
   const formRef = React.useRef<HTMLFormElement>(null)
   const destructive = status === 'DELETED' || status === 'LOCKED' || status === 'INACTIVE'
+  const tooltipLabel = `${label} User`
+  const tooltipText = disabled ? disabledReason || tooltipLabel : tooltipLabel
+  const statusClassName = status === 'ACTIVE'
+    ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200'
+    : status === 'INACTIVE'
+      ? 'border-amber-500/60 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-200'
+      : status === 'LOCKED'
+        ? 'border-violet-500/60 bg-violet-500/10 text-violet-500 hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200'
+        : 'border-red-500/60 bg-red-500/10 text-red-500 hover:bg-red-500/20 hover:text-red-600 dark:text-red-300 dark:hover:text-red-200'
 
   return (
     <form ref={formRef} method="post">
@@ -2375,112 +5548,424 @@ function UserStatusButton({
       <input type="hidden" name="action" value="set_user_status" />
       <input type="hidden" name="user_key" value={user.user_key} />
       <input type="hidden" name="user_status" value={status} />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => setConfirmation({
-          title: `${label} user`,
-          message: destructive
-            ? `${label} user ${user.user_login}? This changes sign-in access immediately.`
-            : `${label} user ${user.user_login}?`,
-          confirmLabel: label,
-          destructive,
-          onConfirm: () => formRef.current?.requestSubmit(),
-        })}
-      >
-        {icon}
-        {label}
-      </Button>
+      <Tooltip>
+        <TooltipTrigger render={<Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          className={cn('rounded-full disabled:cursor-not-allowed disabled:opacity-40', statusClassName)}
+          aria-label={`${label} ${user.user_login}`}
+          title={tooltipText}
+          disabled={disabled}
+          onClick={() => setConfirmation({
+            title: tooltipLabel,
+            message: destructive
+              ? `${label} user ${user.user_login}? This changes sign-in access immediately.`
+              : `${label} user ${user.user_login}?`,
+            confirmLabel: label,
+            destructive,
+            onConfirm: () => formRef.current?.requestSubmit(),
+          })}
+        />}>
+          {icon}
+        </TooltipTrigger>
+        <TooltipContent>{tooltipText}</TooltipContent>
+      </Tooltip>
     </form>
   )
 }
 
 function GroupCrudView() {
-  const [activeTab, setActiveTab] = React.useState<'standard' | 'gui'>('standard')
+  const initialPositionGroupKey = typeof data.initialState?.positionGroupKey === 'string' ? data.initialState.positionGroupKey : ''
+  const initialActiveGroupKey = typeof data.initialState?.activeGroupKey === 'string' ? data.initialState.activeGroupKey : initialPositionGroupKey
+  const [groupDialogMode, setGroupDialogMode] = React.useState<'create' | 'edit' | null>(null)
   const [editingGroupKey, setEditingGroupKey] = React.useState('')
   const [assignmentGroupKey, setAssignmentGroupKey] = React.useState('')
+  const [activeGroupKey, setActiveGroupKey] = React.useState(initialActiveGroupKey)
+  const [positionGroupKey, setPositionGroupKey] = React.useState(initialPositionGroupKey)
+  const [imageViewerGroupKey, setImageViewerGroupKey] = React.useState('')
+  const [imageViewerSize, setImageViewerSize] = React.useState<(typeof groupImageViewerSizes)[number]>('M')
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
   const groupFormRef = React.useRef<HTMLFormElement>(null)
   const assignmentFormRef = React.useRef<HTMLFormElement>(null)
-  const editingGroup = data.groups.find((group) => group.group_key === editingGroupKey)
-  const assignmentGroup = data.groups.find((group) => group.group_key === assignmentGroupKey) || data.groups[0]
+  const visibleGroups = data.groups.filter((group) => group.group_status !== 'DELETED')
+  const editingGroup = groupDialogMode === 'edit' ? visibleGroups.find((group) => group.group_key === editingGroupKey) : undefined
+  const assignmentGroup = visibleGroups.find((group) => group.group_key === assignmentGroupKey)
+  const selectedGroup = visibleGroups.find((group) => group.group_key === activeGroupKey) || visibleGroups[0]
+  const positionGroup = visibleGroups.find((group) => group.group_key === positionGroupKey)
+  const imageViewerGroup = visibleGroups.find((group) => group.group_key === imageViewerGroupKey)
+  const groupProjectValue = editingGroup?.project_key || selectedGroup?.project_key || data.projects.find((project) => project.project_status !== 'DELETED')?.project_key || ''
   const assignableUsers = data.users.filter((user) => user.user_status !== 'DELETED')
+  const groupFormUsers = assignableUsers.filter((user) => !groupProjectValue || user.project_key === groupProjectValue)
+  const groupAssignableUsers = assignableUsers.filter((user) => !assignmentGroup?.project_key || user.project_key === assignmentGroup.project_key)
+  const selectedPositions = csvToArray(selectedGroup?.position_names)
+  const selectedMembers = csvToArray(selectedGroup?.member_names)
+  const selectedGroupDeactivated = selectedGroup?.group_status === 'INACTIVE'
+  const deactivatedGroupActionReason = 'Deactivated groups only allow restore or delete.'
+  const activeGroupRestoreReason = 'Group is already active.'
+
+  function openGroupImageViewer(group: Record<string, string>, size: (typeof groupImageViewerSizes)[number]) {
+    if (groupImageViewerUrl(group, size) === '') return
+    setImageViewerGroupKey(group.group_key)
+    setImageViewerSize(size)
+  }
 
   return (
     <>
       <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
 
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+      <div className="mb-5">
         <div>
           <Badge>Administrator Group CRUD</Badge>
           <h2 className="mt-2 text-2xl font-bold tracking-normal">Groups</h2>
           <p className="mt-1 text-sm text-muted-foreground">Create, edit, deactivate, restore, and soft-delete groups while managing user membership.</p>
         </div>
-        <Button type="button" onClick={() => setEditingGroupKey('')}>
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          New Group
-        </Button>
       </div>
 
-      <ViewTabs activeTab={activeTab} onChange={setActiveTab} />
-
-      {activeTab === 'gui' ? (
-        <DashboardPanel title="Group Membership GUI" description="Select a group, then assign members using a searchable panel.">
-          <div className="p-4">
-            {assignmentGroup ? (
-              <form key={assignmentGroup.group_key} ref={assignmentFormRef} method="post" className="grid gap-4">
-                <input type="hidden" name="csrf" value={data.csrf} />
-                <input type="hidden" name="action" value="save_group" />
-                <input type="hidden" name="group_key" value={assignmentGroup.group_key} />
-                <input type="hidden" name="group_name" value={assignmentGroup.group_name} />
-                <input type="hidden" name="group_description" value={assignmentGroup.group_description || ''} />
-                <input type="hidden" name="group_status" value={assignmentGroup.group_status} />
-                <div className="grid gap-2">
-                  <Label htmlFor="assignment_group_key">Group</Label>
-                  <select
-                    id="assignment_group_key"
-                    value={assignmentGroup.group_key}
-                    onChange={(event) => setAssignmentGroupKey(event.target.value)}
-                    className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
-                  >
-                    {data.groups.filter((group) => group.group_status !== 'DELETED').map((group) => (
-                      <option key={group.group_key} value={group.group_key}>{group.group_name}</option>
-                    ))}
-                  </select>
-                </div>
-                <AssignmentCheckboxGrid name="member_user_keys[]" options={assignableUsers} valueKey="user_key" labelKey="user_name" descriptionKey="user_login" defaultValues={csvToArray(assignmentGroup.member_user_keys)} emptyText="No users found." />
-                <Button
-                  type="button"
-                  onClick={() => setConfirmation({
-                    title: 'Confirm group membership update',
-                    message: `Replace members for ${assignmentGroup.group_name}?`,
-                    confirmLabel: 'Save Members',
-                    onConfirm: () => assignmentFormRef.current?.requestSubmit(),
-                  })}
-                >
-                  Save Members
-                </Button>
-              </form>
-            ) : (
-              <p className="text-sm text-muted-foreground">No groups available for membership assignment.</p>
+      <div className="grid gap-4 xl:grid-cols-12">
+        <div className="xl:col-span-8">
+          <DashboardPanel
+            title="Groups"
+            description="Use modal actions for group records, member assignment, and status changes."
+            action={(
+              <div className="flex items-center gap-1.5">
+                <Tooltip>
+                  <TooltipTrigger render={<Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    className="rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.25)] hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200"
+                    aria-label="New Group"
+                    title="New Group"
+                    onClick={() => {
+                      setEditingGroupKey('')
+                      setGroupDialogMode('create')
+                    }}
+                  />}>
+                    <Plus className="h-4 w-4" aria-hidden="true" />
+                  </TooltipTrigger>
+                  <TooltipContent>New Group</TooltipContent>
+                </Tooltip>
+              </div>
             )}
+          >
+            <div className="overflow-auto pb-16">
+              <FoundationTable headers={['Group', 'Status', 'Positions', 'Members', 'Actions']}>
+                {visibleGroups.map((group) => {
+                  const groupActive = group.group_status === 'ACTIVE'
+                  const groupDeactivated = group.group_status === 'INACTIVE'
+                  const groupPositions = csvToArray(group.position_names)
+                  const originalAdministratorsGroup = group.group_name === 'Administrators' && groupPositions.some((position) => position.toUpperCase() === 'ADMINISTRATOR')
+                  const nonDeleteActionTitle = groupDeactivated ? deactivatedGroupActionReason : undefined
+                  const restoreDisabled = groupActive
+                  const restoreDisabledReason = activeGroupRestoreReason
+
+                  return (
+                  <TableRow
+                    key={group.group_key}
+                    className={cn('cursor-pointer transition-colors hover:bg-muted/30', selectedGroup?.group_key === group.group_key && 'bg-muted/40', groupDeactivated && 'opacity-75')}
+                    onClick={() => setActiveGroupKey(group.group_key)}
+                  >
+	                    <TableCell>
+	                      <div className="flex min-w-0 items-center gap-3">
+	                        <div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-muted/30">
+	                          {groupImageViewerUrl(group, 'XS') !== '' ? (
+                              <button
+                                type="button"
+                                className="block size-full"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openGroupImageViewer(group, 'M')
+                                }}
+                                title="Open image viewer"
+                              >
+	                              <img
+                                  src={groupImageViewerUrl(group, 'XS')}
+                                  alt={`${group.group_name} image`}
+                                  className="size-full object-cover"
+                                  loading="lazy"
+                                />
+                              </button>
+	                          ) : (
+	                            <Users className="size-4 text-muted-foreground" aria-hidden="true" />
+	                          )}
+	                        </div>
+	                        <div className="min-w-0">
+	                          <strong>{group.group_name}</strong>
+	                          <p className="text-muted-foreground">{group.group_description || 'No description set'}</p>
+	                        </div>
+	                      </div>
+	                    </TableCell>
+                    <TableCell><Badge>{group.group_status}</Badge></TableCell>
+                    <TableCell>
+                      <strong>{group.position_count || '0'} position(s)</strong>
+                      <p className="text-muted-foreground">{group.position_names || 'No positions assigned'}</p>
+                    </TableCell>
+                    <TableCell>
+                      <strong>{group.member_count || '0'} member(s)</strong>
+                      <p className="text-muted-foreground">{group.member_names || 'No members assigned'}</p>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        <Tooltip>
+                          <TooltipTrigger render={<Button
+                            type="button"
+                            variant="outline"
+                            size="icon-sm"
+                            className={cn('rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.25)] hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200', groupDeactivated && 'shadow-none opacity-45')}
+                            aria-label={`Position Management for ${group.group_name}`}
+                            title={nonDeleteActionTitle || 'Position Management'}
+                            disabled={groupDeactivated}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (groupDeactivated) return
+                              setActiveGroupKey(group.group_key)
+                              setPositionGroupKey(group.group_key)
+                            }}
+                          />}>
+                            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                          </TooltipTrigger>
+                          <TooltipContent>{nonDeleteActionTitle || 'Position Management'}</TooltipContent>
+                        </Tooltip>
+                        {!originalAdministratorsGroup ? <Tooltip>
+                          <TooltipTrigger render={<Button
+                            type="button"
+                            variant="outline"
+                            size="icon-sm"
+                            className={cn('rounded-full border-blue-500/60 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 hover:text-blue-600 dark:text-blue-300 dark:hover:text-blue-200', groupDeactivated && 'opacity-45')}
+                            aria-label={`Edit ${group.group_name}`}
+                            title={nonDeleteActionTitle || 'Edit Group'}
+                            disabled={groupDeactivated}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (groupDeactivated) return
+                              setActiveGroupKey(group.group_key)
+                              setEditingGroupKey(group.group_key)
+                              setGroupDialogMode('edit')
+                            }}
+                          />}>
+                            <Pencil className="h-4 w-4" aria-hidden="true" />
+                          </TooltipTrigger>
+                          <TooltipContent>{nonDeleteActionTitle || 'Edit Group'}</TooltipContent>
+                        </Tooltip> : null}
+                        <Tooltip>
+                          <TooltipTrigger render={<Button
+                            type="button"
+                            variant="outline"
+                            size="icon-sm"
+                            className={cn('rounded-full border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_12px_rgba(139,92,246,0.18)] hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200', groupDeactivated && 'shadow-none opacity-45')}
+                            aria-label={`Manage members for ${group.group_name}`}
+                            title={nonDeleteActionTitle || 'Manage Members'}
+                            disabled={groupDeactivated}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (groupDeactivated) return
+                              setActiveGroupKey(group.group_key)
+                              setAssignmentGroupKey(group.group_key)
+                            }}
+                          />}>
+                            <Users className="h-4 w-4" aria-hidden="true" />
+                          </TooltipTrigger>
+                          <TooltipContent>{nonDeleteActionTitle || 'Manage Members'}</TooltipContent>
+                        </Tooltip>
+                        <button
+                          type="button"
+                          className="sr-only"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setActiveGroupKey(group.group_key)
+                          }}
+                        >
+                          View group details
+                        </button>
+                        {!originalAdministratorsGroup ? (
+                          <>
+                            <GroupStatusButton group={group} status="ACTIVE" label="Restore" icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} disabled={restoreDisabled} disabledReason={restoreDisabledReason} />
+                            <GroupStatusButton group={group} status="INACTIVE" label="Deactivate" icon={<Ban className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} disabled={groupDeactivated} disabledReason={deactivatedGroupActionReason} />
+                            <GroupStatusButton group={group} status="DELETED" label="Delete" icon={<Trash2 className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
+                          </>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  )
+                })}
+              </FoundationTable>
+            </div>
+          </DashboardPanel>
+        </div>
+
+        <div className="xl:col-span-4">
+          <DashboardPanel
+            title="Group Details"
+            description={selectedGroup ? 'Selected group, positions, and members.' : 'Select a group to review its details.'}
+            action={selectedGroup ? <Badge>{selectedGroup.group_status}</Badge> : null}
+          >
+            <div className="grid gap-4 p-4 pb-16">
+              {selectedGroup ? (
+                <>
+	                  <div>
+	                    <div className="flex min-w-0 items-center gap-3">
+	                      <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-full bg-muted/30">
+	                        {groupImageViewerUrl(selectedGroup, 'L') !== '' ? (
+	                          <button
+                              type="button"
+                              className="block size-full"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                openGroupImageViewer(selectedGroup, 'L')
+                              }}
+                              title="Open image viewer"
+                            >
+                              <img
+                                src={groupImageViewerUrl(selectedGroup, 'L')}
+                                alt={`${selectedGroup.group_name} image`}
+                                className="size-full object-cover"
+                                loading="lazy"
+                              />
+                            </button>
+	                        ) : (
+	                          <Users className="size-5 text-muted-foreground" aria-hidden="true" />
+	                        )}
+	                      </div>
+	                      <div className="min-w-0">
+	                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Selected Group</p>
+	                        <h3 className="mt-1 text-lg font-semibold tracking-normal">{selectedGroup.group_name}</h3>
+	                        <p className="mt-1 text-sm leading-6 text-muted-foreground">{selectedGroup.group_description || 'No description set'}</p>
+	                      </div>
+	                    </div>
+	                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-md bg-muted/20 p-3">
+                      <p className="text-xs text-muted-foreground">Positions</p>
+                      <p className="mt-1 text-2xl font-semibold">{selectedGroup.position_count || '0'}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/20 p-3">
+                      <p className="text-xs text-muted-foreground">Members</p>
+                      <p className="mt-1 text-2xl font-semibold">{selectedGroup.member_count || '0'}</p>
+                    </div>
+                  </div>
+                  <Separator />
+                  <div>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-semibold">Positions Under This Group</h4>
+                      <Badge variant="secondary">{selectedPositions.length}</Badge>
+                    </div>
+                    <div className="grid gap-2">
+                      {selectedPositions.length > 0 ? selectedPositions.map((position) => (
+                        <div key={position} className="rounded-md bg-muted/20 px-3 py-2 text-sm">{position}</div>
+                      )) : <p className="rounded-md bg-muted/20 px-3 py-2 text-sm text-muted-foreground">No positions assigned.</p>}
+                    </div>
+                  </div>
+                  <Separator />
+                  <div>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-semibold">Group Members</h4>
+                      <Tooltip>
+                        <TooltipTrigger render={<Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          className={cn('rounded-full border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_12px_rgba(139,92,246,0.18)] hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200', selectedGroupDeactivated && 'shadow-none opacity-45')}
+                          aria-label="Manage Members"
+                          title={selectedGroupDeactivated ? deactivatedGroupActionReason : 'Manage Members'}
+                          disabled={selectedGroupDeactivated}
+                          onClick={() => {
+                            if (selectedGroupDeactivated) return
+                            setAssignmentGroupKey(selectedGroup.group_key)
+                          }}
+                        />}>
+                          <Users className="h-4 w-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>{selectedGroupDeactivated ? deactivatedGroupActionReason : 'Manage Members'}</TooltipContent>
+                      </Tooltip>
+                    </div>
+                    <div className="grid gap-2">
+                      {selectedMembers.length > 0 ? selectedMembers.map((member) => (
+                        <div key={member} className="rounded-md bg-muted/20 px-3 py-2 text-sm">{member}</div>
+                      )) : <p className="rounded-md bg-muted/20 px-3 py-2 text-sm text-muted-foreground">No members assigned.</p>}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No groups are available.</p>
+              )}
+            </div>
+          </DashboardPanel>
+        </div>
+      </div>
+
+      <Dialog open={Boolean(imageViewerGroup)} onOpenChange={(open) => {
+        if (!open) {
+          setImageViewerGroupKey('')
+          setImageViewerSize('M')
+        }
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close image viewer" title="Close image viewer" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>Image Viewer</DialogTitle>
+            <DialogDescription>{imageViewerGroup ? `${imageViewerGroup.group_name} image rendered through the PHP image viewer.` : 'Group image viewer.'}</DialogDescription>
+          </DialogHeader>
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-6 py-5 pb-16">
+            <div className="flex flex-wrap items-center gap-2">
+              {groupImageViewerSizes.map((size) => (
+                <Button
+                  key={size}
+                  type="button"
+                  variant={imageViewerSize === size ? 'default' : 'outline'}
+                  size="sm"
+                  className="min-w-12 rounded-full"
+                  onClick={() => setImageViewerSize(size)}
+                  aria-pressed={imageViewerSize === size}
+                >
+                  {size}
+                </Button>
+              ))}
+            </div>
+            <div className="grid min-h-[24rem] place-items-center overflow-hidden rounded-md bg-muted/20 p-4">
+              {imageViewerGroup ? (
+                <img
+                  key={`${imageViewerGroup.group_key}-${imageViewerSize}`}
+                  src={groupImageViewerUrl(imageViewerGroup, imageViewerSize)}
+                  alt={`${imageViewerGroup.group_name} ${imageViewerSize} image`}
+                  className="max-h-[65dvh] max-w-full rounded-md object-contain"
+                />
+              ) : null}
+            </div>
           </div>
-        </DashboardPanel>
-      ) : (
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-3">
-          <DashboardPanel title={editingGroup ? 'Edit Group' : 'Create Group'} description="Group membership is stored in the user-group assignment table.">
-            <div className="p-4">
-            <form key={editingGroup?.group_key || 'new-group'} ref={groupFormRef} method="post" className="grid gap-4">
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={groupDialogMode !== null} onOpenChange={(open) => {
+        if (!open) {
+          setGroupDialogMode(null)
+          setEditingGroupKey('')
+        }
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close group form" title="Close group form" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>{editingGroup ? 'Edit Group' : 'Create Group'}</DialogTitle>
+            <DialogDescription>Groups own positions and membership; positions are reviewed inside each group.</DialogDescription>
+          </DialogHeader>
+	          <form key={editingGroup?.group_key || 'new-group'} ref={groupFormRef} method="post" encType="multipart/form-data" data-skip-submit-confirmation="true" className="flex min-h-0 flex-1 flex-col">
+            <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-6 py-5 pb-16">
               <input type="hidden" name="csrf" value={data.csrf} />
               <input type="hidden" name="action" value="save_group" />
-              <input type="hidden" name="group_key" value={editingGroup?.group_key || ''} />
-              <div className="grid gap-2">
-                <Label htmlFor="group_name">Group Name</Label>
-                <Input id="group_name" name="group_name" defaultValue={editingGroup?.group_name || ''} required />
-              </div>
-              <div className="grid gap-2">
+              <input type="hidden" name="group_save_mode" value={groupDialogMode || 'create'} />
+              <input type="hidden" name="group_key" value={editingGroup?.group_key || editingGroupKey} />
+              <input type="hidden" name="project_key" value={groupProjectValue} />
+	              <div className="grid gap-2">
+	                <Label htmlFor="group_name">Group Name</Label>
+	                <Input id="group_name" name="group_name" defaultValue={editingGroup?.group_name || ''} required />
+	              </div>
+	              <GroupImageUploadField group={editingGroup} />
+	              <div className="grid gap-2">
                 <Label htmlFor="group_status">Status</Label>
                 <select
                   id="group_status"
@@ -2506,75 +5991,107 @@ function GroupCrudView() {
                 id="member_user_keys"
                 name="member_user_keys[]"
                 label="Members"
-                options={assignableUsers}
+                options={groupFormUsers}
                 valueKey="user_key"
                 labelKey="user_name"
                 defaultValues={csvToArray(editingGroup?.member_user_keys)}
               />
-              <div className="flex flex-wrap gap-2">
+            </div>
+            <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+              <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
+              <Button
+                type="button"
+                onClick={() => setConfirmation({
+                  title: editingGroup ? 'Confirm group update' : 'Confirm group creation',
+                  message: editingGroup
+                    ? `Update group ${editingGroup.group_name} and replace selected members?`
+                    : 'Create this group with the selected members?',
+                  confirmLabel: editingGroup ? 'Update Group' : 'Create Group',
+                  onConfirm: () => groupFormRef.current?.requestSubmit(),
+                })}
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                {editingGroup ? 'Save Group' : 'Create Group'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(positionGroup)} onOpenChange={(open) => {
+        if (!open) setPositionGroupKey('')
+      }}>
+        <DialogContent showCloseButton={false} className={cn('w-[calc(100vw-2rem)]', dialogSizeClass('XL'), 'flex min-h-0 flex-col gap-0 overflow-hidden p-0')}>
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close position management" title="Close position management" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>Position Management</DialogTitle>
+            <DialogDescription>{positionGroup ? `Positions are child records of ${positionGroup.group_name}.` : 'Select a group before managing positions.'}</DialogDescription>
+          </DialogHeader>
+          {positionGroup ? (
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 pb-16">
+              <UserPositionCrudView embedded scopedGroupKey={positionGroup.group_key} />
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(assignmentGroup)} onOpenChange={(open) => {
+        if (!open) setAssignmentGroupKey('')
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close group membership" title="Close group membership" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>Manage Members</DialogTitle>
+            <DialogDescription>{assignmentGroup ? `Assign users to ${assignmentGroup.group_name}.` : 'Select a group to assign members.'}</DialogDescription>
+          </DialogHeader>
+          {assignmentGroup ? (
+            <form key={assignmentGroup.group_key} ref={assignmentFormRef} method="post" data-skip-submit-confirmation="true" className="flex min-h-0 flex-1 flex-col">
+              <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-6 py-5 pb-16">
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value="save_group" />
+                <input type="hidden" name="group_key" value={assignmentGroup.group_key} />
+                <input type="hidden" name="project_key" value={assignmentGroup.project_key || groupProjectValue} />
+                <input type="hidden" name="group_name" value={assignmentGroup.group_name} />
+                <input type="hidden" name="group_description" value={assignmentGroup.group_description || ''} />
+                <input type="hidden" name="group_status" value={assignmentGroup.group_status} />
+                <div className="grid gap-2">
+                  <Label htmlFor="assignment_group_key">Group</Label>
+                  <select
+                    id="assignment_group_key"
+                    value={assignmentGroup.group_key}
+                    onChange={(event) => setAssignmentGroupKey(event.target.value)}
+                    className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                  >
+                    {visibleGroups.map((group) => (
+                      <option key={group.group_key} value={group.group_key}>{group.group_name}</option>
+                    ))}
+                  </select>
+                </div>
+                <AssignmentCheckboxGrid name="member_user_keys[]" options={groupAssignableUsers} valueKey="user_key" labelKey="user_name" descriptionKey="user_login" defaultValues={csvToArray(assignmentGroup.member_user_keys)} emptyText="No users found." />
+              </div>
+              <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+                <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
                 <Button
                   type="button"
                   onClick={() => setConfirmation({
-                    title: editingGroup ? 'Confirm group update' : 'Confirm group creation',
-                    message: editingGroup
-                      ? `Update group ${editingGroup.group_name} and replace selected members?`
-                      : 'Create this group with the selected members?',
-                    confirmLabel: editingGroup ? 'Update Group' : 'Create Group',
-                    onConfirm: () => groupFormRef.current?.requestSubmit(),
+                    title: 'Confirm group membership update',
+                    message: `Replace members for ${assignmentGroup.group_name}?`,
+                    confirmLabel: 'Save Members',
+                    onConfirm: () => assignmentFormRef.current?.requestSubmit(),
                   })}
                 >
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                  {editingGroup ? 'Save Group' : 'Create Group'}
+                  <Users className="h-4 w-4" aria-hidden="true" />
+                  Save Members
                 </Button>
-                {editingGroup && (
-                  <button type="button" className={buttonClassName({ variant: 'outline' })} onClick={() => setEditingGroupKey('')}>
-                    Clear
-                  </button>
-                )}
-              </div>
+              </DialogFooter>
             </form>
-            </div>
-          </DashboardPanel>
-        </div>
-
-        <div className="lg:col-span-9">
-          <DashboardPanel title="Groups" description="Manage groups and membership without leaving the Groups side-menu view.">
-            <div className="overflow-auto">
-          <FoundationTable headers={['Group', 'Status', 'Members', 'Actions']}>
-            {data.groups.map((group) => (
-              <TableRow key={group.group_key}>
-                <TableCell>
-                  <strong>{group.group_name}</strong>
-                  <p className="text-muted-foreground">{group.group_description || 'No description set'}</p>
-                </TableCell>
-                <TableCell><Badge>{group.group_status}</Badge></TableCell>
-                <TableCell>
-                  <strong>{group.member_count || '0'} member(s)</strong>
-                  <p className="text-muted-foreground">{group.member_names || 'No members assigned'}</p>
-                </TableCell>
-                <TableCell>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className={buttonClassName({ variant: 'outline', size: 'sm' })}
-                      onClick={() => setEditingGroupKey(group.group_key)}
-                    >
-                      <Pencil className="h-4 w-4" aria-hidden="true" />
-                      Edit
-                    </button>
-                    <GroupStatusButton group={group} status="ACTIVE" label="Restore" icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
-                    <GroupStatusButton group={group} status="INACTIVE" label="Deactivate" icon={<Ban className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
-                    <GroupStatusButton group={group} status="DELETED" label="Delete" icon={<Trash2 className="h-4 w-4" aria-hidden="true" />} setConfirmation={setConfirmation} />
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </FoundationTable>
-            </div>
-          </DashboardPanel>
-        </div>
-      </div>
-      )}
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
@@ -2585,39 +6102,58 @@ function GroupStatusButton({
   label,
   icon,
   setConfirmation,
+  disabled = false,
+  disabledReason = '',
 }: {
   group: Record<string, string>
   status: string
   label: string
   icon: React.ReactNode
   setConfirmation: (confirmation: ConfirmationState) => void
+  disabled?: boolean
+  disabledReason?: string
 }) {
   const formRef = React.useRef<HTMLFormElement>(null)
   const destructive = status === 'DELETED' || status === 'INACTIVE'
+  const colorClass = status === 'DELETED'
+    ? 'border-red-500/60 bg-red-500/10 text-red-500 shadow-[0_0_12px_rgba(239,68,68,0.18)] hover:bg-red-500/20 hover:text-red-600 dark:text-red-300 dark:hover:text-red-200'
+    : status === 'INACTIVE'
+      ? 'border-amber-500/60 bg-amber-500/10 text-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.18)] hover:bg-amber-500/20 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-200'
+      : 'border-cyan-500/60 bg-cyan-500/10 text-cyan-500 shadow-[0_0_12px_rgba(6,182,212,0.18)] hover:bg-cyan-500/20 hover:text-cyan-600 dark:text-cyan-300 dark:hover:text-cyan-200'
 
   return (
-    <form ref={formRef} method="post">
+    <form ref={formRef} method="post" data-skip-submit-confirmation="true" onClick={(event) => event.stopPropagation()}>
       <input type="hidden" name="csrf" value={data.csrf} />
       <input type="hidden" name="action" value="set_group_status" />
       <input type="hidden" name="group_key" value={group.group_key} />
       <input type="hidden" name="group_status" value={status} />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => setConfirmation({
-          title: `${label} group`,
-          message: destructive
-            ? `${label} group ${group.group_name}? This changes membership availability for access workflows.`
-            : `${label} group ${group.group_name}?`,
-          confirmLabel: label,
-          destructive,
-          onConfirm: () => formRef.current?.requestSubmit(),
-        })}
-      >
-        {icon}
-        {label}
-      </Button>
+      <Tooltip>
+        <TooltipTrigger render={<Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          className={cn('rounded-full', colorClass, disabled && 'shadow-none opacity-45')}
+          aria-label={`${label} ${group.group_name}`}
+          title={disabled ? disabledReason : label}
+          disabled={disabled}
+          onClick={(event) => {
+            event.stopPropagation()
+            if (disabled) return
+            setConfirmation({
+              title: `${label} group`,
+              message: destructive
+                ? `${label} group ${group.group_name}? This changes membership availability for access workflows.`
+                : `${label} group ${group.group_name}?`,
+              confirmLabel: label,
+              destructive,
+              onConfirm: () => formRef.current?.requestSubmit(),
+            })
+          }}
+        />}>
+          {icon}
+        </TooltipTrigger>
+        <TooltipContent>{disabled ? disabledReason : label}</TooltipContent>
+      </Tooltip>
     </form>
   )
 }
@@ -3056,15 +6592,21 @@ function PermissionStatusButton({
   )
 }
 
-const debugSwitchSettingNames = new Set([
+const switchSettingNames = new Set([
+  'android_force_update_enabled',
+  'android_release_acknowledgement_required',
+  'android_geofence_required',
+  'android_offline_queue_enabled',
+  'android_media_upload_enabled',
   'debug_enabled',
   'debug_show_queries',
   'debug_show_files',
   'debug_show_phase_task',
   'debug_log_traces',
+  'sharingan_enabled',
 ])
 
-function DebugSwitchSetting({ id, name, value, label }: { id: string; name: string; value: string; label: string }) {
+function SwitchSetting({ id, name, value, label }: { id: string; name: string; value: string; label: string }) {
   const [checked, setChecked] = React.useState(value === '1')
 
   return (
@@ -3114,7 +6656,11 @@ function DebugOutputPreview() {
 function SystemSettingsView() {
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
   const settingsFormRef = React.useRef<HTMLFormElement>(null)
-  const groupedSettings = data.settings.reduce<Record<string, Array<Record<string, string>>>>((groups, setting) => {
+  const requestedSettingsProjectKey = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('project_key') || '' : ''
+  const activeSettingsProject = data.projects.find((project) => project.project_key === requestedSettingsProjectKey)
+    || data.projects.find((project) => project.project_status !== 'DELETED')
+    || data.projects[0]
+  const groupedSettings = data.settings.reduce<Record<string, SettingRecord[]>>((groups, setting) => {
     const group = setting.setting_group || 'general'
     groups[group] = groups[group] || []
     groups[group].push(setting)
@@ -3125,16 +6671,33 @@ function SystemSettingsView() {
     ...preferredSettingGroupOrder.filter((group) => groupedSettings[group]?.length),
     ...existingGroupNames.filter((group) => !preferredSettingGroupOrder.includes(group)),
   ]
-  const defaultTab = groupNames[0] || 'general'
+  const requestedSettingsGroup = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('settings_group') || '' : ''
+  const defaultTab = groupNames.includes(requestedSettingsGroup) ? requestedSettingsGroup : (groupNames[0] || 'general')
   const [activeSettingsGroup, setActiveSettingsGroup] = React.useState(defaultTab)
+  const groupedMenuGroupNames = new Set(settingMenuGroupDefinitions.flatMap((group) => group.groups))
+  const settingsMenuGroups = [
+    ...settingMenuGroupDefinitions
+      .map((menuGroup) => ({
+        ...menuGroup,
+        groups: menuGroup.groups.filter((group) => groupNames.includes(group)),
+      }))
+      .filter((menuGroup) => menuGroup.groups.length > 0),
+    {
+      label: 'Additional',
+      labelClassName: 'text-muted-foreground',
+      groups: groupNames.filter((group) => !groupedMenuGroupNames.has(group)),
+    },
+  ].filter((menuGroup) => menuGroup.groups.length > 0)
   const groupDescriptions: Record<string, string> = {
     general: 'Software name, product description, and version labels shown across BuilderX.',
     localization: 'Default language, timezone, and currency used by generated screens and workflows.',
     security: 'Session, password, and recovery defaults used by administrator workflows.',
     application: 'Public URL and application path values used by navigation and generated links.',
+    android: 'Android app tenant bootstrap, release gate, offline queue, and sync defaults.',
     contact: 'Business contact details used by templates, reports, and user-facing pages.',
     interface: 'Admin and user interface defaults saved to the database and applied on refresh.',
     login: 'Text shown on the signed-out administrator login and first-administrator setup screen.',
+    media: 'Media upload and image viewing endpoints used by upload controls across the application.',
     debug: 'Admin-only diagnostics switches and sample trace output for future backend, AJAX, query, file, and Phase/Task debugging.',
     ai: 'Reserved settings group; AI requests use the active Codex Chat session.',
   }
@@ -3142,11 +6705,11 @@ function SystemSettingsView() {
   function inputType(settingName: string): string {
     if (settingName.includes('email')) return 'email'
     if (settingName.includes('url')) return 'url'
-    if (['session_timeout_minutes', 'password_min_length', 'password_expiration_days', 'password_history_count', 'password_reset_token_minutes', 'debug_trace_retention_days'].includes(settingName)) return 'number'
+    if (['session_timeout_minutes', 'password_min_length', 'password_expiration_days', 'password_history_count', 'password_reset_token_minutes', 'debug_trace_retention_days', 'android_current_version_code', 'android_min_supported_version_code', 'android_offline_retry_interval_seconds', 'android_dashboard_refresh_seconds'].includes(settingName)) return 'number'
     return 'text'
   }
 
-  function settingControl(setting: Record<string, string>) {
+  function settingControl(setting: SettingRecord) {
     const id = `setting_${setting.setting_key}`
     const name = `setting_values[${setting.setting_key}]`
     const value = setting.setting_value || ''
@@ -3162,13 +6725,13 @@ function SystemSettingsView() {
       )
     }
 
-    if (debugSwitchSettingNames.has(setting.setting_name)) {
+    if (switchSettingNames.has(setting.setting_name)) {
       return (
-        <DebugSwitchSetting
+        <SwitchSetting
           id={id}
           name={name}
           value={value}
-          label={formatSettingLabel(setting.setting_name.replace(/^debug_/, ''))}
+          label={formatSettingLabel(setting.setting_name.replace(/^debug_/, '').replace(/^sharingan_/, 'Sharingan '))}
         />
       )
     }
@@ -3195,14 +6758,43 @@ function SystemSettingsView() {
     )
   }
 
-  function settingSectionsForGroup(group: string) {
+  function settingHelpText(settingName: string): string {
+    if (settingName === 'media_uploader_target_url') {
+      return 'All uploader controls post files to this client-scoped URL. For rbmsv4-vrp, use http://localhost/rbms.com/_Mobile/rbmsv4-vrp/upload-image.php.'
+    }
+    if (settingName === 'media_image_viewer_url') {
+      return 'Use the client-scoped PHP viewer URL. The app appends d and url parameters, for example http://localhost/rbms.com/_Mobile/rbmsv4-vrp/view.php.'
+    }
+    if (settingName === 'android_tenant_configuration_endpoint_url') {
+      return 'The Android app posts the Hospital Code to this HTTPS endpoint before tenant-bound dashboard, Firebase, media, and offline state are enabled.'
+    }
+    if (settingName === 'android_app_package_name') {
+      return 'Package identifier expected by release notes, mobile build metadata, and administrator support workflows.'
+    }
+    if (settingName === 'android_min_supported_version_code') {
+      return 'Older Android builds below this version code should be blocked or prompted to update before syncing mutations.'
+    }
+    if (settingName === 'android_update_apk_download_path') {
+      return 'Root-relative .apk path or HTTP(S) .apk URL used when Android update checks require a package download.'
+    }
+    if (settingName.startsWith('android_splash_screen_image_url_')) {
+      return 'Optional HTTP(S) image link shown on the newly installed Android app splash screen.'
+    }
+    if (settingName === 'android_offline_retry_interval_seconds') {
+      return 'Default delay between Android offline queue retry attempts.'
+    }
+
+    return ''
+  }
+
+  function settingSectionsForGroup(group: string): ResolvedSettingSection[] {
     const settings = groupedSettings[group] || []
     const settingsByName = new Map(settings.map((setting) => [setting.setting_name, setting]))
     const usedSettingNames = new Set<string>()
     const sections = (settingSections[group] || []).map((section) => {
       const sectionSettings = section.names
         .map((settingName) => settingsByName.get(settingName))
-        .filter((setting): setting is Record<string, string> => Boolean(setting))
+        .filter((setting): setting is SettingRecord => Boolean(setting))
 
       sectionSettings.forEach((setting) => usedSettingNames.add(setting.setting_name))
 
@@ -3225,16 +6817,85 @@ function SystemSettingsView() {
     return sections
   }
 
-  function settingField(setting: Record<string, string>) {
+  function settingField(setting: SettingRecord) {
     const isWide = ['software_description', 'contact_address'].includes(setting.setting_name) || setting.setting_name.endsWith('_description')
     const label = setting.setting_group === 'debug'
       ? formatSettingLabel(setting.setting_name.replace(/^debug_/, ''))
       : formatSettingLabel(setting.setting_name)
+    const helpText = settingHelpText(setting.setting_name)
 
     return (
       <div key={setting.setting_key} className={cn('flex flex-col gap-2', isWide && 'md:col-span-2')}>
-        {!debugSwitchSettingNames.has(setting.setting_name) && <Label htmlFor={`setting_${setting.setting_key}`}>{label}</Label>}
+        {!switchSettingNames.has(setting.setting_name) && <Label htmlFor={`setting_${setting.setting_key}`}>{label}</Label>}
         {settingControl(setting)}
+        {helpText !== '' ? <p className="text-xs leading-5 text-muted-foreground">{helpText}</p> : null}
+      </div>
+    )
+  }
+
+  function settingSummaryValue(setting: SettingRecord): string {
+    if (setting.is_secret === '1') return 'Secret managed'
+    if (switchSettingNames.has(setting.setting_name)) return setting.setting_value === '1' ? 'Enabled' : 'Disabled'
+
+    const value = (setting.setting_value || '').trim()
+    if (value === '') return 'Not set'
+    return value.length > 96 ? `${value.slice(0, 93)}...` : value
+  }
+
+  function settingSummaryPanel(group: string, sections: ResolvedSettingSection[]) {
+    const settings = groupedSettings[group] || []
+    const configuredCount = settings.filter((setting) => (setting.setting_value || '').trim() !== '').length
+    const enabledSwitchCount = settings.filter((setting) => switchSettingNames.has(setting.setting_name) && setting.setting_value === '1').length
+    const switchCount = settings.filter((setting) => switchSettingNames.has(setting.setting_name)).length
+
+    return (
+      <div className="space-y-5 pb-16">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tab Summary</p>
+          <h3 className="text-base font-semibold tracking-normal">{formatSettingLabel(group)}</h3>
+          <p className="text-sm leading-5 text-muted-foreground">{groupDescriptions[group] || 'Only active settings are editable from this admin screen.'}</p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 rounded-md bg-background/55 p-3">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Sections</p>
+            <p className="mt-1 text-lg font-semibold">{sections.length}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Fields</p>
+            <p className="mt-1 text-lg font-semibold">{settings.length}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Set</p>
+            <p className="mt-1 text-lg font-semibold">{configuredCount}</p>
+          </div>
+        </div>
+
+        {switchCount > 0 ? (
+          <div className="rounded-md bg-background/55 p-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Enabled Switches</p>
+            <p className="mt-1 text-sm font-medium">{enabledSwitchCount} of {switchCount}</p>
+          </div>
+        ) : null}
+
+        <div className="space-y-4">
+          {sections.map((section) => (
+            <section key={`${section.title}-summary`} className="space-y-2">
+              <div>
+                <h4 className="text-sm font-semibold tracking-normal">{section.title}</h4>
+                <p className="text-xs leading-5 text-muted-foreground">{section.settings.length} field{section.settings.length === 1 ? '' : 's'}</p>
+              </div>
+              <dl className="space-y-2">
+                {section.settings.map((setting) => (
+                  <div key={`${setting.setting_key}-summary`} className="grid gap-0.5 rounded-md bg-background/45 px-3 py-2">
+                    <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{formatSettingLabel(setting.setting_name)}</dt>
+                    <dd className="break-words text-sm font-medium leading-5">{settingSummaryValue(setting)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
       </div>
     )
   }
@@ -3245,8 +6906,7 @@ function SystemSettingsView() {
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <Badge>Administrator System Settings</Badge>
-          <h2 className="mt-2 text-2xl font-bold tracking-normal">System Settings</h2>
+          <h2 className="text-2xl font-bold tracking-normal">System Settings</h2>
           <p className="mt-1 text-sm text-muted-foreground">Edit software info, localization, security defaults, app paths, and contact settings.</p>
         </div>
       </div>
@@ -3254,70 +6914,3253 @@ function SystemSettingsView() {
       <form ref={settingsFormRef} method="post" className="flex flex-col gap-4">
         <input type="hidden" name="csrf" value={data.csrf} />
         <input type="hidden" name="action" value="save_system_settings" />
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card>
-            <CardHeader>
-              <CardTitle>{settingValue('software_name', data.softwareName)}</CardTitle>
-              <CardDescription>{settingValue('software_description', 'BuilderX administrator platform')}</CardDescription>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>shadcn Standard</CardTitle>
-              <CardDescription>Base Nova neutral tokens from the official shadcn CSS.</CardDescription>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>{settingValue('default_time_zone', 'Asia/Manila')}</CardTitle>
-              <CardDescription>{settingValue('default_language', 'en').toUpperCase()} · {settingValue('default_currency', 'PHP')}</CardDescription>
-            </CardHeader>
-          </Card>
-        </div>
+        <input type="hidden" name="settings_group" value={activeSettingsGroup} />
+        <input type="hidden" name="project_key" value={activeSettingsProject?.project_key || ''} />
         <Tabs value={activeSettingsGroup} onValueChange={setActiveSettingsGroup} className="w-full">
-          <TabsList className="flex h-auto flex-wrap">
-            {groupNames.map((group) => (
-              <TabsTrigger key={group} value={group}>{formatSettingLabel(group)}</TabsTrigger>
-            ))}
-          </TabsList>
-          {groupNames.map((group) => (
-            <TabsContent key={group} value={group}>
-              <Card>
-                <CardHeader>
-                  <CardTitle>{formatSettingLabel(group)} Settings</CardTitle>
-                  <CardDescription>{groupDescriptions[group] || 'Only active settings are editable from this admin screen.'}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  {settingSectionsForGroup(group).map((section, index) => (
-                    <section key={section.title} className="space-y-4">
-                      {index > 0 && <Separator />}
-                      <div>
-                        <h3 className="text-sm font-semibold tracking-normal">{section.title}</h3>
-                        <p className="mt-1 text-sm text-muted-foreground">{section.description}</p>
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        {section.settings.map(settingField)}
-                      </div>
-                    </section>
+          <div className="flex w-full gap-5 overflow-x-auto rounded-lg bg-muted/30 p-2 [scrollbar-gutter:stable]">
+            {settingsMenuGroups.map((menuGroup, menuGroupIndex) => (
+              <div key={menuGroup.label} className={cn('flex shrink-0 items-center gap-2', menuGroupIndex < settingsMenuGroups.length - 1 && 'border-r pr-5')}>
+                <p className={cn('px-1 text-[11px] font-semibold uppercase tracking-wide', menuGroup.labelClassName)}>{menuGroup.label}</p>
+                <TabsList className="flex h-auto w-fit justify-start bg-transparent p-0">
+                  {menuGroup.groups.map((group) => (
+                    <TabsTrigger key={group} value={group} className="h-8 flex-none px-3">{formatSettingLabel(group)}</TabsTrigger>
                   ))}
-                  {group === 'debug' && <DebugOutputPreview />}
-                </CardContent>
-              </Card>
+                </TabsList>
+              </div>
+            ))}
+          </div>
+          {groupNames.map((group) => (
+            <TabsContent key={group} value={group} className="mt-4">
+              {(() => {
+                const resolvedSections = settingSectionsForGroup(group)
+
+                return (
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,8fr)_minmax(20rem,4fr)]">
+                    <Card className="flex max-h-[calc(100dvh-20rem)] min-h-[24rem] flex-col overflow-hidden">
+                      <CardHeader className="shrink-0 border-b bg-card">
+                        <CardTitle>{formatSettingLabel(group)} Settings</CardTitle>
+                        <CardDescription>{groupDescriptions[group] || 'Only active settings are editable from this admin screen.'}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain p-6 pb-16 [scrollbar-gutter:stable]">
+                        {resolvedSections.map((section, index) => (
+                          <section key={section.title} className="space-y-4">
+                            {index > 0 && <Separator />}
+                            <div>
+                              <h3 className="text-sm font-semibold tracking-normal">{section.title}</h3>
+                              <p className="mt-1 text-sm text-muted-foreground">{section.description}</p>
+                            </div>
+                            <div className="grid gap-4 md:grid-cols-2">
+                              {section.settings.map(settingField)}
+                            </div>
+                          </section>
+                        ))}
+                        {group === 'debug' && <DebugOutputPreview />}
+                      </CardContent>
+                      <CardFooter className="shrink-0 justify-between gap-3 border-t bg-card px-6 py-4">
+                        <p className="text-sm text-muted-foreground">{formatSettingLabel(group)} tab</p>
+                        <Button
+                          type="button"
+                          onClick={() => setConfirmation({
+                            title: 'Confirm system settings update',
+                            message: 'Save these system settings? Changes may affect localization, security defaults, URLs, paths, and contact information.',
+                            confirmLabel: 'Save Settings',
+                            onConfirm: () => settingsFormRef.current?.requestSubmit(),
+                          })}
+                        >
+                          Save Settings
+                        </Button>
+                      </CardFooter>
+                    </Card>
+
+                    <Card className="flex max-h-[calc(100dvh-20rem)] min-h-[24rem] flex-col overflow-hidden">
+                      <CardHeader className="shrink-0 border-b bg-card">
+                        <CardTitle>Summary</CardTitle>
+                        <CardDescription>{formatSettingLabel(group)} saved data and configured values.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-6 pb-0 [scrollbar-gutter:stable]">
+                        {settingSummaryPanel(group, resolvedSections)}
+                      </CardContent>
+                    </Card>
+                  </div>
+                )
+              })()}
             </TabsContent>
           ))}
         </Tabs>
-        <Button
-          type="button"
-          onClick={() => setConfirmation({
-            title: 'Confirm system settings update',
-            message: 'Save these system settings? Changes may affect localization, security defaults, URLs, paths, and contact information.',
-            confirmLabel: 'Save Settings',
-            onConfirm: () => settingsFormRef.current?.requestSubmit(),
-          })}
-        >
-          Save Settings
-        </Button>
       </form>
+    </>
+  )
+}
+
+function bedGroupMetricTotals(rows: Array<Record<string, any>>) {
+  return rows.reduce((totals, row) => ({
+    total: totals.total + Number(row.total || 0),
+    available: totals.available + Number(row.available || 0),
+    vacant: totals.vacant + Number(row.vacant || 0),
+  }), { total: 0, available: 0, vacant: 0 })
+}
+
+function BedGroupAnalyticsCanvas({ group, index }: { group: Record<string, any>; index: number }) {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null)
+  const hitAreasRef = React.useRef<Array<Record<string, any>>>([])
+  const hoverRef = React.useRef<Record<string, any> | null>(null)
+  const progressRef = React.useRef(0)
+  const animationFrameRef = React.useRef<number | null>(null)
+  const rows: Array<Record<string, any>> = Array.isArray(group.rows) ? group.rows : []
+  const visibleRows = rows.slice(0, 6)
+  const metricTotals = bedGroupMetricTotals(rows)
+  const minCanvasHeight = 400
+  const canvasHeight = Math.max(minCanvasHeight, visibleRows.length * 54 + 112)
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    let redraw: ((rawProgress?: number) => void) | null = null
+
+    const easeOutCubic = (value: number) => 1 - Math.pow(1 - value, 3)
+    const hitMatches = (hit: Record<string, any>, kind: string, label: string, metric: string) => (
+      hit.kind === kind && hit.label === label && hit.metric === metric
+    )
+    const roundRect = (context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
+      context.beginPath()
+      context.moveTo(x + radius, y)
+      context.lineTo(x + width - radius, y)
+      context.quadraticCurveTo(x + width, y, x + width, y + radius)
+      context.lineTo(x + width, y + height - radius)
+      context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height)
+      context.lineTo(x + radius, y + height)
+      context.quadraticCurveTo(x, y + height, x, y + height - radius)
+      context.lineTo(x, y + radius)
+      context.quadraticCurveTo(x, y, x + radius, y)
+      context.closePath()
+    }
+    const backdropImage = new Image()
+    backdropImage.onload = () => redraw?.(progressRef.current)
+    backdropImage.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720">
+        <defs>
+          <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#10251f"/>
+            <stop offset="0.48" stop-color="#0b1f2e"/>
+            <stop offset="1" stop-color="#08111e"/>
+          </linearGradient>
+          <radialGradient id="wash" cx="28%" cy="22%" r="78%">
+            <stop offset="0" stop-color="#d9f99d" stop-opacity="0.12"/>
+            <stop offset="0.55" stop-color="#38bdf8" stop-opacity="0.08"/>
+            <stop offset="1" stop-color="#020617" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <rect width="1200" height="720" fill="url(#bg)"/>
+        <rect width="1200" height="720" fill="url(#wash)"/>
+        <g fill="none" stroke="#d9f99d" stroke-opacity="0.13" stroke-width="2">
+          <path d="M96 620C220 520 360 540 486 438S760 282 1080 322"/>
+          <path d="M70 480C244 412 338 396 520 300S854 190 1150 206"/>
+          <path d="M160 96h280l60 54h270l84 80h206"/>
+          <path d="M122 190h164l42 42h192"/>
+        </g>
+        <g fill="#d9f99d" fill-opacity="0.16">
+          <circle cx="160" cy="96" r="4"/>
+          <circle cx="500" cy="150" r="4"/>
+          <circle cx="854" cy="230" r="4"/>
+          <circle cx="286" cy="190" r="3"/>
+          <circle cx="520" cy="232" r="3"/>
+          <circle cx="1080" cy="322" r="4"/>
+        </g>
+      </svg>
+    `)}`
+
+    const drawTooltip = (context: CanvasRenderingContext2D, width: number, height: number) => {
+      const hover = hoverRef.current
+      if (!hover) return
+
+      const tooltipWidth = 204
+      const tooltipHeight = 62
+      const tooltipX = Math.min(width - tooltipWidth - 8, Math.max(8, Number(hover.tooltipX || 0) + 14))
+      const tooltipY = Math.min(height - tooltipHeight - 8, Math.max(8, Number(hover.tooltipY || 0) - 18))
+      context.save()
+      context.shadowColor = 'rgba(2, 6, 23, 0.55)'
+      context.shadowBlur = 18
+      context.shadowOffsetY = 8
+      roundRect(context, tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8)
+      context.fillStyle = 'rgba(6, 17, 31, 0.94)'
+      context.fill()
+      context.shadowBlur = 0
+      context.fillStyle = String(hover.color || '#e5e7eb')
+      context.fillRect(tooltipX, tooltipY, 3, tooltipHeight)
+      context.fillStyle = '#ffffff'
+      context.font = '700 13px sans-serif'
+      context.fillText(String(hover.metric || '').toUpperCase(), tooltipX + 14, tooltipY + 22)
+      context.fillStyle = '#d4d4d4'
+      context.font = '12px sans-serif'
+      context.fillText(String(hover.label || '').slice(0, 25), tooltipX + 14, tooltipY + 40)
+      context.fillStyle = '#ffffff'
+      context.textAlign = 'right'
+      context.font = '700 16px sans-serif'
+      context.fillText(String(hover.value ?? 0), tooltipX + tooltipWidth - 12, tooltipY + 40)
+      context.textAlign = 'left'
+      context.restore()
+    }
+
+    const draw = (rawProgress = progressRef.current) => {
+      const progress = easeOutCubic(Math.max(0, Math.min(1, rawProgress)))
+      const rect = canvas.getBoundingClientRect()
+      const ratio = window.devicePixelRatio || 1
+      const width = Math.max(320, rect.width)
+      const height = Math.max(minCanvasHeight, rect.height)
+      const nextHitAreas: Array<Record<string, any>> = []
+      canvas.width = Math.floor(width * ratio)
+      canvas.height = Math.floor(height * ratio)
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.setTransform(ratio, 0, 0, ratio, 0, 0)
+      context.clearRect(0, 0, width, height)
+
+      const bodyStyle = window.getComputedStyle(document.body)
+      const textColor = bodyStyle.color || '#e5e7eb'
+      const mutedColor = bodyStyle.getPropertyValue('--muted-foreground') || '#737373'
+      const primaryColor = bodyStyle.getPropertyValue('--primary') || '#2563eb'
+      const secondaryColor = '#10b981'
+      const surfaceColor = bodyStyle.getPropertyValue('--muted') || '#262626'
+      const vacantColor = '#f59e0b'
+      const palette = [primaryColor, secondaryColor, '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
+      const totalColor = palette[index % palette.length]
+      const fallbackBackground = context.createLinearGradient(0, 0, width, height)
+      fallbackBackground.addColorStop(0, '#10251f')
+      fallbackBackground.addColorStop(0.48, '#0b1f2e')
+      fallbackBackground.addColorStop(1, '#08111e')
+      context.fillStyle = fallbackBackground
+      context.fillRect(0, 0, width, height)
+      if (backdropImage.complete && backdropImage.naturalWidth > 0) {
+        context.save()
+        context.globalAlpha = 0.96
+        context.drawImage(backdropImage, 0, 0, width, height)
+        context.restore()
+      }
+      const canvasGap = width >= 680 ? 28 : 18
+      const chartStartX = 20
+      const chartInnerWidth = width - chartStartX * 2
+      const leftChartWidth = Math.max(220, Math.floor((chartInnerWidth - canvasGap) * (8 / 12)))
+      const piePanelWidth = Math.max(160, chartInnerWidth - leftChartWidth - canvasGap)
+      const piePanelX = chartStartX + leftChartWidth + canvasGap
+      const pieCenterX = piePanelX + piePanelWidth / 2
+      const pieRadius = Math.min(92, piePanelWidth * 0.38, height * 0.32)
+      const pieCenterY = Math.max(pieRadius + 24, Math.min(height - pieRadius - 58, height / 2))
+
+      const drawPieChart = () => {
+        const pieMetrics = [
+          { label: 'TOTAL', value: metricTotals.total, color: totalColor },
+          { label: 'AVAILABLE', value: metricTotals.available, color: secondaryColor },
+          { label: 'VACANT', value: metricTotals.vacant, color: vacantColor },
+        ]
+        const sum = Math.max(0, pieMetrics.reduce((total, metric) => total + metric.value, 0))
+
+        context.fillStyle = 'rgba(2, 6, 23, 0.5)'
+        context.beginPath()
+        context.ellipse(pieCenterX, pieCenterY + pieRadius * 0.08, pieRadius * 1.05, pieRadius * 0.32, 0, 0, Math.PI * 2)
+        context.fill()
+        context.beginPath()
+        context.arc(pieCenterX, pieCenterY, pieRadius, 0, Math.PI * 2)
+        context.fillStyle = 'rgba(15, 23, 42, 0.84)'
+        context.fill()
+
+        if (sum <= 0) {
+          // Empty state keeps the pie chart reserved without adding another border.
+        } else {
+          let startAngle = -Math.PI / 2
+          pieMetrics.forEach((metric) => {
+            const angle = (metric.value / sum) * Math.PI * 2 * progress
+            const endAngle = startAngle + angle
+            const hovered = hoverRef.current && hitMatches(hoverRef.current, 'pie', metric.label, metric.label)
+            ;[9, 6, 3].forEach((depth) => {
+              context.beginPath()
+              context.moveTo(pieCenterX, pieCenterY + depth)
+              context.arc(pieCenterX, pieCenterY + depth, hovered ? pieRadius + 4 : pieRadius, startAngle, endAngle)
+              context.closePath()
+              context.fillStyle = 'rgba(2, 6, 23, 0.34)'
+              context.fill()
+            })
+            context.beginPath()
+            context.moveTo(pieCenterX, pieCenterY)
+            context.arc(pieCenterX, pieCenterY, hovered ? pieRadius + 4 : pieRadius, startAngle, endAngle)
+            context.closePath()
+            context.fillStyle = metric.color
+            context.fill()
+            context.strokeStyle = 'rgba(255, 255, 255, 0.2)'
+            context.stroke()
+            nextHitAreas.push({
+              kind: 'pie',
+              label: metric.label,
+              metric: metric.label,
+              value: metric.value,
+              color: metric.color,
+              cx: pieCenterX,
+              cy: pieCenterY,
+              radius: pieRadius + 8,
+              startAngle,
+              endAngle,
+              tooltipX: pieCenterX,
+              tooltipY: pieCenterY,
+            })
+            startAngle += (metric.value / sum) * Math.PI * 2
+          })
+        }
+
+        const legendY = pieCenterY + pieRadius + 18
+        pieMetrics.forEach((metric, metricIndex) => {
+          const y = legendY + metricIndex * 17
+          context.fillStyle = metric.color
+          context.fillRect(piePanelX + 8, y - 8, 8, 8)
+          context.fillStyle = mutedColor
+          context.font = '12px sans-serif'
+          context.fillText(metric.label, piePanelX + 22, y)
+          context.textAlign = 'right'
+          context.fillText(String(metric.value), width - 8, y)
+          context.textAlign = 'left'
+        })
+      }
+
+      const kpiGap = leftChartWidth >= 360 ? 96 : 70
+      const totalX = 20
+      const availableX = totalX + kpiGap
+      const vacantX = availableX + kpiGap
+
+      context.fillStyle = mutedColor
+      context.font = '700 13px sans-serif'
+      context.fillText('TOTAL', totalX, 20)
+      context.fillText('AVAILABLE', availableX, 20)
+      context.fillText('VACANT', vacantX, 20)
+      context.fillStyle = textColor
+      context.font = '800 22px sans-serif'
+      context.fillText(String(metricTotals.total), totalX, 48)
+      context.fillText(String(metricTotals.available), availableX, 48)
+      context.fillText(String(metricTotals.vacant), vacantX, 48)
+      context.fillStyle = totalColor
+      context.fillRect(totalX, 58, 52 * progress, 5)
+      context.fillStyle = secondaryColor
+      context.fillRect(availableX, 58, 52 * progress, 5)
+      context.fillStyle = vacantColor
+      context.fillRect(vacantX, 58, 52 * progress, 5)
+      drawPieChart()
+
+      if (visibleRows.length === 0) {
+        context.fillStyle = mutedColor
+        context.font = '14px sans-serif'
+        context.fillText('NO ROWS AVAILABLE', 20, 92)
+        return
+      }
+
+      const max = Math.max(...visibleRows.map((row) => Number(row.total || 0)), 1)
+      const labelWidth = Math.min(210, Math.max(142, leftChartWidth * 0.34))
+      const valueWidth = 104
+      const barWidth = Math.max(80, leftChartWidth - labelWidth - valueWidth - 24)
+      const rowHeight = 54
+
+      visibleRows.forEach((row, rowIndex) => {
+        const top = 78 + rowIndex * rowHeight
+        const label = String(row.label || 'Unspecified').toUpperCase()
+        const total = Number(row.total || 0)
+        const available = Number(row.available || 0)
+        const vacant = Number(row.vacant || 0)
+
+        context.fillStyle = textColor
+        context.font = '700 15px sans-serif'
+        context.fillText(label.length > 24 ? `${label.slice(0, 23)}...` : label, 20, top + 22)
+
+        const barX = 20 + labelWidth
+        const valueX = barX + barWidth + 12
+        const metrics = [
+          { label: 'T', metric: 'TOTAL', value: total, color: totalColor, y: top },
+          { label: 'A', metric: 'AVAILABLE', value: available, color: secondaryColor, y: top + 15 },
+          { label: 'V', metric: 'VACANT', value: vacant, color: vacantColor, y: top + 30 },
+        ]
+
+        metrics.forEach((metric) => {
+          const length = metric.value > 0 ? Math.max(2, (metric.value / max) * barWidth * progress) : 0
+          const hovered = hoverRef.current && hitMatches(hoverRef.current, 'bar', label, metric.metric)
+          context.fillStyle = surfaceColor
+          context.fillRect(barX, metric.y + 5, barWidth, 9)
+          if (hovered) {
+            context.fillStyle = 'rgba(255, 255, 255, 0.12)'
+            context.fillRect(barX - 4, metric.y, barWidth + valueWidth + 22, 18)
+          }
+          context.fillStyle = metric.color
+          if (length > 0) {
+            context.save()
+            context.fillRect(barX, metric.y + 5, length, 10)
+            context.fillStyle = 'rgba(255, 255, 255, 0.24)'
+            context.beginPath()
+            context.moveTo(barX, metric.y + 5)
+            context.lineTo(barX + length, metric.y + 5)
+            context.lineTo(barX + length + 6, metric.y + 1)
+            context.lineTo(barX + 6, metric.y + 1)
+            context.closePath()
+            context.fill()
+            context.fillStyle = 'rgba(2, 6, 23, 0.32)'
+            context.beginPath()
+            context.moveTo(barX + length, metric.y + 5)
+            context.lineTo(barX + length + 6, metric.y + 1)
+            context.lineTo(barX + length + 6, metric.y + 11)
+            context.lineTo(barX + length, metric.y + 15)
+            context.closePath()
+            context.fill()
+            context.restore()
+          }
+          context.fillStyle = mutedColor
+          context.font = '700 12px sans-serif'
+          context.fillText(metric.label, barX - 17, metric.y + 14)
+          context.textAlign = 'right'
+          context.font = '700 13px sans-serif'
+          context.fillText(String(metric.value), valueX + valueWidth, metric.y + 14)
+          context.textAlign = 'left'
+          nextHitAreas.push({
+            kind: 'bar',
+            label,
+            metric: metric.metric,
+            value: metric.value,
+            color: metric.color,
+            x: barX - 4,
+            y: metric.y,
+            width: barWidth + valueWidth + 22,
+            height: 18,
+            tooltipX: valueX,
+            tooltipY: metric.y,
+          })
+        })
+      })
+      hitAreasRef.current = nextHitAreas
+      drawTooltip(context, width, height)
+    }
+    redraw = draw
+
+    const pointFromEvent = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    }
+
+    const findHit = (x: number, y: number) => {
+      for (let index = hitAreasRef.current.length - 1; index >= 0; index -= 1) {
+        const hit = hitAreasRef.current[index]
+        if (hit.kind === 'bar') {
+          if (x >= Number(hit.x) && x <= Number(hit.x) + Number(hit.width) && y >= Number(hit.y) && y <= Number(hit.y) + Number(hit.height)) return hit
+        }
+        if (hit.kind === 'pie') {
+          const dx = x - Number(hit.cx)
+          const dy = y - Number(hit.cy)
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          if (distance > Number(hit.radius)) continue
+          let angle = Math.atan2(dy, dx)
+          while (angle < Number(hit.startAngle)) angle += Math.PI * 2
+          if (angle >= Number(hit.startAngle) && angle <= Number(hit.endAngle)) return { ...hit, tooltipX: x, tooltipY: y }
+        }
+      }
+      return null
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const point = pointFromEvent(event)
+      const nextHover = findHit(point.x, point.y)
+      hoverRef.current = nextHover
+      canvas.style.cursor = nextHover ? 'pointer' : 'default'
+      draw(progressRef.current)
+    }
+
+    const handlePointerLeave = () => {
+      hoverRef.current = null
+      canvas.style.cursor = 'default'
+      draw(progressRef.current)
+    }
+
+    const animate = (startedAt: number) => {
+      const tick = (timestamp: number) => {
+        const elapsed = timestamp - startedAt
+        progressRef.current = Math.min(1, elapsed / 720)
+        draw(progressRef.current)
+        if (progressRef.current < 1) {
+          animationFrameRef.current = window.requestAnimationFrame(tick)
+        }
+      }
+      animationFrameRef.current = window.requestAnimationFrame(tick)
+    }
+
+    progressRef.current = 0
+    animate(performance.now())
+    const observer = new ResizeObserver(() => draw(progressRef.current))
+    observer.observe(canvas)
+    canvas.addEventListener('pointermove', handlePointerMove)
+    canvas.addEventListener('pointerdown', handlePointerMove)
+    canvas.addEventListener('pointerleave', handlePointerLeave)
+    return () => {
+      observer.disconnect()
+      canvas.removeEventListener('pointermove', handlePointerMove)
+      canvas.removeEventListener('pointerdown', handlePointerMove)
+      canvas.removeEventListener('pointerleave', handlePointerLeave)
+      if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current)
+    }
+  }, [canvasHeight, group, index, metricTotals.available, metricTotals.total, metricTotals.vacant, visibleRows])
+
+  return <canvas ref={canvasRef} className="w-full rounded-md bg-muted/10" style={{ height: `${canvasHeight}px`, minHeight: `${minCanvasHeight}px` }} aria-label={`${String(group.label || 'Bed group')} total available vacant analytics with pie chart`} />
+}
+
+function BedAnalyticsCanvas({ groups }: { groups: Array<Record<string, any>> }) {
+  const chartGroups = groups.filter((group) => Array.isArray(group.rows))
+
+  return (
+    <div className="grid gap-4">
+      {chartGroups.length > 0 ? chartGroups.map((group, index) => {
+        const rows: Array<Record<string, any>> = Array.isArray(group.rows) ? group.rows : []
+        const metricTotals = bedGroupMetricTotals(rows)
+        return (
+          <section key={String(group.key || group.label || index)} className="grid gap-3 rounded-md bg-muted/20 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h4 className="truncate text-sm font-semibold">{String(group.label || 'Group')}</h4>
+                <p className="mt-1 text-xs text-muted-foreground">{String(group.totalGroups ?? rows.length)} group{Number(group.totalGroups ?? rows.length) === 1 ? '' : 's'}</p>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-right text-xs">
+                <div><p className="text-muted-foreground">Total</p><p className="text-sm font-semibold">{String(metricTotals.total)}</p></div>
+                <div><p className="text-muted-foreground">Available</p><p className="text-sm font-semibold">{String(metricTotals.available)}</p></div>
+                <div><p className="text-muted-foreground">Vacant</p><p className="text-sm font-semibold">{String(metricTotals.vacant)}</p></div>
+              </div>
+            </div>
+            <BedGroupAnalyticsCanvas group={group} index={index} />
+          </section>
+        )
+      }) : <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No grouped bed analytics are available.</p>}
+    </div>
+  )
+}
+
+function BedFieldGroupReport({ group }: { group: Record<string, any> }) {
+  const rows: Array<Record<string, any>> = Array.isArray(group.rows) ? group.rows : []
+  const groupKey = String(group.key || group.label || 'group')
+  const total = rows.reduce((sum, row) => sum + Number(row.total || 0), 0)
+  const available = rows.reduce((sum, row) => sum + Number(row.available || 0), 0)
+  const vacant = rows.reduce((sum, row) => sum + Number(row.vacant || 0), 0)
+
+  return (
+    <section className="min-w-0 rounded-md bg-muted/20 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h4 className="truncate text-sm font-semibold">{String(group.label || 'Group')}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">{String(group.totalGroups ?? rows.length)} group{Number(group.totalGroups ?? rows.length) === 1 ? '' : 's'}</p>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <Badge variant="secondary">{String(total)} total</Badge>
+          <Badge variant="secondary">{String(available)} available</Badge>
+          <Badge variant="secondary">{String(vacant)} vacant</Badge>
+        </div>
+      </div>
+      <div className="mt-4 max-h-72 overflow-auto rounded-md bg-background/60">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{String(group.label || 'Group')}</TableHead>
+              <TableHead className="w-20 text-right">Total</TableHead>
+              <TableHead className="w-24 text-right">Available</TableHead>
+              <TableHead className="w-20 text-right">Vacant</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.length > 0 ? rows.map((row, index) => (
+              <TableRow key={`${groupKey}-${String(row.label || 'Unspecified')}-${index}`}>
+                <TableCell className="max-w-0 truncate">{String(row.label || 'Unspecified').toUpperCase()}</TableCell>
+                <TableCell className="text-right font-semibold">{String(row.total ?? 0)}</TableCell>
+                <TableCell className="text-right">{String(row.available ?? 0)}</TableCell>
+                <TableCell className="text-right">{String(row.vacant ?? 0)}</TableCell>
+              </TableRow>
+            )) : (
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">No grouped bed rows available.</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </section>
+  )
+}
+
+function BedLookupResultCard({
+  row,
+  filters,
+  csrf,
+  setConfirmation,
+}: {
+  row: Record<string, any>
+  filters: Record<string, string>
+  csrf: string
+  setConfirmation: React.Dispatch<React.SetStateAction<ConfirmationState>>
+}) {
+  const formRef = React.useRef<HTMLFormElement>(null)
+  const bedKey = String(row.bed_key || '')
+  const bedLabel = String(row.bed_no || row.source_pk_psbeds || bedKey || 'Bed')
+  const location = [row.branch_name, row.building_name, row.floor_name, row.nurse_station_name].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
+  const room = [row.room_key, row.room_class].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
+  const managedStatus = String(row.managed_status || 'ACTIVE')
+  const sourceStatus = String(row.source_bed_status || 'Unspecified')
+
+  return (
+    <article className="grid gap-3 rounded-md bg-background/80 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 gap-3">
+          <span className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
+            <BedDouble className="size-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="truncate text-sm font-semibold">Bed {bedLabel}</h4>
+              <Badge variant={managedStatus === 'ACTIVE' ? 'default' : 'secondary'}>{managedStatus}</Badge>
+              <Badge variant="outline">{sourceStatus}</Badge>
+            </div>
+            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{bedKey}</p>
+          </div>
+        </div>
+        <form ref={formRef} method="post" className="shrink-0">
+          <input type="hidden" name="csrf" value={csrf} />
+          <input type="hidden" name="action" value="resync_project_bed" />
+          <input type="hidden" name="bed_key" value={bedKey} />
+          {Object.entries(filters).map(([key, value]) => <input key={key} type="hidden" name={key} value={String(value || '')} />)}
+          <Tooltip>
+            <TooltipTrigger render={<Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="rounded-full text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300"
+              aria-label={`Refresh bed ${bedLabel}`}
+              title={`Refresh bed ${bedLabel}`}
+              onClick={() => setConfirmation({
+                title: 'Refresh this bed',
+                message: `Update bed ${bedLabel} with the latest bed details? Existing task links and history will be kept.`,
+                confirmLabel: 'Refresh Bed',
+                onConfirm: () => formRef.current?.requestSubmit(),
+              })}
+            />}>
+              <RotateCcw />
+            </TooltipTrigger>
+            <TooltipContent>Refresh this bed</TooltipContent>
+          </Tooltip>
+        </form>
+      </div>
+      <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+        <div><span className="block font-medium text-foreground">Location</span>{location || 'Unspecified'}</div>
+        <div><span className="block font-medium text-foreground">Room</span>{room || 'Unspecified'}</div>
+        <div><span className="block font-medium text-foreground">Source</span>{String(row.bed_source_key || 'Unspecified')}</div>
+        <div><span className="block font-medium text-foreground">Last sync</span>{String(row.last_synced_at || 'Not synced')}</div>
+      </div>
+    </article>
+  )
+}
+
+const bedLookupDropdownFields = [
+  ['bed_lookup_status', 'Managed status'],
+  ['bed_lookup_branch', 'Branch'],
+  ['bed_lookup_building', 'Building'],
+  ['bed_lookup_floor', 'Floor'],
+  ['bed_lookup_nurse_station', 'Nurse station'],
+  ['bed_lookup_room', 'Room'],
+  ['bed_lookup_room_class', 'Room class'],
+  ['bed_lookup_bed_status', 'Bed status'],
+] as const
+
+function bedLookupOptionRows(options: Record<string, Record<string, any>>, name: string): Array<Record<string, any>> {
+  const optionGroup = options[name]
+
+  return Array.isArray(optionGroup?.rows) ? optionGroup.rows : []
+}
+
+function BedLookupFilterSelect({
+  name,
+  label,
+  filters,
+  options,
+}: {
+  name: string
+  label: string
+  filters: Record<string, string>
+  options: Record<string, Record<string, any>>
+}) {
+  const rows = bedLookupOptionRows(options, name)
+
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={name}>{label}</Label>
+      <select
+        id={name}
+        name={name}
+        defaultValue={String(filters[name] || '')}
+        onChange={(event) => event.currentTarget.form?.requestSubmit()}
+        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+      >
+        <option value="">Any {label.toLowerCase()}</option>
+        {rows.map((row) => {
+          const value = String(row.value || '')
+          const optionLabel = String(row.label || value || 'Unspecified')
+          const total = Number(row.total || 0)
+
+          return <option key={`${name}-${value}`} value={value}>{optionLabel} ({total})</option>
+        })}
+      </select>
+    </div>
+  )
+}
+
+function BedLookupView() {
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const bedLookupFilters = data.bedLookupFilters || {}
+  const bedLookupOptions = data.bedLookupOptions || {}
+  const bedLookupRows: Array<Record<string, any>> = Array.isArray(data.bedLookupRows) ? data.bedLookupRows : []
+
+  return (
+    <>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-normal">Bed Lookup</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Search the current bed list with live dropdown filters and refresh one selected bed at a time.</p>
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+        <Card className="min-w-0 shrink-0 overflow-hidden">
+          <CardHeader className="border-b">
+            <CardTitle className="text-base tracking-normal">Lookup Filters</CardTitle>
+            <CardDescription>Dropdown values are loaded from the current bed list.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <form method="get" action={projectUrl('administrator/')} className="grid gap-3">
+              <input type="hidden" name="tab" value="bed-lookup" />
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-2 sm:col-span-2 xl:col-span-1">
+                  <Label htmlFor="bed_lookup_search">Search</Label>
+                  <Input id="bed_lookup_search" name="bed_lookup_search" defaultValue={String(bedLookupFilters.bed_lookup_search || '')} placeholder="Bed no, source, location" />
+                </div>
+                {bedLookupDropdownFields.map(([name, label]) => (
+                  <BedLookupFilterSelect key={name} name={name} label={label} filters={bedLookupFilters} options={bedLookupOptions} />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit">
+                  <Search data-icon="inline-start" />
+                  Search Beds
+                </Button>
+                <a href={projectUrl('administrator/?tab=bed-lookup')} className={buttonClassName({ variant: 'outline' })}>
+                  Clear
+                </a>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <CardHeader className="sticky top-0 z-10 flex shrink-0 flex-row items-start justify-between gap-3 border-b bg-card">
+            <div className="min-w-0">
+              <CardTitle className="text-base tracking-normal">Lookup Results Canvas</CardTitle>
+              <CardDescription>Review each bed and refresh individual bed details when needed.</CardDescription>
+            </div>
+            <Badge variant="secondary">{String(bedLookupRows.length)} shown</Badge>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {bedLookupRows.length > 0
+                ? bedLookupRows.map((row) => <BedLookupResultCard key={String(row.bed_key)} row={row} filters={bedLookupFilters} csrf={data.csrf} setConfirmation={setConfirmation} />)
+                : <div className="col-span-full grid place-items-center gap-2 rounded-md bg-muted/20 px-4 py-12 text-center"><BedDouble className="size-8 text-muted-foreground" /><p className="text-sm font-medium">No beds matched the lookup.</p><p className="max-w-md text-xs text-muted-foreground">Adjust the filters or clear the search to see current beds.</p></div>}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  )
+}
+
+type BedReferenceCrudConfig = {
+  keyField: string
+  codeField: string
+  nameField: string
+  descriptionField: string
+  statusField: string
+  sortField: string
+  saveAction: string
+  statusAction: string
+  entityLabel: string
+  referenceType: 'treatment' | 'source'
+  tone: 'green' | 'blue'
+}
+
+const bedTreatmentConfig: BedReferenceCrudConfig = {
+  keyField: 'bed_treatment_key',
+  codeField: 'treatment_code',
+  nameField: 'treatment_name',
+  descriptionField: 'treatment_description',
+  statusField: 'treatment_status',
+  sortField: 'treatment_sort_order',
+  saveAction: 'save_bed_treatment',
+  statusAction: 'set_bed_treatment_status',
+  entityLabel: 'Bed Treatment',
+  referenceType: 'treatment',
+  tone: 'green',
+}
+
+const bedSourceConfig: BedReferenceCrudConfig = {
+  keyField: 'bed_source_key',
+  codeField: 'bed_source_code',
+  nameField: 'bed_source_name',
+  descriptionField: 'bed_source_description',
+  statusField: 'bed_source_status',
+  sortField: 'bed_source_sort_order',
+  saveAction: 'save_bed_source',
+  statusAction: 'set_bed_source_status',
+  entityLabel: 'Bed Source',
+  referenceType: 'source',
+  tone: 'blue',
+}
+
+function BedReferenceCrudCard({
+  icon: Icon,
+  title,
+  description,
+  rows,
+  config,
+  returnTab,
+  showMasterSyncAction = false,
+  setConfirmation,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  description: string
+  rows: Array<Record<string, any>>
+  config: BedReferenceCrudConfig
+  returnTab: 'bed-management' | 'bed-treatment' | 'bed-source'
+  showMasterSyncAction?: boolean
+  setConfirmation: React.Dispatch<React.SetStateAction<ConfirmationState>>
+}) {
+  const [modalOpen, setModalOpen] = React.useState(false)
+  const [editingRow, setEditingRow] = React.useState<Record<string, any> | null>(null)
+  const [orderedRows, setOrderedRows] = React.useState<Array<Record<string, any>>>(rows)
+  const [draggingKey, setDraggingKey] = React.useState('')
+  const [dropTargetKey, setDropTargetKey] = React.useState('')
+  const [sortSaving, setSortSaving] = React.useState(false)
+  const formRef = React.useRef<HTMLFormElement>(null)
+  const masterSyncFormRef = React.useRef<HTMLFormElement>(null)
+  const modalTitle = editingRow ? `Edit ${config.entityLabel}` : `Add ${config.entityLabel}`
+  const submitLabel = editingRow ? `Update ${config.entityLabel}` : `Create ${config.entityLabel}`
+  const rowText = (row: Record<string, any> | null, field: string, fallback = '') => String(row?.[field] ?? fallback)
+  const validRows = (candidateRows: Array<Record<string, any>>) => candidateRows.filter((row) => /^[A-Za-z0-9]{20}$/.test(rowText(row, config.keyField)))
+  const rowsStateKey = React.useMemo(() => rows.map((row) => `${rowText(row, config.keyField)}:${rowText(row, config.sortField)}:${rowText(row, config.statusField)}`).join('|'), [rows, config.keyField, config.sortField, config.statusField])
+  React.useEffect(() => {
+    setOrderedRows(validRows(rows))
+    setDraggingKey('')
+    setDropTargetKey('')
+  }, [rowsStateKey])
+  const openModal = (row: Record<string, any> | null = null) => {
+    setEditingRow(row)
+    setModalOpen(true)
+  }
+  const toneClasses = config.tone === 'green'
+    ? {
+        icon: 'text-emerald-600 dark:text-emerald-300',
+        stripe: 'bg-emerald-500',
+        row: 'bg-emerald-500/5 ring-emerald-500/20 hover:bg-emerald-500/10',
+        status: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+        drop: 'bg-emerald-500/10 ring-emerald-400/70',
+        handle: 'text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-800 dark:text-emerald-300',
+        sync: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 shadow-[0_0_14px_rgba(16,185,129,0.14)] hover:bg-emerald-500/20 hover:text-emerald-800 dark:text-emerald-300 dark:shadow-[0_0_14px_rgba(52,211,153,0.14)] dark:hover:text-emerald-200',
+      }
+    : {
+        icon: 'text-sky-600 dark:text-sky-300',
+        stripe: 'bg-sky-500',
+        row: 'bg-sky-500/5 ring-sky-500/20 hover:bg-sky-500/10',
+        status: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
+        drop: 'bg-sky-500/10 ring-sky-400/70',
+        handle: 'text-sky-700 hover:bg-sky-500/10 hover:text-sky-800 dark:text-sky-300',
+        sync: 'border-sky-500/30 bg-sky-500/10 text-sky-700 shadow-[0_0_14px_rgba(14,165,233,0.14)] hover:bg-sky-500/20 hover:text-sky-800 dark:text-sky-300 dark:shadow-[0_0_14px_rgba(56,189,248,0.14)] dark:hover:text-sky-200',
+      }
+  const persistSortOrder = async (nextRows: Array<Record<string, any>>, previousRows: Array<Record<string, any>>) => {
+    const body = new FormData()
+    body.append('csrf', data.csrf)
+    body.append('action', 'update_bed_reference_sort_order')
+    body.append('reference_type', config.referenceType)
+    nextRows.forEach((row) => body.append('order_keys[]', rowText(row, config.keyField)))
+
+    setSortSaving(true)
+    try {
+      const response = await fetch('./', {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(String(payload.message || `${config.entityLabel} order was not saved.`))
+      }
+      if (Array.isArray(payload.rows)) {
+        setOrderedRows(validRows(payload.rows))
+      }
+    } catch (error) {
+      setOrderedRows(previousRows)
+      window.alert(error instanceof Error ? error.message : `${config.entityLabel} order was not saved.`)
+    } finally {
+      setSortSaving(false)
+    }
+  }
+  const handleDragStart = (event: React.DragEvent<HTMLElement>, key: string) => {
+    setDraggingKey(key)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', key)
+  }
+  const handleDrop = (event: React.DragEvent<HTMLElement>, overKey: string) => {
+    event.preventDefault()
+    const activeKey = draggingKey || event.dataTransfer.getData('text/plain')
+    setDraggingKey('')
+    setDropTargetKey('')
+    if (activeKey === '' || activeKey === overKey || sortSaving) return
+
+    const sortableRows = validRows(orderedRows)
+    const previousRows = sortableRows
+    const fromIndex = sortableRows.findIndex((row) => rowText(row, config.keyField) === activeKey)
+    const toIndex = sortableRows.findIndex((row) => rowText(row, config.keyField) === overKey)
+    if (fromIndex < 0 || toIndex < 0) return
+    const movedRows = [...sortableRows]
+    const [movedRow] = movedRows.splice(fromIndex, 1)
+    movedRows.splice(toIndex, 0, movedRow)
+    const nextRows = movedRows.map((row, index) => ({ ...row, [config.sortField]: index + 1 }))
+    if (nextRows === orderedRows) return
+
+    setOrderedRows(nextRows)
+    void persistSortOrder(nextRows, previousRows)
+  }
+  const displayRows = validRows(orderedRows)
+
+  return (
+    <>
+      <Card className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden">
+        <CardHeader className="sticky top-0 z-10 flex shrink-0 flex-row items-center justify-between gap-3 border-b bg-card px-4 py-3">
+          <div className="min-w-0">
+            <CardDescription className="text-xs">Bed Management</CardDescription>
+            <CardTitle className="mt-0.5 flex items-center gap-2 text-sm tracking-normal">
+              <Icon className={cn('size-3.5', toneClasses.icon)} />
+              {title}
+            </CardTitle>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {sortSaving ? <Badge variant="secondary">Saving</Badge> : null}
+            <Badge variant="outline">{displayRows.length}</Badge>
+            {showMasterSyncAction ? (
+              <>
+                <form ref={masterSyncFormRef} method="post" className="contents">
+                  <input type="hidden" name="csrf" value={data.csrf} />
+                  <input type="hidden" name="action" value="sync_bed_reference_firebase" />
+                  <input type="hidden" name="reference_type" value={config.referenceType} />
+                  <input type="hidden" name="return_tab" value={returnTab} />
+                  <Tooltip>
+                    <TooltipTrigger render={<Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      className={cn('rounded-full', toneClasses.sync)}
+                      aria-label={`Sync ${config.entityLabel}`}
+                      title={`Sync ${config.entityLabel}`}
+                      onClick={() => setConfirmation({
+                        title: `Sync ${config.entityLabel}`,
+                        message: `Update the shared ${config.entityLabel.toLowerCase()} list for all connected users?`,
+                        confirmLabel: 'Sync Now',
+                        onConfirm: () => masterSyncFormRef.current?.requestSubmit(),
+                      })}
+                    />}>
+                      <RotateCcw />
+                    </TooltipTrigger>
+                    <TooltipContent>Sync {config.entityLabel}</TooltipContent>
+                  </Tooltip>
+                </form>
+                <span className="mx-0.5 h-6 w-px bg-border" aria-hidden="true" />
+              </>
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label={`Add ${config.entityLabel}`} title={`Add ${config.entityLabel}`} onClick={() => openModal()} />}>
+                <Plus />
+              </TooltipTrigger>
+              <TooltipContent>Add {config.entityLabel}</TooltipContent>
+            </Tooltip>
+          </div>
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 pb-12 [scrollbar-gutter:stable]">
+          <div className="grid gap-2">
+            {displayRows.length > 0 ? displayRows.map((row) => {
+              const key = rowText(row, config.keyField)
+              const name = rowText(row, config.nameField, config.entityLabel)
+              const code = rowText(row, config.codeField)
+              const status = rowText(row, config.statusField, 'ACTIVE')
+              const descriptionText = rowText(row, config.descriptionField)
+              const nextStatus = status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+
+              return (
+                <article
+                  key={key || `${title}-${code}`}
+                  className={cn(
+                    'relative grid gap-1.5 overflow-hidden rounded-md px-3 py-2.5 pl-4 ring-1 transition',
+                    status === 'ACTIVE' ? toneClasses.row : 'bg-muted/20 ring-border/60',
+                    dropTargetKey === key && toneClasses.drop,
+                    draggingKey === key && 'opacity-60',
+                  )}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'move'
+                    if (dropTargetKey !== key) setDropTargetKey(key)
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetKey === key) setDropTargetKey('')
+                  }}
+                  onDrop={(event) => handleDrop(event, key)}
+                >
+                  <span className={cn('absolute inset-y-0 left-0 w-0.5', status === 'ACTIVE' ? toneClasses.stripe : 'bg-muted-foreground/50')} aria-hidden="true" />
+                  <div className="flex min-w-0 items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span
+                              draggable={!sortSaving}
+                              role="button"
+                              tabIndex={0}
+                              className={cn('mt-0.5 grid size-7 shrink-0 cursor-grab place-items-center rounded-full active:cursor-grabbing', toneClasses.handle, sortSaving && 'pointer-events-none opacity-50')}
+                              aria-label={`Drag ${name} to sort`}
+                              title={`Drag ${name} to sort`}
+                              onDragStart={(event) => handleDragStart(event, key)}
+                              onDragEnd={() => {
+                                setDraggingKey('')
+                                setDropTargetKey('')
+                              }}
+                            />
+                          }
+                        >
+                          <GripVertical className="size-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>Drag to sort</TooltipContent>
+                      </Tooltip>
+                      <span className={cn('mt-0.5 grid size-7 shrink-0 place-items-center rounded-md ring-1', status === 'ACTIVE' ? `${toneClasses.status} ring-current/15` : 'bg-muted text-muted-foreground ring-border/60')} aria-hidden="true">
+                        <Icon className="size-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge variant="secondary" className={cn('border-0 px-1.5 py-0 text-[9px]', status === 'ACTIVE' ? toneClasses.status : 'bg-muted text-muted-foreground')}>{status}</Badge>
+                          {code !== '' ? <Badge variant="outline" className="px-1.5 py-0 text-[9px]">{code}</Badge> : null}
+                        </div>
+                        <h3 className="mt-1 truncate text-[13px] font-semibold leading-4">{name}</h3>
+                        {descriptionText !== '' ? <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{descriptionText}</p> : null}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Edit ${name}`} title={`Edit ${name}`} onClick={() => openModal(row)} />}>
+                          <Pencil />
+                        </TooltipTrigger>
+                        <TooltipContent>Edit {config.entityLabel}</TooltipContent>
+                      </Tooltip>
+                      <form method="post">
+                        <input type="hidden" name="csrf" value={data.csrf} />
+                        <input type="hidden" name="action" value={config.statusAction} />
+                        <input type="hidden" name="return_tab" value={returnTab} />
+                        <input type="hidden" name={config.keyField} value={key} />
+                        <input type="hidden" name={config.statusField} value={nextStatus} />
+                        <Tooltip>
+                          <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`${nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${name}`} title={`${nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${name}`} onClick={(event) => {
+                            const form = event.currentTarget.closest('form')
+                            setConfirmation({
+                              title: `${nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${config.entityLabel}`,
+                              message: `${nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${name}?`,
+                              confirmLabel: nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate',
+                              onConfirm: () => form?.requestSubmit(),
+                            })
+                          }} />}>
+                            {nextStatus === 'ACTIVE' ? <CheckCircle2 /> : <Ban />}
+                          </TooltipTrigger>
+                          <TooltipContent>{nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'}</TooltipContent>
+                        </Tooltip>
+                      </form>
+                      <form method="post">
+                        <input type="hidden" name="csrf" value={data.csrf} />
+                        <input type="hidden" name="action" value={config.statusAction} />
+                        <input type="hidden" name="return_tab" value={returnTab} />
+                        <input type="hidden" name={config.keyField} value={key} />
+                        <input type="hidden" name={config.statusField} value="DELETED" />
+                        <Tooltip>
+                          <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={`Delete ${name}`} title={`Delete ${name}`} onClick={(event) => {
+                            const form = event.currentTarget.closest('form')
+                            setConfirmation({
+                              title: `Delete ${config.entityLabel}`,
+                              message: `Delete ${name}?`,
+                              confirmLabel: 'Delete',
+                              onConfirm: () => form?.requestSubmit(),
+                            })
+                          }} />}>
+                            <Trash2 />
+                          </TooltipTrigger>
+                          <TooltipContent>Delete {config.entityLabel}</TooltipContent>
+                        </Tooltip>
+                      </form>
+                    </div>
+                  </div>
+                </article>
+              )
+            }) : (
+              <div className="grid place-items-center gap-2 rounded-md bg-muted/20 px-4 py-10 text-center">
+                <Icon className="size-8 text-muted-foreground" />
+                <p className="text-sm font-medium">No {title.toLowerCase()} yet.</p>
+                <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={modalOpen} onOpenChange={(open) => {
+        setModalOpen(open)
+        if (!open) {
+          setEditingRow(null)
+        }
+      }}>
+        <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label={`Close ${config.entityLabel} form`} title={`Close ${config.entityLabel} form`} />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2">
+              {editingRow ? <Pencil className="size-4 text-muted-foreground" /> : <Plus className="size-4 text-muted-foreground" />}
+              {modalTitle}
+            </DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
+          <form key={rowText(editingRow, config.keyField, 'create-reference')} ref={formRef} method="post">
+            <div className="grid gap-4 px-6 py-5">
+              <input type="hidden" name="csrf" value={data.csrf} />
+              <input type="hidden" name="action" value={config.saveAction} />
+              <input type="hidden" name="return_tab" value={returnTab} />
+              {editingRow ? <input type="hidden" name={config.keyField} value={rowText(editingRow, config.keyField)} /> : null}
+              <div className="grid gap-3 sm:grid-cols-[0.7fr_1.3fr]">
+                <div className="grid gap-2">
+                  <Label htmlFor={`${config.keyField}-code`}>Code</Label>
+                  <Input id={`${config.keyField}-code`} name={config.codeField} defaultValue={rowText(editingRow, config.codeField)} maxLength={80} required />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor={`${config.keyField}-name`}>Name</Label>
+                  <Input id={`${config.keyField}-name`} name={config.nameField} defaultValue={rowText(editingRow, config.nameField)} maxLength={160} required />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor={`${config.keyField}-description`}>Description</Label>
+                <Textarea id={`${config.keyField}-description`} name={config.descriptionField} defaultValue={rowText(editingRow, config.descriptionField)} className="min-h-24" />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label htmlFor={`${config.keyField}-status`}>Status</Label>
+                  <select id={`${config.keyField}-status`} name={config.statusField} defaultValue={rowText(editingRow, config.statusField, 'ACTIVE')} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20">
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="INACTIVE">INACTIVE</option>
+                  </select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor={`${config.keyField}-sort`}>Sort Order</Label>
+                  <Input id={`${config.keyField}-sort`} name={config.sortField} type="number" min="0" step="1" defaultValue={rowText(editingRow, config.sortField, '0')} />
+                </div>
+              </div>
+            </div>
+          </form>
+          <DialogFooter className="m-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+            <span className="text-xs text-muted-foreground">{editingRow ? 'Existing history is preserved on update.' : 'This option will be ready after saving.'}</span>
+            <Button type="button" onClick={() => setConfirmation({
+              title: editingRow ? `Confirm ${config.entityLabel} update` : `Confirm ${config.entityLabel} creation`,
+              message: editingRow ? `Update this ${config.entityLabel.toLowerCase()}?` : `Create this ${config.entityLabel.toLowerCase()}?`,
+              confirmLabel: submitLabel,
+              onConfirm: () => formRef.current?.requestSubmit(),
+            })}>
+              <Save className="h-4 w-4" aria-hidden="true" />
+              {submitLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+function BedReferenceManagementView({
+  type,
+}: {
+  type: 'treatment' | 'source'
+}) {
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const isTreatment = type === 'treatment'
+  const rows = isTreatment
+    ? (Array.isArray(data.bedTreatments) ? data.bedTreatments : [])
+    : (Array.isArray(data.bedSources) ? data.bedSources : [])
+  const title = isTreatment ? 'Bed Treatment' : 'Bed Source'
+  const description = isTreatment
+    ? 'Options users must choose from when submitting a task that requires bed treatment.'
+    : 'Admission source options users must choose from when submitting a task that requires bed source.'
+  const Icon = isTreatment ? Stethoscope : Signpost
+  const config = isTreatment ? bedTreatmentConfig : bedSourceConfig
+  const returnTab = isTreatment ? 'bed-treatment' : 'bed-source'
+
+  return (
+    <>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-normal">{title}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+        </div>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,7fr)_minmax(280px,3fr)]">
+        <BedReferenceCrudCard
+          icon={Icon}
+          title={title}
+          description={description}
+          rows={rows}
+          config={config}
+          returnTab={returnTab}
+          showMasterSyncAction
+          setConfirmation={setConfirmation}
+        />
+        <Card className="min-w-0 overflow-hidden">
+          <CardHeader className="border-b">
+            <CardDescription className="text-xs">Usage</CardDescription>
+            <CardTitle className="text-sm tracking-normal">{isTreatment ? 'Treatment Options' : 'Admission Source Options'}</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 py-4 text-xs leading-5 text-muted-foreground">
+            <p>Active options appear in task submission selections. Inactive options stay saved but are hidden from users.</p>
+            <p>Deleted options are removed from selection lists while preserving administrator history.</p>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  )
+}
+
+function BedManagementView() {
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const bedSyncFormRef = React.useRef<HTMLFormElement>(null)
+  const bedSummary = data.bedMasterListSummary || {}
+  const bedGroupCounts: Array<Record<string, any>> = Array.isArray(bedSummary.groupCounts) ? bedSummary.groupCounts : []
+  const bedTreatments: Array<Record<string, any>> = Array.isArray(data.bedTreatments) ? data.bedTreatments : []
+  const bedSources: Array<Record<string, any>> = Array.isArray(data.bedSources) ? data.bedSources : []
+  const totalBeds = Number(bedSummary.managedRows ?? 0)
+  const availableBeds = Number(bedSummary.availableRows ?? 0)
+  const vacantBeds = Number(bedSummary.vacantRows ?? bedSummary.availableRows ?? 0)
+
+  return (
+    <>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-normal">Bed Management</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Keep the bed list updated for daily operations without changing historical records.</p>
+        </div>
+      </div>
+
+	      <div className="grid gap-4 xl:grid-cols-[minmax(0,8fr)_minmax(320px,4fr)]">
+	        <section className="grid min-w-0 gap-4 xl:max-h-[calc(100dvh-13rem)]">
+          <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <CardHeader className="sticky top-0 z-10 shrink-0 border-b bg-card">
+              <CardTitle className="text-base tracking-normal">Analytics Count Report</CardTitle>
+              <CardDescription>Canvas read-back from every bed field group.</CardDescription>
+            </CardHeader>
+            <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
+              <BedAnalyticsCanvas groups={bedGroupCounts} />
+            </CardContent>
+          </Card>
+        </section>
+
+        <aside className="min-w-0 xl:flex xl:max-h-[calc(100dvh-13rem)] xl:flex-col">
+          <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <CardHeader className="sticky top-0 z-10 flex shrink-0 flex-row items-start justify-between gap-3 border-b bg-card">
+              <div className="min-w-0">
+                <CardTitle className="text-base tracking-normal">Bed Summary</CardTitle>
+                <CardDescription>Simple operational counts and field group reports.</CardDescription>
+              </div>
+              <form ref={bedSyncFormRef} method="post" className="shrink-0">
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value="resync_bed_master_list" />
+                <input type="hidden" name="return_tab" value="bed-management" />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full bg-emerald-500/10 text-emerald-600 shadow-[0_0_18px_rgba(16,185,129,0.22)] hover:bg-emerald-500/20 hover:text-emerald-500 dark:text-emerald-400 dark:shadow-[0_0_18px_rgba(52,211,153,0.22)] dark:hover:text-emerald-300"
+                  aria-label="Refresh bed list"
+                  title="Refresh bed list"
+                  onClick={() => setConfirmation({
+                    title: 'Refresh bed list',
+                    message: 'Update the bed list with the latest hospital bed information? Beds that are no longer available will be marked inactive, not deleted.',
+                    confirmLabel: 'Refresh Beds',
+                    onConfirm: () => bedSyncFormRef.current?.requestSubmit(),
+                  })}
+                >
+                  <RotateCcw />
+                </Button>
+              </form>
+            </CardHeader>
+            <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
+              <div className="grid gap-5">
+                <section className="grid gap-3 text-sm">
+                  <div className="grid gap-3">
+                    <div className="rounded-md bg-muted/20 p-4"><p className="text-xs text-muted-foreground">Total Bed</p><p className="mt-2 text-2xl font-semibold">{String(totalBeds)}</p></div>
+                    <div className="rounded-md bg-muted/20 p-4"><p className="text-xs text-muted-foreground">Available</p><p className="mt-2 text-2xl font-semibold">{String(availableBeds)}</p></div>
+                    <div className="rounded-md bg-muted/20 p-4"><p className="text-xs text-muted-foreground">Vacant</p><p className="mt-2 text-2xl font-semibold">{String(vacantBeds)}</p></div>
+                  </div>
+                  <p className="text-xs leading-5 text-muted-foreground">Last sync: {String(bedSummary.lastSyncedAt || 'Not synced')}</p>
+                </section>
+
+                <section className="grid gap-4">
+                  <div className="border-t pt-4">
+                    <h3 className="text-sm font-semibold">Field Group Reports</h3>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">Total, available, and vacant beds per group.</p>
+                  </div>
+                  <div className="grid gap-4">
+                    {bedGroupCounts.map((group) => <BedFieldGroupReport key={String(group.key || group.label)} group={group} />)}
+                  </div>
+                </section>
+              </div>
+            </CardContent>
+          </Card>
+	        </aside>
+	      </div>
+	      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+	        <BedReferenceCrudCard
+	          icon={Stethoscope}
+	          title="Bed Treatment"
+	          description="Options users must choose from when submitting a task that requires bed treatment."
+	          rows={bedTreatments}
+	          config={bedTreatmentConfig}
+	          returnTab="bed-management"
+	          setConfirmation={setConfirmation}
+	        />
+	        <BedReferenceCrudCard
+	          icon={Signpost}
+	          title="Admission Source"
+	          description="Options users must choose from when submitting a task that requires admission source."
+	          rows={bedSources}
+	          config={bedSourceConfig}
+	          returnTab="bed-management"
+	          setConfirmation={setConfirmation}
+	        />
+	      </div>
+	    </>
+	  )
+	}
+
+function TaskBuilderView() {
+  const taskList = Array.isArray(data.projectTasks) ? data.projectTasks : []
+  const taskStageList = Array.isArray(data.projectTaskStages) ? data.projectTaskStages : []
+  const initialTaskStageResponseList = Array.isArray(data.projectTaskStageResponses) ? data.projectTaskStageResponses : []
+  const taskUserGroups = data.groups.filter((group) => group.group_status !== 'DELETED')
+  const initialTaskBuilderSelectedTaskKey = /^[A-Za-z0-9]{20}$/.test(String(data.taskBuilderSelectedTaskKey ?? '')) ? String(data.taskBuilderSelectedTaskKey ?? '') : ''
+  const [taskModalOpen, setTaskModalOpen] = React.useState(false)
+  const [editingTask, setEditingTask] = React.useState<Record<string, any> | null>(null)
+  const [selectedTaskKey, setSelectedTaskKey] = React.useState(initialTaskBuilderSelectedTaskKey)
+  const [canvasNodePosition, setCanvasNodePosition] = React.useState({ x: 24, y: 24 })
+  const [canvasZoom, setCanvasZoom] = React.useState(1)
+  const [canvasPanOffset, setCanvasPanOffset] = React.useState({ x: 0, y: 0 })
+  const [taskCanvasPositions, setTaskCanvasPositions] = React.useState<Record<string, { x: number; y: number }>>({})
+  const [canvasSaveState, setCanvasSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [stageSortOrders, setStageSortOrders] = React.useState<Record<string, number>>({})
+  const [stageSortSaveState, setStageSortSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [stageDragState, setStageDragState] = React.useState<{ stageKey: string; deltaY: number } | null>(null)
+  const [responseSortOrders, setResponseSortOrders] = React.useState<Record<string, number>>({})
+  const [responseSortSaveState, setResponseSortSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [responseDragState, setResponseDragState] = React.useState<{ responseKey: string; deltaY: number } | null>(null)
+  const [taskColor, setTaskColor] = React.useState('#00000000')
+  const [taskCanRunManually, setTaskCanRunManually] = React.useState(false)
+  const [taskCanRunViaApi, setTaskCanRunViaApi] = React.useState(false)
+  const [taskCanRunIfBedVacant, setTaskCanRunIfBedVacant] = React.useState(true)
+  const [taskCanRunIfBedOccupied, setTaskCanRunIfBedOccupied] = React.useState(true)
+  const [taskRequiresBedTreatment, setTaskRequiresBedTreatment] = React.useState(true)
+  const [taskRequiresAdmissionSource, setTaskRequiresAdmissionSource] = React.useState(true)
+  const [stageModalOpen, setStageModalOpen] = React.useState(false)
+  const [editingStage, setEditingStage] = React.useState<Record<string, any> | null>(null)
+  const [stageColor, setStageColor] = React.useState('#00000000')
+  const [stageEndsTask, setStageEndsTask] = React.useState(false)
+  const [responseManagerOpen, setResponseManagerOpen] = React.useState(false)
+  const [responseManagerStage, setResponseManagerStage] = React.useState<Record<string, any> | null>(null)
+  const [editingResponse, setEditingResponse] = React.useState<Record<string, any> | null>(null)
+  const [responseSaveState, setResponseSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [taskStageResponseList, setTaskStageResponseList] = React.useState<Array<Record<string, any>>>(initialTaskStageResponseList)
+  const [stageConnectionModalOpen, setStageConnectionModalOpen] = React.useState(false)
+  const [connectingStage, setConnectingStage] = React.useState<Record<string, any> | null>(null)
+  const [connectedTaskKey, setConnectedTaskKey] = React.useState('')
+  const [connectedTaskTriggerPoint, setConnectedTaskTriggerPoint] = React.useState('CURRENT_STAGE_FINISHED')
+  const [colorPickerTarget, setColorPickerTarget] = React.useState<'task' | 'stage'>('task')
+  const [colorPickerOpen, setColorPickerOpen] = React.useState(false)
+  const [colorDraft, setColorDraft] = React.useState('#00000000')
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const taskFormRef = React.useRef<HTMLFormElement>(null)
+  const stageFormRef = React.useRef<HTMLFormElement>(null)
+  const responseFormRef = React.useRef<HTMLFormElement>(null)
+  const stageConnectionFormRef = React.useRef<HTMLFormElement>(null)
+  const canvasRef = React.useRef<HTMLElement>(null)
+  const nodeDragRef = React.useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
+  const stageDragRef = React.useRef<{ pointerId: number; stageKey: string; startY: number } | null>(null)
+  const responseDragRef = React.useRef<{ pointerId: number; taskStageKey: string; responseKey: string; startY: number } | null>(null)
+  const statusTone: Record<string, string> = {
+    ACTIVE: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    INACTIVE: 'bg-muted text-muted-foreground',
+  }
+  const taskText = (task: Record<string, any>, key: string, fallback = '') => String(task[key] ?? fallback)
+  const taskTypeValue = (task: Record<string, any>, fallback = '') => taskText(task, 'task_type', fallback).trim().toUpperCase()
+  const taskStatusLabel = (value: string) => value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase())
+  const taskStageKey = (stage: Record<string, any>) => taskText(stage, 'task_stage_key')
+  const taskStageResponseKey = (response: Record<string, any>) => taskText(response, 'task_stage_response_key')
+  const taskGroupKeys = (task: Record<string, any> | null) => task ? jsonStringArray(taskText(task, 'task_group_keys', '[]')) : []
+  const taskBypassGroupKeys = (task: Record<string, any> | null) => task ? jsonStringArray(taskText(task, 'task_bypass_group_keys', '[]')) : []
+  const taskStageIsDefault = (stage: Record<string, any>) => taskText(stage, 'stage_label').trim().toUpperCase() === 'NEW'
+  const taskCanRunManuallyValue = (task: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(task, 'task_can_run_manually').trim().toLowerCase())
+  const taskCanRunViaApiValue = (task: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(task, 'task_can_run_via_api').trim().toLowerCase())
+  const taskCanRunIfBedVacantValue = (task: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(task, 'task_can_run_if_bed_vacant', '1').trim().toLowerCase())
+  const taskCanRunIfBedOccupiedValue = (task: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(task, 'task_can_run_if_bed_occupied', '1').trim().toLowerCase())
+  const taskRequiresBedTreatmentValue = (task: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(task, 'task_requires_bed_treatment', '1').trim().toLowerCase())
+  const taskRequiresAdmissionSourceValue = (task: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(task, 'task_requires_admission_source', '1').trim().toLowerCase())
+  const taskStageEndsTask = (stage: Record<string, any>) => ['1', 'true', 'yes', 'on'].includes(taskText(stage, 'stage_ends_task').trim().toLowerCase())
+  const taskStageConnectionTriggerPoint = (stage: Record<string, any>) => taskText(stage, 'connected_task_trigger_point', 'CURRENT_STAGE_FINISHED').trim().toUpperCase() === 'PREVIOUS_STAGE_FINISHED' ? 'PREVIOUS_STAGE_FINISHED' : 'CURRENT_STAGE_FINISHED'
+  const taskStageConnectionTriggerLabel = (value: string) => value === 'PREVIOUS_STAGE_FINISHED' ? 'After previous' : 'After stage'
+  const taskStageResponseSortValue = (response: Record<string, any>) => {
+    const responseKey = taskStageResponseKey(response)
+    const value = Number(responseSortOrders[responseKey] ?? response.response_sort_order ?? 0)
+    return Number.isFinite(value) ? value : 0
+  }
+  const taskStageResponses = (stageKey: string) => taskStageResponseList
+    .filter((response) => taskText(response, 'task_stage_key') === stageKey)
+    .sort((first, second) => taskStageResponseSortValue(first) - taskStageResponseSortValue(second))
+  const sortTaskStageResponseRows = (rows: Array<Record<string, any>>) => [...rows].sort((first, second) => {
+    const firstTask = taskText(first, 'task_key')
+    const secondTask = taskText(second, 'task_key')
+    if (firstTask !== secondTask) return firstTask.localeCompare(secondTask)
+    const firstStage = taskText(first, 'task_stage_key')
+    const secondStage = taskText(second, 'task_stage_key')
+    if (firstStage !== secondStage) return firstStage.localeCompare(secondStage)
+    return Number(first.response_sort_order || 0) - Number(second.response_sort_order || 0)
+  })
+  const upsertTaskStageResponseRow = (response: Record<string, any>) => {
+    const responseKey = taskStageResponseKey(response)
+    if (responseKey === '') return
+    setTaskStageResponseList((current) => sortTaskStageResponseRows([...current.filter((row) => taskStageResponseKey(row) !== responseKey), response]))
+  }
+  const removeTaskStageResponseRow = (responseKey: string) => {
+    if (responseKey === '') return
+    setTaskStageResponseList((current) => current.filter((row) => taskStageResponseKey(row) !== responseKey))
+  }
+  const taskByKey = (taskKey: string) => taskList.find((task) => taskText(task, 'task_key') === taskKey) || null
+  const taskStageSortValue = (stage: Record<string, any>) => {
+    const stageKey = taskStageKey(stage)
+    const value = Number(stageSortOrders[stageKey] ?? stage.stage_sort_order ?? 0)
+    return Number.isFinite(value) ? value : 0
+  }
+  const taskColorValue = (value: string) => /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(value) ? value.toUpperCase() : '#00000000'
+  const taskColorInputValue = (value: string) => taskColorValue(value).slice(0, 7)
+  const taskGlowValue = (value: string) => {
+    const color = taskColorValue(value)
+    return color.length === 9 ? color : `${color}66`
+  }
+  const taskTransparentColor = (value: string, opacity = 0.2) => {
+    const color = taskColorValue(value)
+    const red = Number.parseInt(color.slice(1, 3), 16)
+    const green = Number.parseInt(color.slice(3, 5), 16)
+    const blue = Number.parseInt(color.slice(5, 7), 16)
+    const savedAlpha = color.length === 9 ? Number.parseInt(color.slice(7, 9), 16) / 255 : 1
+    const alpha = color.endsWith('00') ? 0.08 : Math.max(0.08, Math.min(opacity, opacity * savedAlpha))
+    return `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(2)})`
+  }
+  const taskTransparentNodeBackground = (value: string) => `linear-gradient(135deg, ${taskTransparentColor(value, 0.2)} 0%, rgba(2, 6, 23, 0.52) 72%)`
+  const taskTransparentPanelBackground = (value: string) => `linear-gradient(135deg, ${taskTransparentColor(value, 0.14)} 0%, rgba(2, 6, 23, 0.34) 82%)`
+  const taskSwatchStyle = (value: string): React.CSSProperties => {
+    const color = taskColorValue(value)
+    const transparent = color.endsWith('00') || color.endsWith('80')
+    return {
+      backgroundColor: color,
+      backgroundImage: transparent
+        ? 'linear-gradient(45deg, rgba(148, 163, 184, 0.38) 25%, transparent 25%, transparent 75%, rgba(148, 163, 184, 0.38) 75%), linear-gradient(45deg, rgba(148, 163, 184, 0.38) 25%, transparent 25%, transparent 75%, rgba(148, 163, 184, 0.38) 75%)'
+        : undefined,
+      backgroundPosition: transparent ? '0 0, 4px 4px' : undefined,
+      backgroundSize: transparent ? '8px 8px' : undefined,
+    }
+  }
+  const taskCanvasCoordinate = (task: Record<string, any>, key: string) => {
+    const value = Number(task[key] ?? 24)
+    return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 24
+  }
+  const taskCanvasPosition = (task: Record<string, any>) => ({
+    x: taskCanvasCoordinate(task, 'task_canvas_x'),
+    y: taskCanvasCoordinate(task, 'task_canvas_y'),
+  })
+  const colorOptions = [
+    '#00000000',
+    '#0F172A80',
+    '#2563EB',
+    '#16A34A',
+    '#F59E0B',
+    '#DC2626',
+    '#7C3AED',
+    '#0891B2',
+    '#DB2777',
+    '#475569',
+    '#0F766E',
+    '#65A30D',
+    '#CA8A04',
+    '#EA580C',
+    '#BE123C',
+    '#C026D3',
+    '#4F46E5',
+    '#0284C7',
+    '#15803D',
+    '#A16207',
+    '#B91C1C',
+	    '#334155',
+	  ]
+  const stageConnectionTriggerOptions = [
+    { value: 'CURRENT_STAGE_FINISHED', label: 'After this stage is finished' },
+    { value: 'PREVIOUS_STAGE_FINISHED', label: 'After previous stage is finished' },
+  ]
+  const primaryTasks = taskList.filter((task) => taskTypeValue(task, 'PRIMARY') !== 'SECONDARY')
+  const secondaryTasks = taskList.filter((task) => taskTypeValue(task) === 'SECONDARY')
+  const connectableSecondaryTasks = secondaryTasks
+  const taskSections = [
+    { key: 'PRIMARY', label: 'Primary', rows: primaryTasks },
+    { key: 'SECONDARY', label: 'Secondary', rows: secondaryTasks },
+  ]
+  const selectedTask = taskList.find((task) => taskText(task, 'task_key') === selectedTaskKey) || null
+  const selectedTaskStages = selectedTask
+    ? taskStageList
+      .filter((stage) => taskText(stage, 'task_key') === selectedTaskKey)
+      .sort((left, right) => {
+        const leftDefault = taskStageIsDefault(left)
+        const rightDefault = taskStageIsDefault(right)
+        if (leftDefault !== rightDefault) return leftDefault ? -1 : 1
+        return taskStageSortValue(left) - taskStageSortValue(right)
+      })
+    : []
+  const selectedTaskGroupKeys = taskGroupKeys(selectedTask)
+  const selectedTaskBypassGroupKeySet = new Set(taskBypassGroupKeys(selectedTask))
+  const selectedTaskGroups = selectedTaskGroupKeys
+    .map((groupKey) => taskUserGroups.find((group) => taskText(group, 'group_key') === groupKey))
+    .filter((group): group is Record<string, any> => Boolean(group))
+  const selectedTaskColor = taskColorValue(selectedTask ? taskText(selectedTask, 'task_color_hex', '#00000000') : '#00000000')
+  const selectedTaskSymbolLabel = selectedTask && taskTypeValue(selectedTask, 'PRIMARY') === 'SECONDARY' ? 'Secondary Task' : 'Primary Task'
+  const canvasPanelTitle = selectedTask ? taskText(selectedTask, 'task_title', 'Untitled task') : 'Task Builder'
+  const canvasTaskNodeWidth = 272
+  const canvasTaskNodeHeight = 136
+  const canvasStageNodeWidth = 292
+  const canvasStageNodeHeight = 104
+  const canvasStageNodeGapX = 72
+  const canvasStageNodeGapY = 44
+  const canvasStageReorderStepY = 132
+  const canvasResponseNodeWidth = 208
+  const canvasResponseNodeHeight = 78
+  const canvasResponseNodeGapX = 64
+  const canvasResponseNodeGapY = 24
+  const canvasResponseReorderStepY = canvasResponseNodeHeight + canvasResponseNodeGapY
+  const canvasLinkedTaskNodeHeight = 84
+  const canvasZoomLabel = `${Math.round(canvasZoom * 100)}%`
+  const setTaskBuilderCanvasZoom = (nextZoom: number) => {
+    setCanvasZoom(Math.min(1.6, Math.max(0.65, Number(nextZoom.toFixed(2)))))
+  }
+  const handleTaskBuilderCanvasWheel = (event: React.WheelEvent<HTMLElement>) => {
+    if (!selectedTask) return
+    event.preventDefault()
+    if (event.ctrlKey || event.metaKey) {
+      const zoomDirection = event.deltaY > 0 ? -1 : 1
+      setTaskBuilderCanvasZoom(canvasZoom + zoomDirection * 0.12)
+      return
+    }
+
+    setCanvasPanOffset((current) => ({
+      x: current.x - (event.shiftKey ? event.deltaY : event.deltaX),
+      y: current.y - (event.shiftKey ? 0 : event.deltaY),
+    }))
+  }
+	  let stageLayoutY = canvasNodePosition.y + 22
+	  const stageLayoutBaseYs: number[] = []
+	  const taskStageLayout = selectedTaskStages.map((stage, index) => {
+	    const stageKey = taskStageKey(stage)
+	    const stageX = canvasNodePosition.x + canvasTaskNodeWidth + canvasStageNodeGapX
+	    const stageY = stageLayoutY
+	    stageLayoutBaseYs[index] = stageY
+	    const dragDeltaY = stageDragState?.stageKey === stageKey ? stageDragState.deltaY : 0
+	    const displayY = stageY + dragDeltaY
+	    const responses = taskStageResponses(stageKey)
+	    const responseStackHeight = responses.length > 0
+	      ? responses.length * canvasResponseNodeHeight + (responses.length - 1) * canvasResponseNodeGapY
+	      : 0
+	    const branchHeight = Math.max(canvasStageNodeHeight, responseStackHeight, canvasLinkedTaskNodeHeight)
+	    const connectionTriggerPoint = taskStageConnectionTriggerPoint(stage)
+	    const connectionSourceStageIndex = connectionTriggerPoint === 'PREVIOUS_STAGE_FINISHED' && index > 0 ? index - 1 : index
+	    const connectionSourceStage = selectedTaskStages[connectionSourceStageIndex] || stage
+	    const connectionSourceDragDeltaY = stageDragState?.stageKey === taskStageKey(connectionSourceStage) ? stageDragState.deltaY : 0
+	    const connectionSourceDisplayY = (stageLayoutBaseYs[connectionSourceStageIndex] ?? stageY) + connectionSourceDragDeltaY
+	    const connectedTaskKey = taskText(stage, 'connected_task_key')
+	    const connectedTask = connectedTaskKey !== '' ? taskByKey(connectedTaskKey) : null
+	    const responseX = stageX + canvasStageNodeWidth + canvasResponseNodeGapX
+	    const responseStackStartY = displayY + Math.max(0, Math.round((branchHeight - responseStackHeight) / 2))
+	    const responseNodes = responses.map((response, responseIndex) => {
+	      const responseKey = taskStageResponseKey(response)
+	      const responseDragDeltaY = responseDragState?.responseKey === responseKey ? responseDragState.deltaY : 0
+	      const responseY = responseStackStartY + responseIndex * canvasResponseReorderStepY + responseDragDeltaY
+
+	      return {
+	        response,
+	        x: responseX,
+	        y: responseY,
+	        startX: stageX + canvasStageNodeWidth,
+	        startY: displayY + Math.round(canvasStageNodeHeight / 2),
+	        endX: responseX,
+	        endY: responseY + Math.round(canvasResponseNodeHeight / 2),
+	      }
+	    })
+	    const linkedTaskX = stageX + canvasStageNodeWidth + (responses.length > 0
+	      ? canvasResponseNodeGapX + canvasResponseNodeWidth + canvasResponseNodeGapX
+	      : canvasStageNodeGapX)
+    const linkedTaskY = displayY + Math.max(0, Math.round((branchHeight - canvasLinkedTaskNodeHeight) / 2))
+    stageLayoutY += branchHeight + canvasStageNodeGapY
+    return {
+      stage,
+      connectedTask,
+      responseNodes,
+      x: stageX,
+      y: stageY,
+      displayY,
+      linkedTaskX,
+      linkedTaskY,
+      startX: canvasNodePosition.x + canvasTaskNodeWidth,
+      startY: canvasNodePosition.y + Math.round(canvasTaskNodeHeight / 2),
+	      endX: stageX,
+	      endY: displayY + Math.round(canvasStageNodeHeight / 2),
+	      connectedStartX: stageX + canvasStageNodeWidth,
+	      connectedStartY: connectionSourceDisplayY + Math.round(canvasStageNodeHeight / 2),
+	      connectedEndX: linkedTaskX,
+	      connectedEndY: linkedTaskY + Math.round(canvasLinkedTaskNodeHeight / 2),
+	      connectionTriggerPoint,
+    }
+	  })
+  const modalTaskKey = editingTask ? taskText(editingTask, 'task_key') : ''
+  const modalTitle = editingTask ? 'Edit Task' : 'Add Task'
+  const modalAction = editingTask ? 'update_project_task' : 'create_project_task'
+  const modalConfirmTitle = editingTask ? 'Confirm task update' : 'Confirm task creation'
+  const modalConfirmMessage = editingTask ? 'Update this task in project_task?' : 'Create this task in project_task?'
+  const modalConfirmLabel = editingTask ? 'Update Task' : 'Create Task'
+  const modalSubmitLabel = editingTask ? 'Update Task' : 'Create Task'
+  const modalStageKey = editingStage ? taskStageKey(editingStage) : ''
+  const stageModalTitle = editingStage ? 'Edit Task Stage' : 'Add Task Stage'
+  const stageModalAction = editingStage ? 'update_project_task_stage' : 'create_project_task_stage'
+  const stageModalConfirmTitle = editingStage ? 'Confirm stage update' : 'Confirm stage creation'
+  const stageModalConfirmMessage = editingStage ? 'Update this stage?' : 'Create this stage for the selected task?'
+  const stageModalConfirmLabel = editingStage ? 'Update Stage' : 'Create Stage'
+  const stageModalSubmitLabel = editingStage ? 'Update Stage' : 'Create Stage'
+  const editingStageIsDefault = editingStage ? taskStageIsDefault(editingStage) : false
+  const responseManagerStageKey = responseManagerStage ? taskStageKey(responseManagerStage) : ''
+  const responseModalTaskKey = responseManagerStage ? taskText(responseManagerStage, 'task_key') : selectedTaskKey
+  const responseRows = responseManagerStageKey !== '' ? taskStageResponses(responseManagerStageKey) : []
+  const responseModalAction = editingResponse ? 'update_project_task_stage_response' : 'create_project_task_stage_response'
+  const responseModalTitle = editingResponse ? 'Edit Response' : 'Add Response'
+  const responseModalConfirmTitle = editingResponse ? 'Confirm response update' : 'Confirm response creation'
+  const responseModalConfirmMessage = editingResponse ? 'Update this stage response?' : 'Create this response for the selected stage?'
+  const responseModalConfirmLabel = editingResponse ? 'Update Response' : 'Create Response'
+  const responseModalSubmitLabel = editingResponse ? 'Update Response' : 'Create Response'
+  const responseModalStatusText = responseSaveState === 'saving'
+    ? 'Saving response...'
+    : responseSaveState === 'saved'
+      ? 'Response saved. Manager remains open.'
+      : responseSaveState === 'error'
+        ? 'Response was not saved. Check the fields and try again.'
+        : editingResponse ? 'Response key is preserved on update.' : 'Response key is generated on save.'
+  const openTaskModal = (task: Record<string, any> | null = null) => {
+    const nextColor = taskColorValue(task ? taskText(task, 'task_color_hex', '#00000000') : '#00000000')
+    setEditingTask(task)
+    setTaskColor(nextColor)
+    setTaskCanRunManually(task ? taskCanRunManuallyValue(task) : false)
+    setTaskCanRunViaApi(task ? taskCanRunViaApiValue(task) : false)
+    setTaskCanRunIfBedVacant(task ? taskCanRunIfBedVacantValue(task) : true)
+    setTaskCanRunIfBedOccupied(task ? taskCanRunIfBedOccupiedValue(task) : true)
+    setTaskRequiresBedTreatment(task ? taskRequiresBedTreatmentValue(task) : true)
+    setTaskRequiresAdmissionSource(task ? taskRequiresAdmissionSourceValue(task) : true)
+    setColorDraft(nextColor)
+    setTaskModalOpen(true)
+  }
+  const openTaskColorPicker = () => {
+    setColorPickerTarget('task')
+    setColorDraft(taskColor)
+    setColorPickerOpen(true)
+  }
+  const openStageColorPicker = () => {
+    setColorPickerTarget('stage')
+    setColorDraft(stageColor)
+    setColorPickerOpen(true)
+  }
+  const openStageModal = () => {
+    if (!selectedTask) return
+    setEditingStage(null)
+    setStageColor('#00000000')
+    setStageEndsTask(false)
+    setColorDraft('#00000000')
+    setStageModalOpen(true)
+  }
+  const openEditStageModal = (stage: Record<string, any>) => {
+    const nextColor = taskColorValue(taskText(stage, 'stage_color_hex', '#00000000'))
+    setEditingStage(stage)
+    setStageColor(nextColor)
+    setStageEndsTask(taskStageEndsTask(stage))
+    setColorDraft(nextColor)
+    setStageModalOpen(true)
+  }
+  const openStageResponseManager = (stage: Record<string, any>) => {
+    setResponseManagerStage(stage)
+    setEditingResponse(null)
+    setResponseSaveState('idle')
+    setResponseManagerOpen(true)
+  }
+  const editStageResponse = (response: Record<string, any>) => {
+    setEditingResponse(response)
+    setResponseSaveState('idle')
+  }
+  const submitResponseManagerForm = async (form: HTMLFormElement) => {
+    if (!form.reportValidity()) return
+    const body = new FormData(form)
+    const action = String(body.get('action') || '')
+    const responseKey = String(body.get('task_stage_response_key') || '')
+    setResponseSaveState('saving')
+
+    try {
+      const httpResponse = await fetch('./', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      })
+      const payload = await httpResponse.json()
+      if (!httpResponse.ok || !payload.ok) {
+        throw new Error(String(payload.message || 'Stage response save failed.'))
+      }
+
+      if (action === 'delete_project_task_stage_response') {
+        const deletedResponseKey = taskStageResponseKey(payload.response || {}) || responseKey
+        removeTaskStageResponseRow(deletedResponseKey)
+        if (editingResponse && taskStageResponseKey(editingResponse) === deletedResponseKey) {
+          setEditingResponse(null)
+        }
+      } else {
+        const savedResponse = payload.response || {}
+        if (taskStageResponseKey(savedResponse) === '') {
+          throw new Error('Stage response read-back was missing.')
+        }
+        upsertTaskStageResponseRow(savedResponse)
+        if (action === 'create_project_task_stage_response') {
+          form.reset()
+          setEditingResponse(null)
+        } else {
+          setEditingResponse(savedResponse)
+        }
+      }
+
+      setResponseSaveState('saved')
+      window.setTimeout(() => setResponseSaveState('idle'), 1400)
+    } catch (error) {
+      setResponseSaveState('error')
+      window.setTimeout(() => setResponseSaveState('idle'), 2600)
+    }
+  }
+	  const openStageConnectionModal = (stage: Record<string, any>) => {
+	    setConnectingStage(stage)
+	    setConnectedTaskKey(taskText(stage, 'connected_task_key'))
+	    setConnectedTaskTriggerPoint(taskStageConnectionTriggerPoint(stage))
+	    setStageConnectionModalOpen(true)
+	  }
+	  const clampCanvasNodePosition = (x: number, y: number, node?: HTMLDivElement | null) => {
+	    const canvas = canvasRef.current
+	    if (!canvas) return { x, y }
+	    const bounds = canvas.getBoundingClientRect()
+	    const nodeWidth = node?.offsetWidth || 272
+	    const nodeHeight = node?.offsetHeight || 148
+	    const maxX = Math.max(16, bounds.width / canvasZoom - nodeWidth - 16)
+	    const maxY = Math.max(16, bounds.height / canvasZoom - nodeHeight - 16)
+
+    return {
+      x: Math.min(Math.max(16, x), maxX),
+      y: Math.min(Math.max(16, y), maxY),
+    }
+  }
+  const handleCanvasNodePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    nodeDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: canvasNodePosition.x,
+      originY: canvasNodePosition.y,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+	  const handleCanvasNodePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+	    const dragState = nodeDragRef.current
+	    if (!dragState || dragState.pointerId !== event.pointerId) return
+	    const nextX = dragState.originX + (event.clientX - dragState.startX) / canvasZoom
+	    const nextY = dragState.originY + (event.clientY - dragState.startY) / canvasZoom
+	    setCanvasNodePosition(clampCanvasNodePosition(nextX, nextY, event.currentTarget))
+	  }
+  const handleCanvasNodePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = nodeDragRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+	    const finalPosition = clampCanvasNodePosition(
+	      dragState.originX + (event.clientX - dragState.startX) / canvasZoom,
+	      dragState.originY + (event.clientY - dragState.startY) / canvasZoom,
+	      event.currentTarget,
+	    )
+    nodeDragRef.current = null
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    setCanvasNodePosition(finalPosition)
+    if (finalPosition.x !== dragState.originX || finalPosition.y !== dragState.originY) {
+      void saveCanvasNodePosition(selectedTaskKey, finalPosition)
+    }
+  }
+  const saveCanvasNodePosition = async (taskKey: string, position: { x: number; y: number }) => {
+    if (taskKey === '') return
+    setTaskCanvasPositions((current) => ({ ...current, [taskKey]: position }))
+    setCanvasSaveState('saving')
+
+    const body = new FormData()
+    body.append('csrf', data.csrf)
+    body.append('action', 'update_project_task_canvas_position')
+    body.append('task_key', taskKey)
+    body.append('task_canvas_x', String(position.x))
+    body.append('task_canvas_y', String(position.y))
+
+    try {
+      const response = await fetch('./', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(String(payload.message || 'Task canvas position save failed.'))
+      }
+      const savedTask = payload.task || {}
+      const savedPosition = {
+        x: Number(savedTask.task_canvas_x ?? position.x),
+        y: Number(savedTask.task_canvas_y ?? position.y),
+      }
+      setTaskCanvasPositions((current) => ({ ...current, [taskKey]: savedPosition }))
+      setCanvasSaveState('saved')
+      window.setTimeout(() => setCanvasSaveState('idle'), 1200)
+    } catch (error) {
+      setCanvasSaveState('error')
+      window.setTimeout(() => setCanvasSaveState('idle'), 2400)
+    }
+  }
+  const applyTaskStageSortOrders = (stages: Array<Record<string, any>>) => {
+    const nextOrders: Record<string, number> = {}
+    stages.forEach((stage, index) => {
+      const stageKey = taskStageKey(stage)
+      if (stageKey !== '') {
+        nextOrders[stageKey] = index + 1
+      }
+    })
+    setStageSortOrders((current) => ({ ...current, ...nextOrders }))
+  }
+  const saveTaskStageSortOrder = async (orderedStages: Array<Record<string, any>>) => {
+    if (selectedTaskKey === '' || orderedStages.length === 0) return
+    applyTaskStageSortOrders(orderedStages)
+    setStageSortSaveState('saving')
+
+    const body = new FormData()
+    body.append('csrf', data.csrf)
+    body.append('action', 'update_project_task_stage_sort_order')
+    body.append('task_key', selectedTaskKey)
+    orderedStages.forEach((stage) => {
+      const stageKey = taskStageKey(stage)
+      if (stageKey !== '') {
+        body.append('stage_order_keys[]', stageKey)
+      }
+    })
+
+    try {
+      const response = await fetch('./', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(String(payload.message || 'Task stage order save failed.'))
+      }
+      if (Array.isArray(payload.stages)) {
+        applyTaskStageSortOrders(payload.stages)
+      }
+      setStageSortSaveState('saved')
+      window.setTimeout(() => setStageSortSaveState('idle'), 1200)
+    } catch (error) {
+      setStageSortSaveState('error')
+      window.setTimeout(() => setStageSortSaveState('idle'), 2400)
+    }
+  }
+  const applyTaskStageResponseSortOrders = (responses: Array<Record<string, any>>) => {
+    const nextOrders: Record<string, number> = {}
+    responses.forEach((response, index) => {
+      const responseKey = taskStageResponseKey(response)
+      if (responseKey !== '') {
+        nextOrders[responseKey] = index + 1
+      }
+    })
+    setResponseSortOrders((current) => ({ ...current, ...nextOrders }))
+  }
+  const saveTaskStageResponseSortOrder = async (taskStageKey: string, orderedResponses: Array<Record<string, any>>) => {
+    if (selectedTaskKey === '' || taskStageKey === '' || orderedResponses.length === 0) return
+    applyTaskStageResponseSortOrders(orderedResponses)
+    setResponseSortSaveState('saving')
+
+    const body = new FormData()
+    body.append('csrf', data.csrf)
+    body.append('action', 'update_project_task_stage_response_sort_order')
+    body.append('task_key', selectedTaskKey)
+    body.append('task_stage_key', taskStageKey)
+    orderedResponses.forEach((response) => {
+      const responseKey = taskStageResponseKey(response)
+      if (responseKey !== '') {
+        body.append('response_order_keys[]', responseKey)
+      }
+    })
+
+    try {
+      const response = await fetch('./', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(String(payload.message || 'Task stage response order save failed.'))
+      }
+      if (Array.isArray(payload.responses)) {
+        applyTaskStageResponseSortOrders(payload.responses)
+        setTaskStageResponseList((current) => {
+          const responseKeySet = new Set(payload.responses.map((row: Record<string, any>) => taskStageResponseKey(row)))
+          const mergedRows = [
+            ...current.filter((row) => !responseKeySet.has(taskStageResponseKey(row))),
+            ...payload.responses,
+          ]
+          return sortTaskStageResponseRows(mergedRows)
+        })
+      }
+      setResponseSortSaveState('saved')
+      window.setTimeout(() => setResponseSortSaveState('idle'), 1200)
+    } catch {
+      setResponseSortSaveState('error')
+      window.setTimeout(() => setResponseSortSaveState('idle'), 2400)
+    }
+  }
+  const reorderTaskStagesByDrag = (stageKey: string, deltaY: number) => {
+    const lockedStages = selectedTaskStages.filter((stage) => taskStageIsDefault(stage))
+    const movableStages = selectedTaskStages.filter((stage) => !taskStageIsDefault(stage))
+    const fromIndex = movableStages.findIndex((stage) => taskStageKey(stage) === stageKey)
+    if (fromIndex < 0) return
+
+	    const offset = Math.round(deltaY / canvasStageReorderStepY)
+    const toIndex = Math.min(Math.max(0, fromIndex + offset), movableStages.length - 1)
+    if (toIndex === fromIndex) return
+
+    const nextMovableStages = [...movableStages]
+    const [movedStage] = nextMovableStages.splice(fromIndex, 1)
+    nextMovableStages.splice(toIndex, 0, movedStage)
+    void saveTaskStageSortOrder([...lockedStages, ...nextMovableStages])
+  }
+  const reorderTaskStageResponsesByDrag = (taskStageKey: string, responseKey: string, deltaY: number) => {
+    const responses = taskStageResponses(taskStageKey)
+    const fromIndex = responses.findIndex((response) => taskStageResponseKey(response) === responseKey)
+    if (fromIndex < 0) return
+
+    const offset = Math.round(deltaY / canvasResponseReorderStepY)
+    const toIndex = Math.min(Math.max(0, fromIndex + offset), responses.length - 1)
+    if (toIndex === fromIndex) return
+
+    const nextResponses = [...responses]
+    const [movedResponse] = nextResponses.splice(fromIndex, 1)
+    nextResponses.splice(toIndex, 0, movedResponse)
+    void saveTaskStageResponseSortOrder(taskStageKey, nextResponses)
+  }
+  const handleTaskStagePointerDown = (event: React.PointerEvent<HTMLDivElement>, stage: Record<string, any>) => {
+    if (event.button !== 0 || taskStageIsDefault(stage)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const stageKey = taskStageKey(stage)
+    if (stageKey === '') return
+    stageDragRef.current = {
+      pointerId: event.pointerId,
+      stageKey,
+      startY: event.clientY,
+    }
+    setStageDragState({ stageKey, deltaY: 0 })
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const handleTaskStagePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = stageDragRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+	    setStageDragState({
+	      stageKey: dragState.stageKey,
+	      deltaY: (event.clientY - dragState.startY) / canvasZoom,
+	    })
+  }
+  const handleTaskStagePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = stageDragRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+	    const deltaY = (event.clientY - dragState.startY) / canvasZoom
+    stageDragRef.current = null
+    setStageDragState(null)
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    reorderTaskStagesByDrag(dragState.stageKey, deltaY)
+  }
+  const handleTaskStageResponsePointerDown = (event: React.PointerEvent<HTMLDivElement>, taskStageKey: string, responseKey: string) => {
+    if (event.button !== 0 || taskStageKey === '' || responseKey === '') return
+    event.preventDefault()
+    event.stopPropagation()
+    responseDragRef.current = {
+      pointerId: event.pointerId,
+      taskStageKey,
+      responseKey,
+      startY: event.clientY,
+    }
+    setResponseDragState({ responseKey, deltaY: 0 })
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const handleTaskStageResponsePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = responseDragRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    setResponseDragState({
+      responseKey: dragState.responseKey,
+      deltaY: (event.clientY - dragState.startY) / canvasZoom,
+    })
+  }
+  const handleTaskStageResponsePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = responseDragRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    const deltaY = (event.clientY - dragState.startY) / canvasZoom
+    responseDragRef.current = null
+    setResponseDragState(null)
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    reorderTaskStageResponsesByDrag(dragState.taskStageKey, dragState.responseKey, deltaY)
+  }
+  const autoArrangeTaskBuilderCanvas = () => {
+    if (!selectedTask) return
+    const nextPosition = { x: 24, y: 72 }
+    stageDragRef.current = null
+    responseDragRef.current = null
+    setStageDragState(null)
+    setResponseDragState(null)
+    setTaskBuilderCanvasZoom(1)
+    setCanvasPanOffset({ x: 0, y: 0 })
+    setCanvasNodePosition(clampCanvasNodePosition(nextPosition.x, nextPosition.y))
+    void saveCanvasNodePosition(selectedTaskKey, nextPosition)
+  }
+  const syncTaskBuilderSelectedTaskUrl = (taskKey: string) => {
+    if (taskKey === '' || typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', 'task-builder')
+    url.searchParams.set('selected_task_key', taskKey)
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  }
+  const selectTaskForCanvas = (taskKey: string) => {
+    if (taskKey === '') return
+    const task = taskList.find((candidate) => taskText(candidate, 'task_key') === taskKey)
+    const savedPosition = taskCanvasPositions[taskKey] || (task ? taskCanvasPosition(task) : { x: 24, y: 24 })
+    setSelectedTaskKey(taskKey)
+    setCanvasNodePosition(clampCanvasNodePosition(savedPosition.x, savedPosition.y))
+    setCanvasSaveState('idle')
+    syncTaskBuilderSelectedTaskUrl(taskKey)
+  }
+  React.useEffect(() => {
+    if (initialTaskBuilderSelectedTaskKey === '') return
+    selectTaskForCanvas(initialTaskBuilderSelectedTaskKey)
+  }, [])
+
+  return (
+    <>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+
+      <div className="grid min-h-[calc(100dvh-12rem)] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,9fr)_minmax(280px,3fr)]">
+	        <Card className="flex min-h-[32rem] min-w-0 flex-col overflow-hidden">
+	          <CardHeader className="sticky top-0 z-20 flex min-h-[5.25rem] shrink-0 flex-row items-center justify-between gap-3 border-b bg-card">
+	            <div className="min-w-0">
+	              <CardDescription>Canvas</CardDescription>
+	              <CardTitle className="mt-1 flex min-w-0 items-center gap-2 text-base tracking-normal">
+	                <ClipboardList className="size-4 shrink-0 text-muted-foreground" />
+	                <span className="truncate">{canvasPanelTitle}</span>
+	              </CardTitle>
+	            </div>
+	            <div className="flex shrink-0 items-center gap-1.5">
+	              <Tooltip>
+	                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Auto arrange canvas" title="Auto arrange canvas" onClick={autoArrangeTaskBuilderCanvas} disabled={!selectedTask} />}>
+	                  <RotateCcw />
+	                </TooltipTrigger>
+	                <TooltipContent>Auto arrange</TooltipContent>
+	              </Tooltip>
+	              <Tooltip>
+	                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Zoom canvas out" title="Zoom canvas out" onClick={() => setTaskBuilderCanvasZoom(canvasZoom - 0.1)} disabled={canvasZoom <= 0.65} />}>
+	                  <ZoomOut />
+	                </TooltipTrigger>
+	                <TooltipContent>Zoom out</TooltipContent>
+	              </Tooltip>
+	              <Badge variant="outline" className="min-w-14 justify-center">{canvasZoomLabel}</Badge>
+	              <Tooltip>
+	                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Zoom canvas in" title="Zoom canvas in" onClick={() => setTaskBuilderCanvasZoom(canvasZoom + 0.1)} disabled={canvasZoom >= 1.6} />}>
+	                  <ZoomIn />
+	                </TooltipTrigger>
+	                <TooltipContent>Zoom in</TooltipContent>
+	              </Tooltip>
+	              {(canvasPanOffset.x !== 0 || canvasPanOffset.y !== 0) ? (
+	                <Tooltip>
+	                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Reset canvas focus" title="Reset canvas focus" onClick={() => setCanvasPanOffset({ x: 0, y: 0 })} />}>
+	                    <MousePointer2 />
+	                  </TooltipTrigger>
+	                  <TooltipContent>Reset focus</TooltipContent>
+	                </Tooltip>
+	              ) : null}
+	            </div>
+	          </CardHeader>
+	          <CardContent className="min-h-0 flex-1 p-0">
+	            <section ref={canvasRef} className="relative h-full min-h-[30rem] min-w-0 overflow-hidden bg-[#08111e]" aria-label="Task Builder canvas" onWheel={handleTaskBuilderCanvasWheel}>
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_18%,rgba(56,189,248,0.16),transparent_28%),radial-gradient(circle_at_80%_74%,rgba(16,185,129,0.1),transparent_30%),linear-gradient(135deg,#08111e_0%,#0b1f2e_54%,#020617_100%)]" aria-hidden="true" />
+              <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1200 720" preserveAspectRatio="none" aria-hidden="true">
+                <g fill="none" stroke="#d9f99d" strokeOpacity="0.12" strokeWidth="2">
+                  <path d="M96 620C220 520 360 540 486 438S760 282 1080 322" />
+                  <path d="M70 480C244 412 338 396 520 300S854 190 1150 206" />
+                  <path d="M160 96h280l60 54h270l84 80h206" />
+                  <path d="M122 190h164l42 42h192" />
+                </g>
+              </svg>
+	              <div
+	                className="absolute inset-0 z-10 p-4"
+	                style={{ transform: `translate(${canvasPanOffset.x}px, ${canvasPanOffset.y}px) scale(${canvasZoom})`, transformOrigin: '0 0' }}
+	              >
+                {selectedTask ? (
+                  <>
+                    {taskStageLayout.length > 0 ? (
+                      <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" aria-hidden="true">
+                        <defs>
+	                          <marker id="task-stage-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+	                            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(125, 211, 252, 0.8)" />
+	                          </marker>
+		                          <marker id="stage-linked-task-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+		                            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(167, 139, 250, 0.82)" />
+		                          </marker>
+		                          <marker id="stage-response-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+		                            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(45, 212, 191, 0.82)" />
+		                          </marker>
+		                        </defs>
+                        {taskStageLayout.map((item) => (
+                          <path
+                            key={taskText(item.stage, 'task_stage_key')}
+                            data-task-stage-edge={taskText(item.stage, 'task_stage_key')}
+                            d={`M ${item.startX} ${item.startY} C ${item.startX + 34} ${item.startY}, ${item.endX - 34} ${item.endY}, ${item.endX} ${item.endY}`}
+                            fill="none"
+                            stroke="rgba(125, 211, 252, 0.56)"
+                            strokeWidth="2"
+	                            markerEnd="url(#task-stage-arrow)"
+		                          />
+		                        ))}
+		                        {taskStageLayout.flatMap((item) => item.responseNodes.map((responseNode) => (
+		                          <path
+		                            key={`${taskText(item.stage, 'task_stage_key')}-${taskStageResponseKey(responseNode.response)}-response`}
+		                            data-stage-response-edge={taskStageResponseKey(responseNode.response)}
+		                            d={`M ${responseNode.startX} ${responseNode.startY} C ${responseNode.startX + 24} ${responseNode.startY}, ${responseNode.endX - 24} ${responseNode.endY}, ${responseNode.endX} ${responseNode.endY}`}
+		                            fill="none"
+		                            stroke="rgba(45, 212, 191, 0.58)"
+		                            strokeWidth="2"
+		                            markerEnd="url(#stage-response-arrow)"
+		                          />
+		                        )))}
+		                        {taskStageLayout.map((item) => item.connectedTask ? (
+	                          <path
+	                            key={`${taskText(item.stage, 'task_stage_key')}-linked-task`}
+	                            data-stage-linked-task-edge={taskText(item.stage, 'task_stage_key')}
+	                            d={`M ${item.connectedStartX} ${item.connectedStartY} C ${item.connectedStartX + 28} ${item.connectedStartY}, ${item.connectedEndX - 28} ${item.connectedEndY}, ${item.connectedEndX} ${item.connectedEndY}`}
+	                            fill="none"
+	                            stroke="rgba(167, 139, 250, 0.62)"
+	                            strokeWidth="2"
+	                            markerEnd="url(#stage-linked-task-arrow)"
+	                          />
+	                        ) : null)}
+	                      </svg>
+                    ) : null}
+
+                    <div
+                      className="absolute w-[17rem] touch-none select-none overflow-hidden rounded-md bg-slate-950/90 text-left text-white shadow-xl ring-1 ring-white/10"
+                      style={{
+                        left: canvasNodePosition.x,
+                        top: canvasNodePosition.y,
+                        boxShadow: `0 0 22px ${taskGlowValue(selectedTaskColor)}`,
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Move flowchart task ${taskText(selectedTask, 'task_title', 'Untitled task')}`}
+                      onPointerDown={handleCanvasNodePointerDown}
+                      onPointerMove={handleCanvasNodePointerMove}
+                      onPointerUp={handleCanvasNodePointerUp}
+                      onPointerCancel={handleCanvasNodePointerUp}
+                    >
+                      <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: selectedTaskColor }} aria-hidden="true" />
+                      <div className="flex cursor-move items-center justify-between gap-3 border-b border-white/15 px-3 py-2">
+	                        <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-sky-100/80">
+	                          <span className="grid size-5 shrink-0 place-items-center rounded bg-sky-400/15 text-sky-100 ring-1 ring-sky-200/20">
+	                            <ClipboardList className="size-3.5" />
+	                          </span>
+			                        <span className="truncate">{selectedTaskSymbolLabel}</span>
+	                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5" onPointerDown={(event) => event.stopPropagation()}>
+                          {stageSortSaveState !== 'idle' ? <span className="text-[9px] font-semibold uppercase tracking-wide text-white/70">{stageSortSaveState}</span> : null}
+                          {responseSortSaveState !== 'idle' ? <span className="text-[9px] font-semibold uppercase tracking-wide text-white/70">{responseSortSaveState}</span> : null}
+                          {canvasSaveState !== 'idle' ? <span className="text-[9px] font-semibold uppercase tracking-wide text-white/70">{canvasSaveState}</span> : null}
+                          <Tooltip>
+                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-white/10 text-white/85 hover:bg-white/20 hover:text-white" aria-label={`Edit ${taskText(selectedTask, 'task_title', 'selected task')}`} title={`Edit ${taskText(selectedTask, 'task_title', 'selected task')}`} onClick={(event) => {
+                              event.stopPropagation()
+                              openTaskModal(selectedTask)
+                            }} />}>
+                              <Pencil />
+                            </TooltipTrigger>
+                            <TooltipContent>Edit task</TooltipContent>
+                          </Tooltip>
+	                        </div>
+                      </div>
+                      <div className="grid grid-cols-[minmax(0,1fr)_2.25rem] gap-3 px-3 py-3 uppercase">
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <h3 className="min-w-0 flex-1 truncate text-sm font-semibold leading-5 tracking-normal">{taskText(selectedTask, 'task_title', 'Untitled task')}</h3>
+                            <Badge variant="secondary" className="shrink-0 border-0 bg-white/18 px-1.5 py-0 text-[10px] text-white">{taskText(selectedTask, 'task_type', 'PRIMARY')}</Badge>
+                          </div>
+                          <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+                            <p className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-white/60">Stages {selectedTaskStages.length}</p>
+                            {selectedTaskGroups.length > 0 ? (
+                              <div className="flex min-w-0 -space-x-2" aria-label="Groups involved">
+                                {selectedTaskGroups.slice(0, 5).map((group, index) => {
+                                  const groupKey = taskText(group, 'group_key', `${index}`)
+                                  const groupName = taskText(group, 'group_name', 'Group')
+                                  const groupIconUrl = groupImageViewerUrl(group as Record<string, string>, 'XS')
+                                  const canBypass = selectedTaskBypassGroupKeySet.has(groupKey)
+                                  return (
+                                    <span
+                                      key={groupKey}
+                                      className={cn(
+                                        'relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-full border border-white/20 bg-slate-900 text-white/75 shadow-sm',
+                                        canBypass ? 'ring-1 ring-emerald-300/70' : 'ring-1 ring-black/30',
+                                      )}
+                                      title={canBypass ? `${groupName} - can bypass stages` : groupName}
+                                      aria-label={canBypass ? `${groupName}, can bypass stages` : groupName}
+                                    >
+                                      <Users className="size-4" aria-hidden="true" />
+                                      {groupIconUrl !== '' ? (
+                                        <img
+                                          src={groupIconUrl}
+                                          alt=""
+                                          className="absolute inset-0 h-full w-full object-cover"
+                                          onError={(event) => {
+                                            event.currentTarget.style.display = 'none'
+                                          }}
+                                        />
+                                      ) : null}
+                                    </span>
+                                  )
+                                })}
+                                {selectedTaskGroups.length > 5 ? (
+                                  <span className="grid size-8 shrink-0 place-items-center rounded-full border border-white/20 bg-white/10 text-[10px] font-semibold text-white/75 shadow-sm">
+                                    +{selectedTaskGroups.length - 5}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                          <p className="mt-3 line-clamp-2 text-xs leading-5 text-white/78">{taskText(selectedTask, 'task_description', 'No description added.')}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-white/72">
+                            <span>{taskText(selectedTask, 'task_code', 'Task')}</span>
+                            <span aria-hidden="true">/</span>
+                            <span>{taskStatusLabel(taskText(selectedTask, 'task_status', 'INACTIVE'))}</span>
+                            <span aria-hidden="true">/</span>
+                            <span>{taskText(selectedTask, 'task_priority', 'NORMAL')}</span>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-center gap-1.5" onPointerDown={(event) => event.stopPropagation()}>
+                          <Tooltip>
+                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full bg-white/10 text-white hover:bg-white/20 hover:text-white" aria-label="Add task stage" title="Add task stage" onClick={(event) => {
+                              event.stopPropagation()
+                              openStageModal()
+                            }} />}>
+                              <Plus />
+                            </TooltipTrigger>
+                            <TooltipContent>Add task stage</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </div>
+
+	                    {taskStageLayout.map((item) => {
+	                      const stageColor = taskColorValue(taskText(item.stage, 'stage_color_hex', '#00000000'))
+	                      const stageLabel = taskText(item.stage, 'stage_label', 'NEW') || 'NEW'
+			                      const stageKey = taskStageKey(item.stage)
+			                      const isDefaultStage = taskStageIsDefault(item.stage)
+			                      const isEndStage = taskStageEndsTask(item.stage)
+					                      const stageConnectedTaskKey = taskText(item.stage, 'connected_task_key')
+			                      const connectedTask = stageConnectedTaskKey !== '' ? taskByKey(stageConnectedTaskKey) : null
+			                      const isDraggingStage = stageDragState?.stageKey === stageKey
+			                      const connectionTriggerPoint = taskStageConnectionTriggerPoint(item.stage)
+
+                      return (
+		                        <div
+		                          key={stageKey}
+		                          data-task-stage-node={stageKey}
+							                          className={cn('absolute select-none overflow-hidden border border-amber-200/20 pr-3 text-left text-white shadow-xl ring-1 ring-amber-200/10', isDefaultStage ? 'cursor-default' : 'touch-none cursor-move', isDraggingStage && 'border-amber-200/50 ring-amber-200/30')}
+				                          style={{
+				                            left: item.x,
+				                            top: item.displayY,
+				                            width: canvasStageNodeWidth,
+				                            minHeight: canvasStageNodeHeight,
+				                            background: taskTransparentNodeBackground(stageColor),
+		                            boxShadow: `0 0 18px ${taskGlowValue(stageColor)}`,
+		                            clipPath: 'polygon(0 0, calc(100% - 16px) 0, 100% 50%, calc(100% - 16px) 100%, 0 100%)',
+		                            zIndex: isDraggingStage ? 30 : 1,
+	                          }}
+                          onPointerDown={(event) => handleTaskStagePointerDown(event, item.stage)}
+                          onPointerMove={handleTaskStagePointerMove}
+	                          onPointerUp={handleTaskStagePointerUp}
+	                          onPointerCancel={handleTaskStagePointerUp}
+	                        >
+		                          <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: stageColor }} aria-hidden="true" />
+				                          <div className="flex min-w-0 items-center gap-2 border-b border-white/10 px-3 py-1.5">
+					                            <span className="grid size-5 shrink-0 place-items-center rounded-sm bg-amber-400/14 text-amber-100 ring-1 ring-amber-200/20">
+					                              <Milestone className="size-3.5" />
+				                            </span>
+					                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-amber-100/78">Task Stage</span>
+				                            <Tooltip>
+				                              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-teal-400/10 text-teal-100 hover:bg-teal-400/20 hover:text-teal-50" aria-label={`Manage responses for stage ${stageLabel}`} title={`Manage responses for stage ${stageLabel}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
+				                                event.stopPropagation()
+				                                openStageResponseManager(item.stage)
+				                              }} />}>
+				                                <MessageCircle />
+				                              </TooltipTrigger>
+				                              <TooltipContent>Response manager</TooltipContent>
+				                            </Tooltip>
+				                            <Tooltip>
+			                              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className={cn('size-6 shrink-0 rounded-full bg-white/8 text-white/70 hover:bg-white/18 hover:text-white', connectedTask && 'bg-sky-400/15 text-sky-100')} aria-label={`Connect stage ${stageLabel} to secondary task`} title={`Connect stage ${stageLabel} to secondary task`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
+			                                event.stopPropagation()
+			                                openStageConnectionModal(item.stage)
+			                              }} />}>
+			                                <Link2 />
+			                              </TooltipTrigger>
+			                              <TooltipContent>{connectedTask ? `Connected to ${taskText(connectedTask, 'task_title', 'secondary task')}` : 'Connect secondary task'}</TooltipContent>
+			                            </Tooltip>
+			                            <Tooltip>
+			                              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-white/8 text-white/70 hover:bg-white/18 hover:text-white" aria-label={`Edit stage ${stageLabel}`} title={`Edit stage ${stageLabel}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
+			                                event.stopPropagation()
+			                                openEditStageModal(item.stage)
+			                              }} />}>
+			                                <Pencil />
+			                              </TooltipTrigger>
+			                              <TooltipContent>Edit stage</TooltipContent>
+			                            </Tooltip>
+			                            {!isDefaultStage ? (
+			                              <form method="post" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+			                                <input type="hidden" name="csrf" value={data.csrf} />
+			                                <input type="hidden" name="action" value="delete_project_task_stage" />
+			                                <input type="hidden" name="task_key" value={selectedTaskKey} />
+			                                <input type="hidden" name="task_stage_key" value={stageKey} />
+			                                <Tooltip>
+			                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-rose-500/10 text-rose-100 hover:bg-rose-500/20 hover:text-rose-50" aria-label={`Delete stage ${stageLabel}`} title={`Delete stage ${stageLabel}`} onClick={(event) => {
+			                                    event.stopPropagation()
+			                                    const form = event.currentTarget.closest('form')
+			                                    setConfirmation({
+			                                      title: 'Confirm stage delete',
+			                                      message: `Delete stage ${stageLabel}?`,
+			                                      confirmLabel: 'Delete Stage',
+			                                      onConfirm: () => form?.requestSubmit(),
+			                                    })
+			                                  }} />}>
+			                                    <Trash2 />
+			                                  </TooltipTrigger>
+			                                  <TooltipContent>Delete stage</TooltipContent>
+			                                </Tooltip>
+			                              </form>
+			                            ) : null}
+			                          </div>
+		                          <div className="px-3 py-2 uppercase">
+	                            <div className="flex min-w-0 items-center gap-2">
+	                              <span className="size-2.5 shrink-0 rounded-full ring-1 ring-white/35" style={taskSwatchStyle(stageColor)} aria-hidden="true" />
+	                              <span className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide">{stageLabel}</span>
+	                            </div>
+						                            {(connectedTask || isEndStage) ? (
+						                              <div className="mt-1 flex min-w-0 items-center justify-end gap-1.5">
+						                                {connectedTask ? <Badge variant="outline" className="shrink-0 border-sky-300/25 bg-sky-500/10 px-1.5 py-0 text-[9px] uppercase tracking-wide text-sky-100">{taskStageConnectionTriggerLabel(connectionTriggerPoint)}</Badge> : null}
+						                                {isEndStage ? <Badge variant="outline" className="shrink-0 border-rose-300/25 bg-rose-500/10 px-1.5 py-0 text-[9px] uppercase tracking-wide text-rose-100">End</Badge> : null}
+					                              </div>
+				                            ) : null}
+			                            <p className="mt-1 truncate text-[11px] font-medium uppercase tracking-wide text-sky-100/65">{taskStatusLabel(taskText(item.stage, 'stage_status', 'INACTIVE'))}</p>
+	                          </div>
+		                        </div>
+	                      )
+		                    })}
+
+			                    {taskStageLayout.flatMap((item) => item.responseNodes.map((responseNode) => {
+			                      const response = responseNode.response
+			                      const responseKey = taskStageResponseKey(response)
+			                      const responseStageKey = taskStageKey(item.stage)
+			                      const responseLabel = taskText(response, 'response_label', 'Response') || 'Response'
+			                      const responseStatus = taskText(response, 'response_status', 'ACTIVE')
+			                      const isDraggingResponse = responseDragState?.responseKey === responseKey
+
+		                      return (
+		                        <div
+		                          key={responseKey}
+		                          data-stage-response-node={responseKey}
+		                          className={cn('absolute touch-none select-none overflow-hidden rounded-md border border-teal-200/20 text-left text-white shadow-xl ring-1 ring-teal-200/10 transition before:absolute before:left-[-11px] before:top-1/2 before:h-5 before:w-5 before:-translate-y-1/2 before:rotate-45 before:rounded-[3px] before:border before:border-teal-200/20 before:bg-[var(--response-fill)] before:ring-1 before:ring-teal-200/10 hover:border-teal-200/45', isDraggingResponse ? 'cursor-grabbing border-teal-100/60 ring-teal-100/35' : 'cursor-move')}
+		                          style={{
+			                            left: responseNode.x,
+			                            top: responseNode.y,
+			                            width: canvasResponseNodeWidth,
+			                            minHeight: canvasResponseNodeHeight,
+			                            background: 'linear-gradient(135deg, rgba(20, 184, 166, 0.1) 0%, rgba(2, 6, 23, 0.5) 74%)',
+			                            boxShadow: '0 0 14px rgba(20, 184, 166, 0.16)',
+			                            '--response-fill': 'rgba(20, 184, 166, 0.18)',
+			                            zIndex: isDraggingResponse ? 40 : 2,
+			                          } as React.CSSProperties}
+			                          role="button"
+			                          tabIndex={0}
+			                          aria-label={`Sort response ${responseLabel}`}
+			                          onPointerDown={(event) => handleTaskStageResponsePointerDown(event, responseStageKey, responseKey)}
+			                          onPointerMove={handleTaskStageResponsePointerMove}
+			                          onPointerUp={handleTaskStageResponsePointerUp}
+			                          onPointerCancel={handleTaskStageResponsePointerUp}
+			                        >
+			                          <div className="relative z-10 flex min-w-0 items-center gap-2 overflow-hidden rounded-t-md border-b border-white/10 bg-slate-950/25 px-3 py-1.5">
+		                            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-teal-400/15 text-teal-100 ring-1 ring-teal-200/20">
+		                              <MessageCircle className="size-3.5" />
+		                            </span>
+		                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-teal-100/72">Response</span>
+		                          </div>
+			                          <div className="relative z-10 overflow-hidden rounded-b-md bg-slate-950/18 px-3 py-2 uppercase">
+		                            <p className="truncate text-xs font-semibold uppercase tracking-wide">{responseLabel}</p>
+		                            <p className="mt-0.5 truncate text-[10px] text-sky-100/65">{taskStatusLabel(responseStatus)}</p>
+		                          </div>
+		                        </div>
+		                      )
+		                    }))}
+
+		                    {taskStageLayout.map((item) => {
+		                      if (!item.connectedTask) return null
+	                      const linkedTask = item.connectedTask
+		                      const linkedTaskColor = taskColorValue(taskText(linkedTask, 'task_color_hex', '#00000000'))
+		                      const linkedTaskTitle = taskText(linkedTask, 'task_title', 'Untitled task')
+		                      const linkedTaskKey = taskText(linkedTask, 'task_key')
+		                      const linkedTaskBypassGroupKeySet = new Set(taskBypassGroupKeys(linkedTask))
+		                      const linkedTaskGroups = taskGroupKeys(linkedTask)
+		                        .map((groupKey) => taskUserGroups.find((group) => taskText(group, 'group_key') === groupKey))
+		                        .filter((group): group is Record<string, any> => Boolean(group))
+
+		                      return (
+			                        <div
+			                          key={`${taskText(item.stage, 'task_stage_key')}-${linkedTaskKey}`}
+			                          data-linked-task-node={linkedTaskKey}
+				                          className="absolute w-60 select-none overflow-visible rounded-md border border-violet-200/20 text-left text-white shadow-xl ring-1 ring-violet-200/10 transition before:absolute before:left-[-14px] before:top-1/2 before:h-7 before:w-7 before:-translate-y-1/2 before:rotate-45 before:rounded-[3px] before:border before:border-violet-200/20 before:bg-[var(--linked-task-fill)] before:ring-1 before:ring-violet-200/10 hover:border-violet-200/45"
+				                          style={{
+				                            left: item.linkedTaskX,
+		                            top: item.linkedTaskY,
+		                            background: taskTransparentNodeBackground(linkedTaskColor),
+		                            boxShadow: `0 0 18px ${taskGlowValue(linkedTaskColor)}`,
+		                            '--linked-task-fill': taskTransparentColor(linkedTaskColor, 0.34),
+				                          } as React.CSSProperties}
+			                          aria-label={`Open linked secondary task ${linkedTaskTitle}`}
+			                          role="button"
+			                          tabIndex={0}
+			                          onClick={() => selectTaskForCanvas(linkedTaskKey)}
+			                          onKeyDown={(event) => {
+			                            if (event.key === 'Enter' || event.key === ' ') {
+			                              event.preventDefault()
+			                              selectTaskForCanvas(linkedTaskKey)
+			                            }
+			                          }}
+			                        >
+			                          <span className="absolute inset-y-0 left-0 z-10 w-1 rounded-l-md" style={{ backgroundColor: linkedTaskColor }} aria-hidden="true" />
+				                          <div className="relative z-10 flex min-w-0 items-center gap-2 overflow-hidden rounded-t-md border-b border-white/10 px-3 py-1.5" style={{ background: taskTransparentPanelBackground(linkedTaskColor) }}>
+			                            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-violet-400/15 text-violet-100 ring-1 ring-violet-200/20">
+			                              <Network className="size-3.5" />
+			                            </span>
+			                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-violet-100/72">Secondary Task</span>
+			                            <form method="post" className="shrink-0" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+			                              <input type="hidden" name="csrf" value={data.csrf} />
+			                              <input type="hidden" name="action" value="delete_project_task" />
+			                              <input type="hidden" name="task_key" value={linkedTaskKey} />
+			                              <input type="hidden" name="selected_task_key" value={selectedTaskKey} />
+			                              <Tooltip>
+			                                <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-rose-500/10 text-rose-100 hover:bg-rose-500/20 hover:text-rose-50" aria-label={`Delete secondary task ${linkedTaskTitle}`} title={`Delete secondary task ${linkedTaskTitle}`} onClick={(event) => {
+			                                  event.stopPropagation()
+			                                  const form = event.currentTarget.closest('form')
+			                                  setConfirmation({
+			                                    title: 'Confirm secondary task delete',
+			                                    message: `Delete secondary task ${linkedTaskTitle} and all related stages?`,
+			                                    confirmLabel: 'Delete Task',
+			                                    onConfirm: () => form?.requestSubmit(),
+			                                  })
+			                                }} />}>
+			                                  <Trash2 />
+			                                </TooltipTrigger>
+			                                <TooltipContent>Delete secondary task</TooltipContent>
+			                              </Tooltip>
+			                            </form>
+		                          </div>
+						                          <div className="relative z-10 overflow-hidden rounded-b-md px-3 py-2 pl-4 uppercase" style={{ background: taskTransparentPanelBackground(linkedTaskColor) }}>
+			                            <div className="flex min-w-0 items-center justify-between gap-2">
+			                              <p className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide">{linkedTaskTitle}</p>
+			                              {linkedTaskGroups.length > 0 ? (
+			                                <div className="flex shrink-0 -space-x-1.5" aria-label="Secondary task groups involved">
+			                                  {linkedTaskGroups.slice(0, 4).map((group, index) => {
+			                                    const groupKey = taskText(group, 'group_key', `${index}`)
+			                                    const groupName = taskText(group, 'group_name', 'Group')
+			                                    const groupIconUrl = groupImageViewerUrl(group as Record<string, string>, 'XS')
+			                                    const canBypass = linkedTaskBypassGroupKeySet.has(groupKey)
+			                                    return (
+			                                      <span
+			                                        key={groupKey}
+			                                        className={cn(
+			                                          'relative grid size-6 shrink-0 place-items-center overflow-hidden rounded-full border border-white/20 bg-slate-900 text-white/75 shadow-sm',
+			                                          canBypass ? 'ring-1 ring-emerald-300/70' : 'ring-1 ring-black/30',
+			                                        )}
+			                                        title={canBypass ? `${groupName} - can bypass stages` : groupName}
+			                                        aria-label={canBypass ? `${groupName}, can bypass stages` : groupName}
+			                                      >
+			                                        <Users className="size-3.5" aria-hidden="true" />
+			                                        {groupIconUrl !== '' ? (
+			                                          <img
+			                                            src={groupIconUrl}
+			                                            alt=""
+			                                            className="absolute inset-0 h-full w-full object-cover"
+			                                            onError={(event) => {
+			                                              event.currentTarget.style.display = 'none'
+			                                            }}
+			                                          />
+			                                        ) : null}
+			                                      </span>
+			                                    )
+			                                  })}
+			                                  {linkedTaskGroups.length > 4 ? (
+			                                    <span className="grid size-6 shrink-0 place-items-center rounded-full border border-white/20 bg-white/10 text-[9px] font-semibold text-white/75 shadow-sm">
+			                                      +{linkedTaskGroups.length - 4}
+			                                    </span>
+			                                  ) : null}
+			                                </div>
+			                              ) : null}
+			                            </div>
+			                            <p className="mt-1 truncate text-[10px] font-medium uppercase tracking-wide text-violet-100/60">{taskStatusLabel(taskText(linkedTask, 'task_status', 'INACTIVE'))}</p>
+		                            <p className="mt-1 truncate text-[11px] leading-4 text-white/70">{taskText(linkedTask, 'task_code', 'Task')}</p>
+		                          </div>
+		                        </div>
+		                      )
+	                    })}
+	                  </>
+                ) : (
+                  <div className="grid h-full place-items-center text-center text-sky-100/75">
+                    <div>
+                      <p className="text-sm font-semibold">Select a task</p>
+                      <p className="mt-1 text-xs text-sky-100/55">Clicked tasks will load here as flowchart symbols.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+          </CardContent>
+        </Card>
+
+        <Card className="flex min-h-[28rem] min-w-0 flex-col overflow-hidden">
+          <CardHeader className="sticky top-0 z-20 flex min-h-16 shrink-0 flex-row items-center justify-between gap-3 border-b bg-card px-4 py-3">
+            <div className="flex w-full items-center justify-between gap-3">
+              <div className="min-w-0">
+                <CardDescription className="text-xs">Project task list</CardDescription>
+                <CardTitle className="mt-0.5 flex items-center gap-2 text-sm tracking-normal">
+                  <ClipboardList className="size-3.5 text-muted-foreground" />
+                  Tasks
+                </CardTitle>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Badge variant="outline">{taskList.length}</Badge>
+                <Tooltip>
+                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Add task" title="Add task" onClick={() => openTaskModal()} />}>
+                    <Plus />
+                  </TooltipTrigger>
+                  <TooltipContent>Add task</TooltipContent>
+                </Tooltip>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 py-2 pb-12 [scrollbar-gutter:stable]">
+            <div className="grid gap-3">
+              {taskSections.map((section) => (
+                <section key={section.key} className="grid gap-1.5">
+                  <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-card/95 py-1.5 backdrop-blur">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{section.label}</h3>
+                    <Badge variant="outline">{section.rows.length}</Badge>
+                  </div>
+                  {section.rows.length === 0 ? (
+                    <p className="rounded-md bg-muted/20 px-3 py-3 text-xs text-muted-foreground">No {section.label.toLowerCase()} tasks.</p>
+                  ) : (
+                    <div className="grid gap-1.5">
+                      {section.rows.map((task) => {
+                        const taskKey = taskText(task, 'task_key')
+                        const taskTitle = taskText(task, 'task_title', 'Untitled task')
+                        const status = taskText(task, 'task_status', 'INACTIVE')
+                        const priority = taskText(task, 'task_priority', 'NORMAL')
+                        const colorHex = taskColorValue(taskText(task, 'task_color_hex', '#00000000'))
+                        const isSelected = taskKey !== '' && taskKey === selectedTaskKey
+                        return (
+                          <article
+                            key={taskKey || taskTitle}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
+                            aria-label={`Load ${taskTitle} to canvas`}
+                            className={cn(
+                              'relative grid cursor-pointer gap-1.5 overflow-hidden rounded-md bg-muted/20 px-3 py-2.5 pl-4 ring-1 ring-border/60 transition duration-200 hover:bg-background/80 hover:shadow-[0_0_18px_var(--task-glow)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                              isSelected && 'bg-background/90',
+                            )}
+                            style={{
+                              '--task-glow': taskGlowValue(colorHex),
+                              boxShadow: isSelected ? `0 0 0 1px ${colorHex}, 0 0 26px ${taskGlowValue(colorHex)}` : undefined,
+                            } as React.CSSProperties}
+                            onClick={() => selectTaskForCanvas(taskKey)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                selectTaskForCanvas(taskKey)
+                              }
+                            }}
+                          >
+		                            <span className="absolute inset-y-0 left-0 w-0.5" style={{ backgroundColor: colorHex }} aria-hidden="true" />
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="size-2 rounded-full" style={{ backgroundColor: colorHex }} aria-hidden="true" />
+                                  <Badge variant="secondary" className={cn('border-0 px-1.5 py-0 text-[9px]', statusTone[status] || 'bg-muted text-muted-foreground')}>{taskStatusLabel(status)}</Badge>
+                                  <Badge variant="outline" className="px-1.5 py-0 text-[9px]">{priority}</Badge>
+                                </div>
+                                <h3 className="mt-1 truncate text-[13px] font-semibold leading-4">{taskTitle}</h3>
+                                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{taskText(task, 'task_code', 'Task')}</p>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <Tooltip>
+                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Open ${taskTitle}`} title={`Open ${taskTitle}`} onClick={(event) => {
+                                    event.stopPropagation()
+                                    selectTaskForCanvas(taskKey)
+                                  }} />}>
+                                    <Eye />
+                                  </TooltipTrigger>
+                                  <TooltipContent>Open task</TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Edit ${taskTitle}`} title={`Edit ${taskTitle}`} onClick={(event) => {
+                                    event.stopPropagation()
+                                    openTaskModal(task)
+                                  }} />}>
+                                    <Pencil />
+                                  </TooltipTrigger>
+                                  <TooltipContent>Edit task</TooltipContent>
+                                </Tooltip>
+                                <form method="post" onClick={(event) => event.stopPropagation()}>
+                                  <input type="hidden" name="csrf" value={data.csrf} />
+                                  <input type="hidden" name="action" value="delete_project_task" />
+                                  <input type="hidden" name="task_key" value={taskKey} />
+                                  <Tooltip>
+                                    <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={`Delete ${taskTitle}`} title={`Delete ${taskTitle}`} onClick={(event) => {
+                                      event.stopPropagation()
+                                      const form = event.currentTarget.closest('form')
+                                      setConfirmation({
+                                        title: 'Confirm task delete',
+                                        message: `Delete ${taskTitle} and all related stages?`,
+                                        confirmLabel: 'Delete Task',
+                                        onConfirm: () => form?.requestSubmit(),
+                                      })
+                                    }} />}>
+                                      <Trash2 />
+                                    </TooltipTrigger>
+                                    <TooltipContent>Delete task</TooltipContent>
+                                  </Tooltip>
+                                </form>
+                              </div>
+                            </div>
+                            <p className="line-clamp-1 text-[11px] leading-4 text-muted-foreground">{taskText(task, 'task_description', 'No description added.')}</p>
+                            <p className="truncate text-[10px] text-muted-foreground/80">Updated {taskText(task, 'updated_at', 'No date')}</p>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  )}
+                </section>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Dialog open={taskModalOpen} onOpenChange={(open) => {
+        setTaskModalOpen(open)
+        if (!open) {
+          setEditingTask(null)
+          setTaskColor('#00000000')
+          setTaskCanRunManually(false)
+          setTaskCanRunViaApi(false)
+          setTaskCanRunIfBedVacant(true)
+          setTaskCanRunIfBedOccupied(true)
+          setTaskRequiresBedTreatment(true)
+          setTaskRequiresAdmissionSource(true)
+          setColorDraft('#00000000')
+        }
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close task form" title="Close task form" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2">
+              {editingTask ? <Pencil className="size-4 text-muted-foreground" /> : <Plus className="size-4 text-muted-foreground" />}
+              {modalTitle}
+            </DialogTitle>
+            <DialogDescription>Create a task for the builder canvas.</DialogDescription>
+          </DialogHeader>
+          <form key={modalTaskKey || 'create-task'} ref={taskFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid gap-4">
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value={modalAction} />
+                <input type="hidden" name="task_color_hex" value={taskColor} />
+                <input type="hidden" name="task_can_run_manually" value={taskCanRunManually ? '1' : '0'} />
+                <input type="hidden" name="task_can_run_via_api" value={taskCanRunViaApi ? '1' : '0'} />
+                <input type="hidden" name="task_can_run_if_bed_vacant" value={taskCanRunIfBedVacant ? '1' : '0'} />
+                <input type="hidden" name="task_can_run_if_bed_occupied" value={taskCanRunIfBedOccupied ? '1' : '0'} />
+                <input type="hidden" name="task_requires_bed_treatment" value={taskRequiresBedTreatment ? '1' : '0'} />
+                <input type="hidden" name="task_requires_admission_source" value={taskRequiresAdmissionSource ? '1' : '0'} />
+                {editingTask ? <input type="hidden" name="task_key" value={modalTaskKey} /> : null}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-type">Task Type</Label>
+                    <select id="project-task-type" name="task_type" defaultValue={editingTask ? taskText(editingTask, 'task_type', 'PRIMARY') : 'PRIMARY'} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20">
+                      <option value="PRIMARY">PRIMARY</option>
+                      <option value="SECONDARY">SECONDARY</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-code">Task Code</Label>
+                    <Input id="project-task-code" name="task_code" defaultValue={editingTask ? taskText(editingTask, 'task_code') : ''} placeholder="TASK-001" maxLength={80} />
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="project-task-title">Task Title</Label>
+                  <Input id="project-task-title" name="task_title" defaultValue={editingTask ? taskText(editingTask, 'task_title') : ''} maxLength={255} required />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="project-task-description">Description</Label>
+                  <Textarea id="project-task-description" name="task_description" defaultValue={editingTask ? taskText(editingTask, 'task_description') : ''} className="min-h-28" />
+                </div>
+                <DragAssignSelect
+                  id="project-task-user-groups"
+                  name="task_group_keys[]"
+                  label="User Groups"
+	                  options={taskUserGroups}
+	                  valueKey="group_key"
+	                  labelKey="group_name"
+	                  iconUrlKey="group_image_path"
+	                  iconSizeTokens="XS"
+	                  defaultValues={taskGroupKeys(editingTask)}
+                  bypassName="task_bypass_group_keys[]"
+                  bypassDefaultValues={taskBypassGroupKeys(editingTask)}
+                  bypassDescription="Assigned groups with Bypass checked can skip stage order, jump directly to any stage, or finish this task immediately."
+                />
+                <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="flex items-start gap-3">
+                      <Checkbox id="project-task-can-run-manually" checked={taskCanRunManually} onCheckedChange={(checked) => setTaskCanRunManually(checked === true)} />
+                      <div className="grid gap-1">
+                        <Label htmlFor="project-task-can-run-manually" className="cursor-pointer">Can Run Manually</Label>
+                        <p className="text-xs text-muted-foreground">Allow authorized users to trigger this task from the interface.</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3">
+                      <Checkbox id="project-task-can-run-via-api" checked={taskCanRunViaApi} onCheckedChange={(checked) => setTaskCanRunViaApi(checked === true)} />
+                      <div className="grid gap-1">
+                        <Label htmlFor="project-task-can-run-via-api" className="cursor-pointer">Can Run via API</Label>
+                        <p className="text-xs text-muted-foreground">Allow backend/API execution for this task.</p>
+                      </div>
+                    </div>
+                  </div>
+	                  <div className="border-t border-border/70 pt-3">
+	                    <div className="grid gap-2 sm:grid-cols-2">
+	                      <div className="flex items-start gap-3">
+                        <Checkbox id="project-task-can-run-if-bed-vacant" checked={taskCanRunIfBedVacant} onCheckedChange={(checked) => setTaskCanRunIfBedVacant(checked === true)} />
+                        <div className="grid gap-1">
+                          <Label htmlFor="project-task-can-run-if-bed-vacant" className="cursor-pointer">Can Run if Bed is VACANT</Label>
+                          <p className="text-xs text-muted-foreground">Allow this task when the selected bed is vacant.</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <Checkbox id="project-task-can-run-if-bed-occupied" checked={taskCanRunIfBedOccupied} onCheckedChange={(checked) => setTaskCanRunIfBedOccupied(checked === true)} />
+                        <div className="grid gap-1">
+                          <Label htmlFor="project-task-can-run-if-bed-occupied" className="cursor-pointer">Can Run if Bed is OCCUPIED</Label>
+                          <p className="text-xs text-muted-foreground">Allow this task when the selected bed is occupied.</p>
+	                      </div>
+	                    </div>
+	                  </div>
+	                  <div className="border-t border-border/70 pt-3">
+	                    <div className="grid gap-2 sm:grid-cols-2">
+	                      <div className="flex items-start gap-3">
+	                        <Checkbox id="project-task-requires-bed-treatment" checked={taskRequiresBedTreatment} onCheckedChange={(checked) => setTaskRequiresBedTreatment(checked === true)} />
+	                        <div className="grid gap-1">
+	                          <Label htmlFor="project-task-requires-bed-treatment" className="cursor-pointer">Require Bed Treatment</Label>
+	                          <p className="text-xs text-muted-foreground">Users must choose a bed treatment before submitting this task.</p>
+	                        </div>
+	                      </div>
+	                      <div className="flex items-start gap-3">
+	                        <Checkbox id="project-task-requires-admission-source" checked={taskRequiresAdmissionSource} onCheckedChange={(checked) => setTaskRequiresAdmissionSource(checked === true)} />
+	                        <div className="grid gap-1">
+	                          <Label htmlFor="project-task-requires-admission-source" className="cursor-pointer">Require Admission Source</Label>
+	                          <p className="text-xs text-muted-foreground">Users must choose an admission source before submitting this task.</p>
+	                        </div>
+	                      </div>
+	                    </div>
+	                  </div>
+	                </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-status">Status</Label>
+                    <select id="project-task-status" name="task_status" defaultValue={editingTask ? taskText(editingTask, 'task_status', 'INACTIVE') : 'INACTIVE'} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20">
+                      <option value="INACTIVE">INACTIVE</option>
+                      <option value="ACTIVE">ACTIVE</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-priority">Priority</Label>
+                    <select id="project-task-priority" name="task_priority" defaultValue={editingTask ? taskText(editingTask, 'task_priority', 'NORMAL') : 'NORMAL'} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20">
+                      <option value="LOW">LOW</option>
+                      <option value="NORMAL">NORMAL</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="URGENT">URGENT</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-color">Hex Color</Label>
+                    <Button id="project-task-color" type="button" variant="outline" className="min-h-10 justify-start gap-2 px-3 font-mono text-xs" onClick={openTaskColorPicker}>
+                      <span className="size-4 rounded-sm ring-1 ring-border" style={taskSwatchStyle(taskColor)} aria-hidden="true" />
+                      {taskColor}
+                      <Palette className="ml-auto size-4 text-muted-foreground" aria-hidden="true" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+	            <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+	              <span className="text-xs text-muted-foreground">New tasks are inactive until enabled.</span>
+	              <div className="flex items-center gap-2">
+	                <Button
+	                  type="button"
+                  onClick={() => setConfirmation({
+                    title: modalConfirmTitle,
+                    message: modalConfirmMessage,
+                    confirmLabel: modalConfirmLabel,
+                    onConfirm: () => taskFormRef.current?.requestSubmit(),
+                  })}
+                >
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {modalSubmitLabel}
+                </Button>
+              </div>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={stageModalOpen} onOpenChange={(open) => {
+        setStageModalOpen(open)
+		        if (!open) {
+			          setEditingStage(null)
+			          setStageColor('#00000000')
+			          setStageEndsTask(false)
+			          setColorDraft('#00000000')
+		        }
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close task stage form" title="Close task stage form" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2">
+              {editingStage ? <Pencil className="size-4 text-muted-foreground" /> : <Plus className="size-4 text-muted-foreground" />}
+              {stageModalTitle}
+            </DialogTitle>
+            <DialogDescription>{selectedTask ? taskText(selectedTask, 'task_title', 'Selected task') : 'Selected task'}</DialogDescription>
+          </DialogHeader>
+          <form key={modalStageKey || 'create-stage'} ref={stageFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid gap-4">
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value={stageModalAction} />
+			                <input type="hidden" name="task_key" value={selectedTaskKey} />
+			                <input type="hidden" name="stage_color_hex" value={stageColor} />
+			                <input type="hidden" name="stage_ends_task" value={stageEndsTask ? '1' : '0'} />
+			                {editingStage ? <input type="hidden" name="task_stage_key" value={modalStageKey} /> : null}
+                <div className="grid gap-2">
+                  <Label htmlFor="project-task-stage-label">Stage Label</Label>
+                  <Input
+                    id="project-task-stage-label"
+                    name="stage_label"
+                    placeholder="Stage name"
+                    maxLength={160}
+                    required
+                    readOnly={editingStageIsDefault}
+                    aria-readonly={editingStageIsDefault}
+                    defaultValue={editingStage ? taskText(editingStage, 'stage_label', 'NEW') : ''}
+                    className={editingStageIsDefault ? 'bg-muted text-muted-foreground' : undefined}
+                  />
+                  {editingStageIsDefault ? <p className="text-xs text-muted-foreground">The default NEW stage label is locked.</p> : null}
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="project-task-stage-description">Description</Label>
+                  <Textarea id="project-task-stage-description" name="stage_description" className="min-h-24" placeholder="Describe this stage" maxLength={2000} defaultValue={editingStage ? taskText(editingStage, 'stage_description') : ''} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="project-task-stage-status">Status</Label>
+                  <select id="project-task-stage-status" name="stage_status" defaultValue={editingStage ? taskText(editingStage, 'stage_status', 'INACTIVE') : 'INACTIVE'} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20">
+                    <option value="INACTIVE">INACTIVE</option>
+	                    <option value="ACTIVE">ACTIVE</option>
+	                  </select>
+	                </div>
+		                <div className="flex min-h-12 items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+		                  <div className="min-w-0">
+		                    <Label htmlFor="project-task-stage-ends-task" className="cursor-pointer">End Task</Label>
+		                    <p className="mt-1 text-xs text-muted-foreground">When this stage is performed, it will end the current task.</p>
+			                  </div>
+			                  <Switch id="project-task-stage-ends-task" checked={stageEndsTask} onCheckedChange={setStageEndsTask} aria-label="End Task" />
+			                </div>
+			                <div className="grid gap-2">
+                  <Label htmlFor="project-task-stage-color">Stage Color Hex</Label>
+                  <Button id="project-task-stage-color" type="button" variant="outline" className="min-h-10 justify-start gap-2 px-3 font-mono text-xs" onClick={openStageColorPicker}>
+                    <span className="size-4 rounded-sm ring-1 ring-border" style={taskSwatchStyle(stageColor)} aria-hidden="true" />
+                    {stageColor}
+                    <Palette className="ml-auto size-4 text-muted-foreground" aria-hidden="true" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+	            <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+	              <span className="text-xs text-muted-foreground">{editingStage ? 'Stage key is preserved on update.' : 'Stage key is generated on save.'}</span>
+	              <div className="flex items-center gap-2">
+	                <Button
+	                  type="button"
+                  onClick={() => setConfirmation({
+                    title: stageModalConfirmTitle,
+                    message: stageModalConfirmMessage,
+                    confirmLabel: stageModalConfirmLabel,
+                    onConfirm: () => stageFormRef.current?.requestSubmit(),
+                  })}
+                >
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {stageModalSubmitLabel}
+                </Button>
+              </div>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+	      </Dialog>
+
+      <Dialog open={responseManagerOpen} onOpenChange={(open) => {
+        setResponseManagerOpen(open)
+        if (!open) {
+          setResponseManagerStage(null)
+          setEditingResponse(null)
+          setResponseSaveState('idle')
+          setColorDraft('#00000000')
+        }
+      }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close response manager" title="Close response manager" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="size-4 text-muted-foreground" />
+              Response Manager
+            </DialogTitle>
+            <DialogDescription>{responseManagerStage ? taskText(responseManagerStage, 'stage_label', 'Task stage') : 'Task stage'}</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            <div className="grid gap-5">
+              <section className="grid gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <Label className="text-xs uppercase text-muted-foreground">Selectable Responses</Label>
+                  <Badge variant="outline">{responseRows.length}</Badge>
+                </div>
+                {responseRows.length === 0 ? (
+                  <p className="rounded-md bg-muted/20 px-3 py-3 text-xs text-muted-foreground">No responses yet.</p>
+                ) : (
+                  <div className="grid gap-2">
+	                    {responseRows.map((response) => {
+	                      const responseKey = taskStageResponseKey(response)
+	                      const responseLabel = taskText(response, 'response_label', 'Response')
+	                      const isEditing = editingResponse && responseKey === taskStageResponseKey(editingResponse)
+	                      return (
+	                        <article key={responseKey} className={cn('relative grid gap-1 overflow-hidden rounded-md bg-muted/20 px-3 py-2 ring-1 ring-border/60', isEditing && 'bg-background/80 ring-primary/50')}>
+	                          <div className="flex min-w-0 items-start justify-between gap-2">
+	                            <div className="min-w-0">
+	                              <div className="flex min-w-0 items-center gap-1.5">
+	                                <MessageCircle className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+	                                <h4 className="truncate text-sm font-semibold">{responseLabel}</h4>
+                              </div>
+                              <p className="mt-0.5 text-[10px] uppercase text-muted-foreground">{taskStatusLabel(taskText(response, 'response_status', 'ACTIVE'))}</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Tooltip>
+                                <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Edit response ${responseLabel}`} title={`Edit response ${responseLabel}`} onClick={() => editStageResponse(response)} />}>
+                                  <Pencil />
+                                </TooltipTrigger>
+                                <TooltipContent>Edit response</TooltipContent>
+                              </Tooltip>
+                              <form method="post" onSubmit={(event) => {
+                                event.preventDefault()
+                                void submitResponseManagerForm(event.currentTarget)
+                              }}>
+                                <input type="hidden" name="csrf" value={data.csrf} />
+                                <input type="hidden" name="action" value="delete_project_task_stage_response" />
+                                <input type="hidden" name="task_key" value={responseModalTaskKey} />
+                                <input type="hidden" name="task_stage_key" value={responseManagerStageKey} />
+                                <input type="hidden" name="task_stage_response_key" value={responseKey} />
+                                <Tooltip>
+	                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={`Delete response ${responseLabel}`} title={`Delete response ${responseLabel}`} onClick={(event) => {
+	                                    const form = event.currentTarget.closest('form')
+	                                    setConfirmation({
+                                      title: 'Confirm response delete',
+                                      message: `Delete response ${responseLabel}?`,
+                                      confirmLabel: 'Delete Response',
+	                                      onConfirm: () => form?.requestSubmit(),
+	                                    })
+	                                  }} />}>
+                                    <Trash2 />
+                                  </TooltipTrigger>
+                                  <TooltipContent>Delete response</TooltipContent>
+                                </Tooltip>
+                              </form>
+                            </div>
+                          </div>
+                          {taskText(response, 'response_description') !== '' ? <p className="line-clamp-2 text-xs text-muted-foreground">{taskText(response, 'response_description')}</p> : null}
+                        </article>
+                      )
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <form key={editingResponse ? taskStageResponseKey(editingResponse) : `create-response-${responseManagerStageKey}`} ref={responseFormRef} method="post" className="grid gap-4 border-t pt-5" onSubmit={(event) => {
+                event.preventDefault()
+                void submitResponseManagerForm(event.currentTarget)
+              }}>
+                <input type="hidden" name="csrf" value={data.csrf} />
+                <input type="hidden" name="action" value={responseModalAction} />
+                <input type="hidden" name="task_key" value={responseModalTaskKey} />
+                <input type="hidden" name="task_stage_key" value={responseManagerStageKey} />
+                {editingResponse ? <input type="hidden" name="task_stage_response_key" value={taskStageResponseKey(editingResponse)} /> : null}
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{responseModalTitle}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Mobile users will choose from active responses for this stage.</p>
+                  </div>
+                  {editingResponse ? (
+		                    <Button type="button" variant="outline" size="sm" onClick={() => {
+		                      setEditingResponse(null)
+		                      setResponseSaveState('idle')
+		                    }}>
+                      <Plus data-icon="inline-start" />New Response
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-stage-response-label">Response Label</Label>
+                    <Input id="project-task-stage-response-label" name="response_label" defaultValue={editingResponse ? taskText(editingResponse, 'response_label') : ''} maxLength={160} required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="project-task-stage-response-status">Status</Label>
+                    <select id="project-task-stage-response-status" name="response_status" defaultValue={editingResponse ? taskText(editingResponse, 'response_status', 'ACTIVE') : 'ACTIVE'} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20">
+                      <option value="ACTIVE">ACTIVE</option>
+                      <option value="INACTIVE">INACTIVE</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="project-task-stage-response-description">Description</Label>
+                  <Textarea id="project-task-stage-response-description" name="response_description" className="min-h-20" maxLength={2000} defaultValue={editingResponse ? taskText(editingResponse, 'response_description') : ''} />
+                </div>
+	              </form>
+            </div>
+          </div>
+	          <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+	            <span className={cn('text-xs text-muted-foreground', responseSaveState === 'saved' && 'text-emerald-500', responseSaveState === 'error' && 'text-destructive')}>
+	              {responseModalStatusText}
+	            </span>
+	            <div className="flex items-center gap-2">
+	              <Button
+	                type="button"
+	                disabled={responseSaveState === 'saving'}
+	                onClick={() => setConfirmation({
+	                  title: responseModalConfirmTitle,
+	                  message: responseModalConfirmMessage,
+                  confirmLabel: responseModalConfirmLabel,
+                  onConfirm: () => responseFormRef.current?.requestSubmit(),
+                })}
+              >
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {responseModalSubmitLabel}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={stageConnectionModalOpen} onOpenChange={(open) => {
+	        setStageConnectionModalOpen(open)
+		        if (!open) {
+		          setConnectingStage(null)
+		          setConnectedTaskKey('')
+		          setConnectedTaskTriggerPoint('CURRENT_STAGE_FINISHED')
+		        }
+	      }}>
+	        <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-md">
+	          <DialogHeader className="border-b bg-popover px-6 py-5 pr-14">
+	            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close stage connection form" title="Close stage connection form" />}>
+	              <X />
+	            </DialogClose>
+	            <DialogTitle className="flex items-center gap-2">
+	              <Link2 className="size-4 text-muted-foreground" />
+	              Connect Secondary Task
+	            </DialogTitle>
+	            <DialogDescription>{connectingStage ? taskText(connectingStage, 'stage_label', 'Task stage') : 'Task stage'}</DialogDescription>
+	          </DialogHeader>
+	          <form key={connectingStage ? taskStageKey(connectingStage) : 'connect-stage'} ref={stageConnectionFormRef} method="post">
+	            <div className="grid gap-4 px-6 py-5">
+	              <input type="hidden" name="csrf" value={data.csrf} />
+	              <input type="hidden" name="action" value="update_project_task_stage_connection" />
+	              <input type="hidden" name="task_key" value={selectedTaskKey} />
+	              {connectingStage ? <input type="hidden" name="task_stage_key" value={taskStageKey(connectingStage)} /> : null}
+		              <div className="grid gap-2">
+		                <Label htmlFor="project-task-stage-connected-task">Secondary Task</Label>
+	                <select
+	                  id="project-task-stage-connected-task"
+	                  name="connected_task_key"
+	                  value={connectedTaskKey}
+	                  onChange={(event) => setConnectedTaskKey(event.currentTarget.value)}
+	                  className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+	                >
+	                  <option value="">No connected task</option>
+	                  {connectableSecondaryTasks.map((task) => {
+	                    const taskKey = taskText(task, 'task_key')
+	                    const isCurrentTask = taskKey === selectedTaskKey
+	                    return <option key={taskKey} value={taskKey} disabled={isCurrentTask}>{taskText(task, 'task_title', 'Untitled task')} ({taskText(task, 'task_code', 'Task')}){isCurrentTask ? ' - current task' : ''}</option>
+	                  })}
+	                </select>
+		                <p className="text-xs text-muted-foreground">Only secondary tasks can be connected to a stage.</p>
+		              </div>
+		              <div className="grid gap-2">
+		                <Label htmlFor="project-task-stage-trigger-point">Trigger Point</Label>
+		                <select
+		                  id="project-task-stage-trigger-point"
+		                  name="connected_task_trigger_point"
+		                  value={connectedTaskTriggerPoint}
+		                  onChange={(event) => setConnectedTaskTriggerPoint(event.currentTarget.value)}
+		                  disabled={connectedTaskKey === ''}
+		                  className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60"
+		                >
+		                  {stageConnectionTriggerOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+		                </select>
+		                <p className="text-xs text-muted-foreground">{connectedTaskTriggerPoint === 'PREVIOUS_STAGE_FINISHED' ? 'The secondary task starts when the stage before this one is finished.' : 'The secondary task starts when this stage is finished.'}</p>
+		              </div>
+		              {connectableSecondaryTasks.length === 0 ? <p className="rounded-md bg-muted/20 px-3 py-2 text-xs text-muted-foreground">No secondary tasks are available.</p> : null}
+	            </div>
+		            <DialogFooter className="m-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+		              <span className="text-xs text-muted-foreground">{connectedTaskKey === '' ? 'Connection will be cleared.' : 'Connection will be saved to this stage.'}</span>
+		              <div className="flex items-center gap-2">
+		                <Button
+		                  type="button"
+	                  onClick={() => setConfirmation({
+	                    title: 'Confirm stage connection',
+	                    message: connectedTaskKey === '' ? 'Clear this stage connection?' : 'Connect this stage to the selected secondary task?',
+	                    confirmLabel: 'Save Connection',
+	                    onConfirm: () => stageConnectionFormRef.current?.requestSubmit(),
+	                  })}
+	                >
+	                  <Save className="h-4 w-4" aria-hidden="true" />
+	                  Save Connection
+	                </Button>
+	              </div>
+	            </DialogFooter>
+	          </form>
+	        </DialogContent>
+	      </Dialog>
+
+	      <Dialog open={colorPickerOpen} onOpenChange={setColorPickerOpen}>
+        <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-sm">
+          <DialogHeader className="border-b bg-popover px-5 py-4 pr-12">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-3 top-3 text-muted-foreground hover:text-foreground" aria-label="Close color picker" title="Close color picker" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Palette className="size-4 text-muted-foreground" />
+              Hex Color
+            </DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 px-5 py-5">
+            <div className="flex items-center gap-3">
+              <input
+                type="color"
+                value={taskColorInputValue(colorDraft)}
+                onChange={(event) => setColorDraft(taskColorValue(event.target.value))}
+                className="h-12 w-14 cursor-pointer rounded-md border border-input bg-background p-1"
+                aria-label="Choose task color"
+              />
+              <Input
+                value={colorDraft}
+                onChange={(event) => setColorDraft(event.target.value.toUpperCase())}
+                maxLength={9}
+                className="font-mono"
+                aria-label="Task hex color"
+              />
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {colorOptions.map((color) => (
+                <Button key={color} type="button" variant="outline" size="icon" className="rounded-md" style={taskSwatchStyle(color)} aria-label={`Use ${color}`} title={color} onClick={() => setColorDraft(color)} />
+              ))}
+            </div>
+	          </div>
+	          <DialogFooter className="m-0 border-t bg-popover px-5 py-4">
+		            <Button type="button" onClick={() => {
+		              const normalizedColor = taskColorValue(colorDraft)
+		              if (colorPickerTarget === 'stage') {
+		                setStageColor(normalizedColor)
+		              } else {
+		                setTaskColor(normalizedColor)
+		              }
+              setColorDraft(normalizedColor)
+              setColorPickerOpen(false)
+            }}>
+              Apply Color
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
@@ -3589,12 +10432,12 @@ function HealthStatusBadge({ status }: { status: string }) {
   return (
     <Badge className={cn(
       normalized.includes('ok') || normalized.includes('reachable') || normalized.includes('writable')
-        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
         : normalized.includes('error') || normalized.includes('attention') || normalized.includes('failed')
-          ? 'border-red-200 bg-red-50 text-red-700'
+          ? 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
         : normalized.includes('upgrade') || normalized.includes('manual') || normalized.includes('warning')
-          ? 'border-amber-200 bg-amber-50 text-amber-700'
-          : 'border-slate-200 bg-slate-50 text-slate-700'
+          ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+          : 'border-border bg-muted/30 text-muted-foreground'
     )}>
       {status}
     </Badge>
@@ -3602,9 +10445,7 @@ function HealthStatusBadge({ status }: { status: string }) {
 }
 
 function RuntimeHealthView() {
-  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
   const [copiedPrompt, setCopiedPrompt] = React.useState('')
-  const applyFormRef = React.useRef<HTMLFormElement>(null)
   const health = data.runtimeHealth || {}
   const versions = Array.isArray(health.versions) ? health.versions : []
   const phpSettings = Array.isArray(health.phpSettings) ? health.phpSettings : []
@@ -3615,36 +10456,38 @@ function RuntimeHealthView() {
   const requiredFolders = Array.isArray(health.requiredFolders) ? health.requiredFolders : []
   const runtimeAlerts = Array.isArray(health.runtimeAlerts) ? health.runtimeAlerts : []
   const errorLogs = Array.isArray(health.errorLogs) ? health.errorLogs : []
+  const systemServices = Array.isArray(health.systemServices) ? health.systemServices : []
   const attachmentStorage = typeof health.attachmentStorage === 'object' && health.attachmentStorage !== null ? health.attachmentStorage : {}
   const attachmentIssues = Array.isArray(attachmentStorage.issues) ? attachmentStorage.issues : []
   const recommendations = Array.isArray(health.recommendations) ? health.recommendations : []
-  const writableConfigCount = configFiles.filter((file: Record<string, unknown>) => Boolean(file.writable)).length
-  const buildRuntimePrompt = (alerts: Array<Record<string, string>>) => [
-    'Fix only the BuilderX Administrator Runtime Health notifications listed below.',
-    'Do not implement unrelated targets or broad refactors.',
-    'Inspect the affected PHP, Apache, storage, note attachment, and permission paths before editing.',
-    'If the issue is configuration-only, document the required administrator action instead of forcing unsafe server changes.',
-    '',
-    'Runtime Notifications:',
-    ...alerts.map((alert, index) => `${index + 1}. [${String(alert.level || 'warning').toUpperCase()}] ${String(alert.message || '')}`),
-    '',
-    'Validation commands:',
-    '- php -l administrator/index.php',
-    '- npm run build --prefix frontend',
-    '- php -l phases/index.php',
-    '- curl -I http://localhost/builderX/administrator/?tab=health',
-    '- curl -I http://localhost/builderX/phases/note-attachment.php?attachment_key=<active_attachment_key>',
-    '',
-    'Completion rule: update the related Review Note with concise DONE evidence or clear PENDING blocker wording. Put command results only in Validation Evidence.',
-  ].join('\n')
-  const copyPrompt = async (key: string, prompt: string) => {
+  const buildRuntimeFixSteps = (alert: Record<string, any>) => {
+    const fixSteps = Array.isArray(alert.fixSteps) ? alert.fixSteps.map((step) => String(step || '').trim()).filter(Boolean) : []
+    if (fixSteps.length > 0) {
+      return fixSteps.join('\n')
+    }
+
+    return [
+      '# Runtime Health fix steps',
+      `# Notification: ${String(alert.message || '')}`,
+      '1. Open Runtime Health and confirm the notification is still present.',
+      '2. Inspect the named file, folder, service, or log from the notification.',
+      '3. Apply the smallest permission, config, or service correction needed.',
+      '4. Reload Runtime Health and confirm the status is OK or no longer listed.',
+    ].join('\n')
+  }
+  const runtimeFixStepList = (alert: Record<string, any>) => {
+    const fixSteps = Array.isArray(alert.fixSteps) ? alert.fixSteps.map((step) => String(step || '').trim()).filter(Boolean) : []
+
+    return fixSteps.length > 0 ? fixSteps : [buildRuntimeFixSteps(alert)]
+  }
+  const copyFixSteps = async (key: string, fixSteps: string) => {
     try {
-      await navigator.clipboard.writeText(prompt)
+      await navigator.clipboard.writeText(fixSteps)
       setCopiedPrompt(key)
       window.setTimeout(() => setCopiedPrompt(''), 1600)
     } catch {
       const textarea = document.createElement('textarea')
-      textarea.value = prompt
+      textarea.value = fixSteps
       textarea.style.position = 'fixed'
       textarea.style.left = '-9999px'
       document.body.appendChild(textarea)
@@ -3656,79 +10499,78 @@ function RuntimeHealthView() {
       window.setTimeout(() => setCopiedPrompt(''), 1600)
     }
   }
+  const healthSummaryItems = [
+    { label: 'Generated', value: String(health.generatedAt || 'Unknown'), detail: '' },
+    { label: 'Internet', value: String(health.network?.internet || 'Unknown'), detail: String(health.network?.latency || '') },
+    { label: 'Memory', value: `${String(health.hardware?.memory?.available || 'Unknown')} free`, detail: `${String(health.hardware?.memory?.total || 'Unknown')} total · 75% safe ${String(health.hardware?.memory?.safe75 || 'Unknown')}` },
+    { label: 'CPU', value: `${String(health.hardware?.cpu?.cores || 'Unknown')} cores`, detail: `Load ${String(health.hardware?.cpu?.load || 'Unknown')}` },
+  ]
 
   return (
-    <>
-      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
-      <form ref={applyFormRef} method="post">
-        <input type="hidden" name="csrf" value={data.csrf} />
-        <input type="hidden" name="action" value="apply_runtime_project_config" />
-      </form>
-
-      <div className="grid gap-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <Badge>Administrator Runtime Health Tools</Badge>
-            <h2 className="mt-2 text-2xl font-bold tracking-normal">Runtime Health</h2>
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+      <section className="shrink-0 rounded-xl border bg-card px-4 py-4 shadow-sm" aria-labelledby="runtime-health-title">
+        <div className="grid gap-4 xl:grid-cols-[minmax(18rem,1fr)_minmax(0,3fr)] xl:items-center">
+          <div className="min-w-0">
+            <h2 id="runtime-health-title" className="text-2xl font-bold tracking-normal">Runtime Health</h2>
             <p className="mt-1 text-sm text-muted-foreground">PHP, MySQL, hardware, network, storage, temperature, and runtime configuration checks.</p>
           </div>
-          <Button
-            type="button"
-            disabled={writableConfigCount === 0}
-            onClick={() => setConfirmation({
-              title: 'Apply project runtime config',
-              message: 'Update writable BuilderX project config files to 1 GB upload/post, 1 GB memory, and 300-second PHP timeouts? Server-level PHP/MySQL config still requires manual administrator access.',
-              confirmLabel: 'Apply Config',
-              onConfirm: () => applyFormRef.current?.requestSubmit(),
-            })}
-          >
-            Apply Writable Config
-          </Button>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-4">
-          <Card><CardContent className="p-4"><p className="text-xs font-medium uppercase text-muted-foreground">Generated</p><strong className="mt-1 block text-lg">{String(health.generatedAt || 'Unknown')}</strong></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-xs font-medium uppercase text-muted-foreground">Internet</p><strong className="mt-1 block text-lg">{String(health.network?.internet || 'Unknown')}</strong><p className="text-xs text-muted-foreground">{String(health.network?.latency || '')}</p></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-xs font-medium uppercase text-muted-foreground">Memory</p><strong className="mt-1 block text-lg">{String(health.hardware?.memory?.available || 'Unknown')} free</strong><p className="text-xs text-muted-foreground">{String(health.hardware?.memory?.total || 'Unknown')} total · 75% safe {String(health.hardware?.memory?.safe75 || 'Unknown')}</p></CardContent></Card>
-          <Card><CardContent className="p-4"><p className="text-xs font-medium uppercase text-muted-foreground">CPU</p><strong className="mt-1 block text-lg">{String(health.hardware?.cpu?.cores || 'Unknown')} cores</strong><p className="text-xs text-muted-foreground">Load {String(health.hardware?.cpu?.load || 'Unknown')}</p></CardContent></Card>
-        </div>
-
-        {runtimeAlerts.length > 0 && (
-          <Card className="border-amber-200 bg-amber-50/50">
-            <CardHeader className="flex flex-row items-start justify-between gap-3">
-              <div>
-                <CardTitle>Runtime Notifications</CardTitle>
-                <CardDescription>Permission, attachment, and server log warnings that need administrator review.</CardDescription>
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {healthSummaryItems.map((item) => (
+              <div key={item.label} className="min-w-0 rounded-md bg-muted/25 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{item.label}</p>
+                <strong className="mt-1 block truncate text-base leading-tight">{item.value}</strong>
+                {item.detail ? <p className="mt-1 truncate text-xs text-muted-foreground">{item.detail}</p> : null}
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="shrink-0 bg-white"
-                onClick={() => copyPrompt('runtime-all', buildRuntimePrompt(runtimeAlerts))}
-              >
-                <Copy className="h-4 w-4" aria-hidden="true" />
-                {copiedPrompt === 'runtime-all' ? 'Copied' : 'Copy All Fix Prompt'}
-              </Button>
-            </CardHeader>
-            <CardContent className="grid gap-2">
-              {runtimeAlerts.slice(0, 8).map((alert: Record<string, string>, index: number) => (
-                <div key={`${alert.message}-${index}`} className="flex items-start gap-2 rounded-md border border-amber-200 bg-white px-3 py-2 text-sm">
-                  <HealthStatusBadge status={String(alert.level || 'warning')} />
-                  <span className="min-w-0 flex-1 break-words">{String(alert.message || '')}</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-8 shrink-0 bg-white px-2 text-xs"
-                    onClick={() => copyPrompt(`runtime-${index}`, buildRuntimePrompt([alert]))}
-                  >
-                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                    {copiedPrompt === `runtime-${index}` ? 'Copied' : 'Copy Fix'}
-                  </Button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 pr-1 [scrollbar-gutter:stable]">
+        <div className="grid gap-4">
+          {runtimeAlerts.length > 0 && (
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-3 border-b">
+                <div>
+                  <CardTitle>Runtime Notifications</CardTitle>
+                  <CardDescription>Copy the specific fix steps for each runtime warning.</CardDescription>
                 </div>
-              ))}
-            </CardContent>
-          </Card>
-        )}
+              </CardHeader>
+              <CardContent className="divide-y p-0">
+                {runtimeAlerts.slice(0, 8).map((alert: Record<string, any>, index: number) => {
+                  const fixSteps = runtimeFixStepList(alert)
+
+                  return (
+                    <div key={`${alert.message}-${index}`} className="flex flex-wrap items-start gap-3 px-4 py-3 text-sm">
+                      <HealthStatusBadge status={String(alert.level || 'warning')} />
+                      <span className="min-w-0 flex-1 break-words text-muted-foreground">{String(alert.message || '')}</span>
+                      <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                        {fixSteps.map((step, stepIndex) => {
+                          const copyKey = `runtime-${index}-${stepIndex}`
+                          const label = fixSteps.length === 1 ? 'Copy Fix' : `Copy ${stepIndex + 1}`
+
+                          return (
+                            <Button
+                              key={copyKey}
+                              type="button"
+                              variant="ghost"
+                              className="h-8 px-2 text-xs"
+                              title={step}
+                              aria-label={`${label}: ${step}`}
+                              onClick={() => copyFixSteps(copyKey, step)}
+                            >
+                              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                              {copiedPrompt === copyKey ? 'Copied' : label}
+                            </Button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </CardContent>
+            </Card>
+          )}
 
         <div className="grid gap-4 xl:grid-cols-2">
           <Card>
@@ -3788,6 +10630,39 @@ function RuntimeHealthView() {
               <FoundationTable headers={['Variable', 'Value']}>
                 {mysqlSettings.map((item: Record<string, string>) => (
                   <TableRow key={item.name}><TableCell className="font-medium">{item.name}</TableCell><TableCell className="font-mono text-xs">{item.value}</TableCell></TableRow>
+                ))}
+              </FoundationTable>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>System Services</CardTitle><CardDescription>Checks required host services used by RBMSv4 background workers.</CardDescription></CardHeader>
+            <CardContent>
+              <FoundationTable headers={['Service', 'Active', 'Enabled', 'Status']}>
+                {systemServices.length === 0 ? (
+                  <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">No system service checks are configured.</TableCell></TableRow>
+                ) : systemServices.map((service: Record<string, string | boolean>) => (
+                  <TableRow key={String(service.service)}>
+                    <TableCell>
+                      <div className="font-medium">{String(service.label || service.service)}</div>
+                      <div className="max-w-80 truncate font-mono text-xs text-muted-foreground">{String(service.service || '')}</div>
+                      <div className="mt-1 max-w-80 truncate font-mono text-[11px] text-muted-foreground">{String(service.unitFile || '')}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-mono text-xs">{String(service.activeState || 'unknown')}</div>
+                      <div className="text-xs text-muted-foreground">{String(service.subState || '')}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-mono text-xs">{String(service.enabledState || 'unknown')}</div>
+                      <div className="text-xs text-muted-foreground">loaded: {String(service.loadState || 'unknown')}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="grid gap-1">
+                        <HealthStatusBadge status={String(service.status || 'Unknown')} />
+                        <span className="max-w-72 text-xs leading-5 text-muted-foreground">{String(service.detail || '')}</span>
+                      </div>
+                    </TableCell>
+                  </TableRow>
                 ))}
               </FoundationTable>
             </CardContent>
@@ -3866,8 +10741,9 @@ function RuntimeHealthView() {
             </FoundationTable>
           </CardContent>
         </Card>
+        </div>
       </div>
-    </>
+    </div>
   )
 }
 
@@ -3999,6 +10875,22 @@ function portalHref(path = ''): string {
   return `${basePath.replace(/\/?$/, '/')}${path.replace(/^\/+/, '')}`
 }
 
+function portalViewHref(view: PortalRouteKey): string {
+  return portalHref(`?portal_view=${encodeURIComponent(view)}`)
+}
+
+function readPortalView(): PortalRouteKey {
+  const payloadView = portalData?.portalView
+  if (payloadView === 'bed-management') return 'bed-management'
+
+  if (typeof window !== 'undefined') {
+    const requestedView = new URLSearchParams(window.location.search).get('portal_view')
+    if (requestedView === 'bed-management') return 'bed-management'
+  }
+
+  return 'dashboard'
+}
+
 function AiRephraseCard() {
   const rephraseStorageKey = `builderx:ai-rephrase:${phaseField(portalData?.currentUser, 'user_key', 'guest')}`
   const [text, setText] = React.useState('')
@@ -4098,18 +10990,18 @@ function AiRephraseCard() {
 
   return (
     <Card className="border-primary/30 bg-primary/5">
-      <CardHeader className="pb-3">
+      <CardHeader className="border-b pb-3">
         <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="size-4" />AI Rephrase Assistant</CardTitle>
         <CardDescription>Correct spelling and grammar through a tracked Coordinator task. The page updates this result only.</CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3">
+      <CardContent className="grid gap-3 pt-4">
         <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="Type a sentence to rephrase…" maxLength={50000} disabled={busy} aria-label="Sentence to rephrase" />
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" onClick={() => void submit()} disabled={busy || !text.trim()}>{busy ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {busy ? 'Processing…' : 'Rephrase sentence'}</Button>
           <Badge variant="outline">{status === 'idle' ? 'Ready' : status}</Badge>
         </div>
         <p aria-live="polite" className="min-h-5 text-sm text-muted-foreground">{message}</p>
-        {rewrittenText ? <div className="rounded-md border bg-background p-3"><p className="text-xs font-medium text-muted-foreground">Corrected result</p><p className="mt-1 whitespace-pre-wrap text-sm">{rewrittenText}</p></div> : null}
+        {rewrittenText ? <div className="rounded-md bg-muted/20 p-3"><p className="text-xs font-medium text-muted-foreground">Corrected result</p><p className="mt-1 whitespace-pre-wrap text-sm">{rewrittenText}</p></div> : null}
       </CardContent>
     </Card>
   )
@@ -4177,12 +11069,12 @@ function CoordinatorManagementCard() {
 
   return (
     <Card>
-      <CardHeader className="pb-3"><CardTitle className="flex items-center gap-2 text-base"><Workflow className="size-4" />Coordinator &amp; Specialist Directory</CardTitle><CardDescription>Review specialists and submit approved UI/UX or project rules to AI-Memory and Obsidian.</CardDescription></CardHeader>
-      <CardContent className="grid gap-5">
-        <div className="grid gap-2"><p className="text-sm font-medium">Registered specialists</p>{specialists.length === 0 ? <p className="text-sm text-muted-foreground">No specialists registered yet.</p> : specialists.map((specialist) => <div key={String(specialist.specialist_key)} className="flex flex-wrap items-center gap-2 rounded-md border p-3"><div className="min-w-0 flex-1"><p className="font-medium">{String(specialist.name || specialist.specialist_key)}</p><p className="text-xs text-muted-foreground">{String(specialist.status)} · {Array.isArray(specialist.stages) ? specialist.stages.join(', ') : ''} · {Array.isArray(specialist.skills) ? specialist.skills.join(', ') : 'no skills'}</p></div>{specialist.status === 'pending_approval' ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void approve('approve_specialist', String(specialist.specialist_key), 'specialist_key')}>Approve</Button> : null}</div>)}</div>
-        <form className="grid gap-3 rounded-md border bg-muted/10 p-3" onSubmit={(event) => { const form = event.currentTarget; form.querySelector<HTMLInputElement>('[name="action"]')!.value = 'propose_specialist'; void submit(event) }}><input type="hidden" name="action" value="propose_specialist" /><p className="text-sm font-medium">Register an on-demand specialist</p><div className="grid gap-3 sm:grid-cols-2"><Input name="specialist_key" placeholder="specialist_key" required /><Input name="specialist_name" placeholder="Specialist name" required /></div><Input name="specialist_purpose" placeholder="Purpose" required /><Input name="specialist_stages" defaultValue="Validate" placeholder="Stages, comma separated" required /><Input name="specialist_skills" placeholder="Skills, comma separated" required /><div className="grid gap-3 sm:grid-cols-2"><Input name="specialist_tools" defaultValue="read_files" placeholder="Allowed tools" required /><select name="specialist_write_scope" className="h-10 rounded-md border bg-background px-3 text-sm"><option value="none">No writes</option><option value="communication_only">Communication only</option><option value="phase_manager_approval">Phase Manager approval</option></select></div><label className="flex items-center gap-2 text-xs"><input type="checkbox" name="specialist_temporary" /> Temporary specialist</label><Button type="submit" disabled={busy}>Submit specialist proposal</Button></form>
-        <form className="grid gap-3 rounded-md border bg-muted/10 p-3" onSubmit={(event) => { const form = event.currentTarget; form.querySelector<HTMLInputElement>('[name="action"]')!.value = 'propose_memory'; void submit(event) }}><input type="hidden" name="action" value="propose_memory" /><p className="text-sm font-medium">Coordinator Memory Chat</p><p className="text-xs text-muted-foreground">Example: “Standard buttons must be square across the project.” This creates a pending rule for approval.</p><Input name="memory_title" placeholder="Memory title" required /><Input name="memory_tags" defaultValue="brand,ui-ux" placeholder="Tags, comma separated" required /><Textarea name="memory_content" placeholder="Coordinator instruction or approved rule…" required /><Button type="submit" disabled={busy}>Save memory proposal</Button></form>
-        <div className="grid gap-2"><p className="text-sm font-medium">Recent AI-Memory</p>{memories.slice(0, 6).map((memory) => <div key={String(memory.memory_id)} className="flex flex-wrap items-center gap-2 rounded-md border p-3"><div className="min-w-0 flex-1"><p className="font-medium">{String(memory.title)}</p><p className="text-xs text-muted-foreground">{String(memory.status)} · {String(memory.memory_type)} · {Array.isArray(memory.tags) ? memory.tags.join(', ') : ''}</p></div>{memory.status === 'pending_approval' ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void approve('approve_memory', String(memory.memory_id), 'memory_id')}>Approve</Button> : null}</div>)}</div>
+      <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><Workflow className="size-4" />Coordinator &amp; Specialist Directory</CardTitle><CardDescription>Review specialists and submit approved UI/UX or project rules to AI-Memory and Obsidian.</CardDescription></CardHeader>
+      <CardContent className="grid gap-5 pt-4">
+        <div className="grid gap-2"><p className="text-sm font-medium">Registered specialists</p>{specialists.length === 0 ? <p className="text-sm text-muted-foreground">No specialists registered yet.</p> : specialists.map((specialist) => <div key={String(specialist.specialist_key)} className="flex flex-wrap items-center gap-2 rounded-md bg-muted/20 p-3"><div className="min-w-0 flex-1"><p className="font-medium">{String(specialist.name || specialist.specialist_key)}</p><p className="text-xs text-muted-foreground">{String(specialist.status)} · {Array.isArray(specialist.stages) ? specialist.stages.join(', ') : ''} · {Array.isArray(specialist.skills) ? specialist.skills.join(', ') : 'no skills'}</p></div>{specialist.status === 'pending_approval' ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void approve('approve_specialist', String(specialist.specialist_key), 'specialist_key')}>Approve</Button> : null}</div>)}</div>
+        <form className="grid gap-3 rounded-md bg-muted/20 p-3" onSubmit={(event) => { const form = event.currentTarget; form.querySelector<HTMLInputElement>('[name="action"]')!.value = 'propose_specialist'; void submit(event) }}><input type="hidden" name="action" value="propose_specialist" /><p className="text-sm font-medium">Register an on-demand specialist</p><div className="grid gap-3 sm:grid-cols-2"><Input name="specialist_key" placeholder="specialist_key" required /><Input name="specialist_name" placeholder="Specialist name" required /></div><Input name="specialist_purpose" placeholder="Purpose" required /><Input name="specialist_stages" defaultValue="Validate" placeholder="Stages, comma separated" required /><Input name="specialist_skills" placeholder="Skills, comma separated" required /><div className="grid gap-3 sm:grid-cols-2"><Input name="specialist_tools" defaultValue="read_files" placeholder="Allowed tools" required /><select name="specialist_write_scope" className="h-10 rounded-md border bg-background px-3 text-sm"><option value="none">No writes</option><option value="communication_only">Communication only</option><option value="phase_manager_approval">Phase Manager approval</option></select></div><label className="flex items-center gap-2 text-xs"><input type="checkbox" name="specialist_temporary" /> Temporary specialist</label><Button type="submit" disabled={busy}>Submit specialist proposal</Button></form>
+        <form className="grid gap-3 rounded-md bg-muted/20 p-3" onSubmit={(event) => { const form = event.currentTarget; form.querySelector<HTMLInputElement>('[name="action"]')!.value = 'propose_memory'; void submit(event) }}><input type="hidden" name="action" value="propose_memory" /><p className="text-sm font-medium">Coordinator Memory Chat</p><p className="text-xs text-muted-foreground">Example: “Standard buttons must be square across the project.” This creates a pending rule for approval.</p><Input name="memory_title" placeholder="Memory title" required /><Input name="memory_tags" defaultValue="brand,ui-ux" placeholder="Tags, comma separated" required /><Textarea name="memory_content" placeholder="Coordinator instruction or approved rule…" required /><Button type="submit" disabled={busy}>Save memory proposal</Button></form>
+        <div className="grid gap-2"><p className="text-sm font-medium">Recent AI-Memory</p>{memories.slice(0, 6).map((memory) => <div key={String(memory.memory_id)} className="flex flex-wrap items-center gap-2 rounded-md bg-muted/20 p-3"><div className="min-w-0 flex-1"><p className="font-medium">{String(memory.title)}</p><p className="text-xs text-muted-foreground">{String(memory.status)} · {String(memory.memory_type)} · {Array.isArray(memory.tags) ? memory.tags.join(', ') : ''}</p></div>{memory.status === 'pending_approval' ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void approve('approve_memory', String(memory.memory_id), 'memory_id')}>Approve</Button> : null}</div>)}</div>
         <p aria-live="polite" className="min-h-5 text-xs text-muted-foreground">{message}</p>
       </CardContent>
     </Card>
@@ -4207,55 +11099,115 @@ function writeStoredPortalTheme(theme: AdminThemeMode): void {
   window.localStorage.setItem(key, theme)
 }
 
-function PortalLanding({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
-  const softwareName = portalData?.softwareName || 'BuilderX'
+type PortalViewKey = PortalRouteKey | 'signin'
+const portalSidebarMobileCookieName = 'portal_sidebar_mobile_state'
+
+const portalSidebarSections = [
+  { key: 'dashboard', label: 'Dashboard', href: '?portal_view=dashboard', icon: LayoutDashboard },
+  { key: 'bed-management', label: 'Bed Management', href: '?portal_view=bed-management', icon: BedDouble },
+]
+
+function PortalFlashMessage() {
+  return <SubmissionFeedback flash={portalData?.flash || null} />
+}
+
+function PortalSidebarMobilePersistence() {
+  const { isMobile, openMobile, setOpenMobile } = useSidebar()
+  const [mobileRestored, setMobileRestored] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!isMobile) {
+      setMobileRestored(false)
+      return
+    }
+
+    setOpenMobile(readBooleanCookie(portalSidebarMobileCookieName) ?? false)
+    setMobileRestored(true)
+  }, [isMobile, setOpenMobile])
+
+  React.useEffect(() => {
+    if (!isMobile || !mobileRestored) return
+
+    writeBooleanCookie(portalSidebarMobileCookieName, openMobile)
+  }, [isMobile, mobileRestored, openMobile])
+
+  return null
+}
+
+function PortalShell({
+  children,
+  activeView,
+  title,
+  breadcrumbItems,
+  buildTarget,
+  footerLabel,
+  theme,
+  onThemeToggle,
+}: {
+  children: React.ReactNode
+  activeView: PortalViewKey
+  title: string
+  breadcrumbItems: string[]
+  buildTarget: string
+  footerLabel: string
+  theme: AdminThemeMode
+  onThemeToggle: () => void
+}) {
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
-  const launcherItems = [
-    {
-      title: 'Administrator Dashboard',
-      description: 'Open users, roles, projects, settings, audit logs, runtime health, and template tools.',
-      href: portalHref('administrator/?tab=dashboard'),
-      icon: LayoutDashboard,
-      primary: true,
-    },
-    {
-      title: 'UI - UX Flow',
-      description: 'Plan AI-readable process flows, database symbols, form builders, and AI handoff prompts.',
-      href: portalHref('phases/?view=flow&ui_ux_flow=admin&ui_ux_section=header'),
-      icon: Sparkles,
-      primary: false,
-    },
-    {
-      title: 'Phase Manager',
-      description: 'Review project phases, build targets, checklist items, notes, and implementation prompts.',
-      href: portalHref('phases/?phase='),
-      icon: FolderKanban,
-      primary: false,
-    },
-    {
-      title: 'Installer',
-      description: 'Create another BuilderX project from the updated clean template.',
-      href: '/_installer/',
-      icon: Download,
-      primary: false,
-    },
-  ]
+  const portalSignedIn = Boolean(portalData?.currentUser?.user_key)
+  const [messengerOpen, setMessengerOpen] = usePersistentMessengerOpen(portalSignedIn)
+  const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen, portalSignedIn)
+  const defaultSidebarOpen = React.useMemo(
+    () => readBooleanCookie(sidebarCookieName) ?? true,
+    [],
+  )
+  const openMessenger = React.useCallback(() => {
+    if (!portalSignedIn) {
+      setMessengerOpen(false)
+      window.location.assign(portalHref('#portal-login'))
+      return
+    }
+    clearUnread()
+    setMessengerOpen(true)
+  }, [clearUnread, portalSignedIn, setMessengerOpen])
+  const displayTitle = messengerOpen ? 'Messenger' : title
+  const displayBreadcrumbItems = messengerOpen ? [...breadcrumbItems.slice(0, 1), 'Messenger'] : breadcrumbItems
 
   return (
     <TooltipProvider>
-      <main className="min-h-screen bg-background p-4 text-foreground sm:p-6">
-        <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-6xl flex-col">
-          <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b">
+      <SidebarProvider
+        defaultOpen={defaultSidebarOpen}
+        className="h-svh min-h-0 w-full overflow-hidden"
+        style={{
+          '--sidebar-width': '256px',
+        } as React.CSSProperties}
+      >
+        <PortalSidebarMobilePersistence />
+        <PortalSidebar activeView={activeView} theme={theme} onThemeToggle={onThemeToggle} onNavigate={() => setMessengerOpen(false)} />
+        <SidebarInset className="h-svh max-h-svh min-h-0 overflow-hidden">
+          <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                <GalleryVerticalEnd />
-              </div>
+              <SidebarTrigger className="-ml-1" />
+              <Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" />
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{softwareName}</p>
-                <p className="truncate text-xs text-muted-foreground">User Portal</p>
+                <h1 className="truncate text-sm font-semibold tracking-normal">{displayTitle}</h1>
+                <ShadcnBreadcrumb>
+                  <BreadcrumbList>
+                    {displayBreadcrumbItems.map((item, index) => (
+                      <React.Fragment key={`${item}-${index}`}>
+                        {index > 0 && <BreadcrumbSeparator />}
+                        <BreadcrumbItem>
+                          <BreadcrumbPage>{item}</BreadcrumbPage>
+                        </BreadcrumbItem>
+                      </React.Fragment>
+                    ))}
+                  </BreadcrumbList>
+                </ShadcnBreadcrumb>
               </div>
             </div>
-            <div className="flex items-center justify-end gap-2">
+            <nav className="ml-auto flex min-w-0 items-center justify-end gap-2" aria-label="Portal controls">
+              <MessengerHeaderButton onOpen={openMessenger} unreadCount={unreadCount} />
+              <HeaderControlSeparator />
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -4266,158 +11218,279 @@ function PortalLanding({ theme, onThemeToggle }: { theme: AdminThemeMode; onThem
                 </TooltipTrigger>
                 <TooltipContent>{nextThemeLabel}</TooltipContent>
               </Tooltip>
-            </div>
+            </nav>
           </header>
 
-          <section className="grid flex-1 content-center gap-4 py-10">
-            <Card>
-              <CardHeader>
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0">
-                    <Badge variant="secondary" className="w-fit">Project Dashboard</Badge>
-                    <CardTitle className="mt-3 text-2xl tracking-normal">{softwareName}</CardTitle>
-                    <CardDescription className="mt-2 max-w-3xl">
-                      Open the main BuilderX work areas from one place. UI - UX Flow is the AI memory surface for planning, prompts, and AI implementation handoff.
-                    </CardDescription>
+          <main className={cn('flex min-h-0 w-full flex-1 flex-col gap-4 p-4', messengerOpen ? 'overflow-hidden' : 'overflow-y-auto pb-16')}>
+            {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><PortalFlashMessage />{children}</>}
+          </main>
+
+          <footer className="sticky bottom-0 z-20 flex min-h-12 items-center justify-between gap-3 border-t bg-background px-4 text-xs text-muted-foreground">
+            <span>{footerLabel}</span>
+            <span>Build Target {buildTarget}</span>
+          </footer>
+        </SidebarInset>
+      </SidebarProvider>
+    </TooltipProvider>
+  )
+}
+
+function PortalSidebar({
+  activeView,
+  theme,
+  onThemeToggle,
+  onNavigate,
+  ...props
+}: React.ComponentProps<typeof Sidebar> & {
+  activeView: PortalViewKey
+  theme: AdminThemeMode
+  onThemeToggle: () => void
+  onNavigate?: () => void
+}) {
+  return (
+    <Sidebar collapsible="icon" onClickCapture={(event) => {
+      if ((event.target as HTMLElement).closest('a')) onNavigate?.()
+    }} {...props}>
+      <SidebarHeader className="h-14 border-b border-sidebar-border/70 p-1">
+        <PortalTeamSwitcher />
+      </SidebarHeader>
+      <SidebarContent>
+        <PortalNavMain activeView={activeView} theme={theme} onThemeToggle={onThemeToggle} />
+      </SidebarContent>
+      <SidebarFooter>
+        <PortalNavUser />
+      </SidebarFooter>
+      <SidebarRail />
+    </Sidebar>
+  )
+}
+
+function PortalTeamSwitcher() {
+  const { isMobile } = useSidebar()
+  const softwareName = portalData?.softwareName || 'BuilderX'
+
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<SidebarMenuButton size="lg" className="data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground" />}>
+            <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+              <GalleryVerticalEnd />
+            </div>
+            <div className="grid flex-1 text-left text-sm leading-tight">
+              <span className="truncate font-medium">{softwareName}</span>
+              <span className="truncate text-xs">Portal</span>
+            </div>
+            <ChevronDown className="ml-auto" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-fit" align="start" side={isMobile ? 'bottom' : 'right'} sideOffset={4}>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-xs text-muted-foreground">Portal</DropdownMenuLabel>
+              <DropdownMenuItem render={<a href={portalViewHref('dashboard')} className="gap-2 p-2" />}>
+                <div className="flex size-6 items-center justify-center rounded-md border">
+                  <LayoutDashboard />
+                </div>
+                Dashboard
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+}
+
+function PortalNavMain({
+  activeView,
+  theme,
+  onThemeToggle,
+}: {
+  activeView: PortalViewKey
+  theme: AdminThemeMode
+  onThemeToggle: () => void
+}) {
+  const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Menu</SidebarGroupLabel>
+      <SidebarMenu>
+        {portalSidebarSections.map((item) => {
+          const Icon = item.icon
+          const href = item.href.startsWith('#') ? item.href : item.href.startsWith('/') ? item.href : portalHref(item.href)
+          const isActive = item.key === activeView
+
+          return (
+            <SidebarMenuItem key={item.key}>
+              <SidebarMenuButton tooltip={item.label} isActive={isActive} render={<a href={href} />}>
+                <Icon />
+                <span>{item.label}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )
+        })}
+        <SidebarMenuItem>
+          <div className="my-1 border-t border-sidebar-border/70" />
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <div className="grid gap-2 px-2 py-2">
+            <Button type="button" variant="outline" size="sm" className="w-full justify-start" aria-label={nextThemeLabel} onClick={onThemeToggle}>
+              {theme === 'dark' ? <Sun data-icon="inline-start" /> : <Moon data-icon="inline-start" />}
+              {nextThemeLabel}
+            </Button>
+          </div>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    </SidebarGroup>
+  )
+}
+
+function PortalNavUser() {
+  const { isMobile } = useSidebar()
+  const user = portalData?.currentUser
+  const name = phaseField(user, 'user_name', user ? 'Portal User' : 'Sign In')
+  const detail = phaseField(user, 'user_email', phaseField(user, 'user_login', user ? 'User Portal' : 'Portal access required'))
+  const initials = name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
+
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<SidebarMenuButton size="lg" className="aria-expanded:bg-muted" />}>
+            <Avatar>
+              <AvatarImage src="" alt={name} />
+              <AvatarFallback>{initials || 'UP'}</AvatarFallback>
+            </Avatar>
+            <div className="grid flex-1 text-left text-sm leading-tight">
+              <span className="truncate font-medium">{name}</span>
+              <span className="truncate text-xs">{detail}</span>
+            </div>
+            <ChevronDown className="ml-auto" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-fit" side={isMobile ? 'bottom' : 'right'} align="end" sideOffset={4}>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="p-0 font-normal">
+                <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                  <Avatar>
+                    <AvatarFallback>{initials || 'UP'}</AvatarFallback>
+                  </Avatar>
+                  <div className="grid flex-1 text-left text-sm leading-tight">
+                    <span className="truncate font-medium">{name}</span>
+                    <span className="truncate text-xs">{detail}</span>
                   </div>
-                  <Badge variant={portalData?.currentUser ? 'default' : 'outline'} className="w-fit">
-                    {portalData?.currentUser ? phaseField(portalData.currentUser, 'user_name', 'Signed In') : 'Guest'}
-                  </Badge>
                 </div>
-              </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-2">
-                {launcherItems.map((item) => {
-                  const Icon = item.icon
-
-                  return (
-                    <a
-                      key={item.title}
-                      className={cn(
-                        'grid gap-3 rounded-md border p-4 text-left transition-colors hover:bg-muted/50',
-                        item.primary ? 'border-primary/40 bg-primary/5' : 'bg-muted/10'
-                      )}
-                      href={item.href}
-                    >
-                      <span className="flex items-center gap-2 text-sm font-semibold">
-                        <Icon className="h-4 w-4" aria-hidden="true" />
-                        {item.title}
-                      </span>
-                      <span className="text-xs leading-5 text-muted-foreground">{item.description}</span>
-                    </a>
-                  )
-                })}
-              </CardContent>
-            </Card>
-            <div className="grid gap-3 md:grid-cols-3">
-              <Card>
-                <CardContent className="p-4">
-                  <p className="text-xs font-medium uppercase text-muted-foreground">Purpose</p>
-                  <strong className="mt-1 block text-sm">AI-ready project memory</strong>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="p-4">
-                  <p className="text-xs font-medium uppercase text-muted-foreground">Primary Tool</p>
-                  <strong className="mt-1 block text-sm">UI - UX Flow</strong>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="p-4">
-                  <p className="text-xs font-medium uppercase text-muted-foreground">Builder</p>
-                  <strong className="mt-1 block text-sm">Codex Chat handoff</strong>
-                </CardContent>
-              </Card>
-            </div>
-          </section>
-        </div>
-      </main>
-    </TooltipProvider>
-  )
-}
-
-function PortalStarterLanding({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
-  const softwareName = portalData?.softwareName || 'BuilderX'
-  const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
-
-  return (
-    <TooltipProvider>
-      <main className="min-h-screen bg-background p-4 text-foreground sm:p-6">
-        <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-4xl flex-col">
-          <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><GalleryVerticalEnd /></div>
-              <div className="min-w-0"><p className="truncate text-sm font-medium">{softwareName}</p><p className="truncate text-xs text-muted-foreground">BuilderX</p></div>
-            </div>
-            <div className="flex items-center gap-2">
-              {portalData?.currentUser ? <SharinganHeaderToggle /> : null}
-              <Tooltip>
-                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={onThemeToggle} />}>
-                  {theme === 'dark' ? <Sun /> : <Moon />}
-                </TooltipTrigger>
-                <TooltipContent>{nextThemeLabel}</TooltipContent>
-              </Tooltip>
-            </div>
-          </header>
-          <section className="grid flex-1 place-items-center py-10">
-            <Card className="w-full max-w-2xl text-center">
-              <CardHeader>
-                <Badge variant="secondary" className="mx-auto w-fit">Welcome</Badge>
-                <CardTitle className="mt-3 text-3xl tracking-normal">Welcome to {softwareName}</CardTitle>
-                <CardDescription className="mx-auto mt-2 max-w-xl">Your BuilderX project is ready. Sign in to the Administrator Portal to begin configuring your application.</CardDescription>
-              </CardHeader>
-              <CardContent><a className={buttonClassName({ size: 'lg' })} href={portalHref('administrator/')}>Open Administrator</a></CardContent>
-            </Card>
-          </section>
-        </div>
-      </main>
-    </TooltipProvider>
-  )
-}
-
-function PortalAuthLanding({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
-  const softwareName = portalData?.softwareName || 'BuilderX'
-  const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
-
-  return (
-    <TooltipProvider>
-      <main className="min-h-screen bg-background p-4 text-foreground sm:p-6">
-        <div className="mx-auto grid min-h-[calc(100vh-3rem)] w-full max-w-5xl place-items-center">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <Badge variant="secondary" className="w-fit">User Portal</Badge>
-                  <CardTitle className="mt-3 text-2xl tracking-normal">Sign in to {softwareName}</CardTitle>
-                  <CardDescription>Manage family members, vehicles, and education records from one owner-scoped workspace.</CardDescription>
-                </div>
-                <Tooltip>
-                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={onThemeToggle} />}>
-                    {theme === 'dark' ? <Sun /> : <Moon />}
-                  </TooltipTrigger>
-                  <TooltipContent>{nextThemeLabel}</TooltipContent>
-                </Tooltip>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {portalData?.flash ? <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{portalData.flash.message}</div> : null}
-              <form method="post" action={portalHref('')} className="grid gap-4">
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            {user ? (
+              <form method="post" action={portalHref('')}>
                 <input type="hidden" name="csrf" value={portalData?.csrf || ''} />
-                <input type="hidden" name="action" value="login_portal" />
-                <div className="grid gap-2">
-                  <Label htmlFor="portal-login">Username or email</Label>
-                  <Input id="portal-login" name="login" autoComplete="username" required />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="portal-password">Password</Label>
-                  <Input id="portal-password" name="password" type="password" autoComplete="current-password" required />
-                </div>
-                <Button type="submit"><LogIn data-icon="inline-start" />Sign In</Button>
+                <input type="hidden" name="action" value="logout_portal" />
+                <DropdownMenuItem render={<button type="submit" className="w-full" />}>
+                  Logout
+                </DropdownMenuItem>
               </form>
-            </CardContent>
-          </Card>
-        </div>
-      </main>
-    </TooltipProvider>
+            ) : (
+              <DropdownMenuItem render={<a href={portalHref()} />}>
+                Sign In
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+}
+
+function PortalDashboardView({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
+  const bedSummary = portalData?.bedMasterListSummary || {}
+  const bedGroupCounts: Array<Record<string, any>> = Array.isArray(bedSummary.groupCounts) ? bedSummary.groupCounts : []
+  const softwareName = portalData?.softwareName || 'BuilderX'
+  const dashboardMetrics = [
+    { label: 'Managed Rows', value: Number(bedSummary.managedRows || 0), icon: BedDouble },
+    { label: 'Active Rows', value: Number(bedSummary.activeRows || 0), icon: CheckCircle2 },
+    { label: 'Inactive Rows', value: Number(bedSummary.inactiveRows || 0), icon: Ban },
+    { label: 'Available', value: Number(bedSummary.availableRows || 0), icon: ClipboardList },
+    { label: 'Vacant', value: Number(bedSummary.vacantRows || 0), icon: Activity },
+    { label: 'Occupied', value: Number(bedSummary.occupiedRows || 0), icon: Users },
+    { label: 'Record Keys', value: Number(bedSummary.firebaseDocumentRows || 0), icon: Database },
+  ]
+
+  return (
+    <PortalShell
+      activeView="dashboard"
+      title="Dashboard"
+      breadcrumbItems={['Portal', 'Dashboard']}
+      buildTarget="PORTAL"
+      footerLabel={`${softwareName} Portal`}
+      theme={theme}
+      onThemeToggle={onThemeToggle}
+    >
+      <div className="flex w-full flex-col gap-5">
+        {!portalData?.currentUser ? <PortalSignInCard /> : null}
+        <section className="shrink-0 overflow-hidden rounded-lg border bg-card">
+          <div className="px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">Portal Dashboard</Badge>
+                <h2 className="text-xl font-semibold tracking-normal">Bed Analytics</h2>
+              </div>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
+                Managed bed analytics using the Administrator bed-management summary.
+              </p>
+            </div>
+          </div>
+          <div className="grid border-t sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+            {dashboardMetrics.map((metric) => {
+              const Icon = metric.icon
+              return (
+                <div key={metric.label} className="min-h-24 min-w-0 border-b border-r p-4 last:border-r-0 xl:border-b-0">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <Icon className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                    <span className="truncate text-xs font-medium text-muted-foreground">{metric.label}</span>
+                  </div>
+                  <div className="text-3xl font-bold leading-none tracking-normal">{metric.value}</div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+
+        <DashboardPanel title="Analytics Count Report" description="Canvas read-back from every bed field group.">
+          <div className="min-h-0 p-4 pb-16">
+            <BedAnalyticsCanvas groups={bedGroupCounts} />
+          </div>
+        </DashboardPanel>
+      </div>
+    </PortalShell>
+  )
+}
+
+function PortalSignInCard() {
+  const softwareName = portalData?.softwareName || 'BuilderX'
+
+  return (
+    <Card id="portal-login">
+      <CardHeader className="border-b pb-3">
+        <CardTitle className="flex items-center gap-2 text-base"><LogIn className="size-4" />Sign In</CardTitle>
+        <CardDescription>Sign in to {softwareName} to load assigned bed-management records.</CardDescription>
+      </CardHeader>
+      <CardContent className="pt-4">
+        <form method="post" action={portalHref('')} className="grid gap-4 md:max-w-md">
+          <input type="hidden" name="csrf" value={portalData?.csrf || ''} />
+          <input type="hidden" name="action" value="login_portal" />
+          <div className="grid gap-2">
+            <Label htmlFor="portal-login">Username or email</Label>
+            <Input id="portal-login" name="login" autoComplete="username" required />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="portal-password">Password</Label>
+            <Input id="portal-password" name="password" type="password" autoComplete="current-password" required />
+          </div>
+          <Button type="submit" className="w-fit"><LogIn data-icon="inline-start" />Sign In</Button>
+        </form>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -4425,142 +11498,502 @@ function portalText(value: any, fallback = ''): string {
   return value === null || value === undefined ? fallback : String(value)
 }
 
-function emptyPortalVehicle(): Record<string, string> {
-  return { plate_number: '', make: '', model: '', model_year: '', color: '', ownership_type: '', registration_status: '' }
+function portalBooleanFlag(value: any, fallback = false): boolean {
+  if (value === null || value === undefined || value === '') return fallback
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase())
 }
 
-function emptyPortalEducation(): Record<string, string> {
-  return { education_level: '', institution_name: '', program_name: '', date_started: '', date_completed: '', completion_status: '' }
+function portalCsvValues(value: any): string[] {
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
 }
 
-function FamilyMemberEditor({ member, onClose }: { member: Record<string, any> | null; onClose: () => void }) {
-  const [vehicles, setVehicles] = React.useState<Array<Record<string, string>>>(() => (Array.isArray(member?.vehicles) ? member.vehicles : []).map((item) => ({
-    plate_number: portalText(item.plate_number), make: portalText(item.make), model: portalText(item.model), model_year: portalText(item.model_year),
-    color: portalText(item.color), ownership_type: portalText(item.ownership_type), registration_status: portalText(item.registration_status),
-  })))
-  const [education, setEducation] = React.useState<Array<Record<string, string>>>(() => (Array.isArray(member?.education) ? member.education : []).map((item) => ({
-    education_level: portalText(item.education_level), institution_name: portalText(item.institution_name), program_name: portalText(item.program_name),
-    date_started: portalText(item.date_started), date_completed: portalText(item.date_completed), completion_status: portalText(item.completion_status),
-  })))
+function portalTaskColorHex(value: any): string {
+  const color = String(value || '').trim().toUpperCase()
+  if (!/^#[0-9A-F]{6}([0-9A-F]{2})?$/.test(color)) return ''
+  if (color === '#00000000' || (color.length === 9 && color.slice(7) === '00')) return ''
+  return color
+}
 
-  const updateVehicle = (index: number, key: string, value: string) => setVehicles((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item))
-  const updateEducation = (index: number, key: string, value: string) => setEducation((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item))
-  const inputClass = 'min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20'
+function portalHexToRgba(value: string, fallbackAlpha: number): string {
+  const color = portalTaskColorHex(value)
+  if (color === '') return `rgba(255,255,255,${fallbackAlpha})`
+  const red = parseInt(color.slice(1, 3), 16)
+  const green = parseInt(color.slice(3, 5), 16)
+  const blue = parseInt(color.slice(5, 7), 16)
+  const alpha = color.length === 9 ? Math.min(fallbackAlpha, parseInt(color.slice(7, 9), 16) / 255) : fallbackAlpha
+
+  return `rgba(${red},${green},${blue},${alpha})`
+}
+
+function portalBedTaskCardStyle(taskColorHex: string, statusMismatch: boolean): React.CSSProperties {
+  const color = portalTaskColorHex(taskColorHex)
+  if (color === '') return {}
+
+  if (statusMismatch) {
+    return {
+      outline: `1px solid ${portalHexToRgba(color, 0.76)}`,
+      outlineOffset: '3px',
+      boxShadow: [
+        '0 0 0 1px rgba(239,68,68,0.38)',
+        '0 0 18px 1px rgba(239,68,68,0.34)',
+        `0 0 0 4px ${portalHexToRgba(color, 0.18)}`,
+        `0 0 34px 8px ${portalHexToRgba(color, 0.32)}`,
+      ].join(', '),
+    }
+  }
+
+  return {
+    borderColor: portalHexToRgba(color, 0.62),
+    boxShadow: `0 0 24px ${portalHexToRgba(color, 0.36)}`,
+  }
+}
+
+function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
+  const [taskModalType, setTaskModalType] = React.useState<'PRIMARY' | 'SECONDARY' | null>(null)
+  const [selectedTaskForForm, setSelectedTaskForForm] = React.useState<Record<string, any> | null>(null)
+  const [taskFormValues, setTaskFormValues] = React.useState({
+    roomClass: '',
+    bedTreatmentKey: '',
+    bedSourceKey: '',
+  })
+  const bedKey = String(row.bed_key || '')
+  const bedLabel = String(row.bed_no || row.source_pk_psbeds || bedKey || 'Bed')
+  const location = [row.branch_name, row.building_name, row.floor_name, row.nurse_station_name].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
+  const room = [row.room_key, row.room_class].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
+  const currentRoomClass = String(row.room_class || '').trim()
+  const managedStatus = String(row.managed_status || 'ACTIVE')
+  const sourceStatus = String(row.source_bed_status || 'Unspecified')
+  const checkBedStatus = String(row.rbms_check_bed_status || '').trim()
+  const statusMismatch = portalBooleanFlag(row.bed_status_mismatch, false)
+  const existingTaskCount = Number(row.existing_task_count || 0)
+  const existingTaskColorHex = portalTaskColorHex(row.existing_task_color_hex)
+  const existingTaskTitle = String(row.existing_task_title || row.existing_task_key || '').trim()
+  const existingTaskKeys = new Set(portalCsvValues(row.existing_task_keys))
+  const hasExistingTaskRequest = existingTaskCount > 0
+  const hasExistingTaskColor = hasExistingTaskRequest && existingTaskColorHex !== ''
+  const cardTitle = [
+    statusMismatch ? `Bed Status Mismatch: Project Bed ${sourceStatus}; RBMS Check Bed Status ${checkBedStatus || 'Missing'}` : '',
+    hasExistingTaskRequest ? `Existing Task Request: ${existingTaskTitle || String(existingTaskCount)}` : '',
+  ].filter(Boolean).join(' | ')
+  const sourceStatusKey = sourceStatus.trim().toLowerCase()
+  const bedSearchHref = `${portalViewHref('bed-management')}&bed_lookup_search=${encodeURIComponent(bedKey || bedLabel)}`
+  const isOccupied = sourceStatusKey === 'occupied'
+  const isVacant = ['available', 'vacant'].includes(sourceStatusKey)
+  const pxLookupHref = `${portalViewHref('bed-management')}&bed_lookup_search=${encodeURIComponent(bedKey || bedLabel)}&bed_lookup_bed_status=Occupied`
+  const allowedBedTasks = (Array.isArray(portalData?.projectTasks) ? portalData.projectTasks : []).filter((task) => {
+    const taskType = String(task.task_type || '').trim().toUpperCase()
+    const taskStatus = String(task.task_status || '').trim().toUpperCase()
+    if (!['PRIMARY', 'SECONDARY'].includes(taskType) || taskStatus !== 'ACTIVE') return false
+    if (!portalBooleanFlag(task.task_can_run_manually, false)) return false
+    if (isOccupied) return portalBooleanFlag(task.task_can_run_if_bed_occupied, true)
+    if (isVacant) return portalBooleanFlag(task.task_can_run_if_bed_vacant, true)
+    return false
+  })
+  const primaryActionTasks = allowedBedTasks.filter((task) => String(task.task_type || '').trim().toUpperCase() === 'PRIMARY')
+  const secondaryActionTasks = allowedBedTasks.filter((task) => String(task.task_type || '').trim().toUpperCase() === 'SECONDARY')
+  const selectableBedTasks = allowedBedTasks.filter((task) => {
+    const taskKey = String(task.task_key || '').trim()
+    return !existingTaskKeys.has(taskKey)
+  })
+  const primaryBedTasks = selectableBedTasks.filter((task) => String(task.task_type || '').trim().toUpperCase() === 'PRIMARY')
+  const secondaryBedTasks = selectableBedTasks.filter((task) => String(task.task_type || '').trim().toUpperCase() === 'SECONDARY')
+  const modalTasks = taskModalType === 'PRIMARY' ? primaryBedTasks : taskModalType === 'SECONDARY' ? secondaryBedTasks : []
+  const taskActionLabel = (type: 'PRIMARY' | 'SECONDARY', tasks: Array<Record<string, any>>) => `${type === 'PRIMARY' ? 'Primary' : 'Secondary'} Bed Tasks: ${tasks.length}`
+  const roomClassRows = bedLookupOptionRows(portalData?.bedLookupOptions || {}, 'bed_lookup_room_class')
+  const roomClassOptions = currentRoomClass && !roomClassRows.some((option) => String(option.value || '') === currentRoomClass)
+    ? [{ value: currentRoomClass, label: currentRoomClass, total: 0 }, ...roomClassRows]
+    : roomClassRows
+  const treatmentRows: Array<Record<string, any>> = Array.isArray(portalData?.bedTreatments) ? portalData.bedTreatments : []
+  const sourceRows: Array<Record<string, any>> = Array.isArray(portalData?.bedSources) ? portalData.bedSources : []
+  const taskFormTitle = selectedTaskForForm ? String(selectedTaskForForm.task_title || selectedTaskForForm.task_code || 'Task') : ''
+  const selectedTaskRequiresTreatment = selectedTaskForForm ? portalBooleanFlag(selectedTaskForForm.task_requires_bed_treatment, true) : true
+  const selectedTaskRequiresSource = selectedTaskForForm ? portalBooleanFlag(selectedTaskForForm.task_requires_admission_source, true) : true
+  const taskFormReady = Boolean(
+    selectedTaskForForm
+    && taskFormValues.roomClass.trim() !== ''
+    && (!selectedTaskRequiresTreatment || taskFormValues.bedTreatmentKey.trim() !== '')
+    && (!selectedTaskRequiresSource || taskFormValues.bedSourceKey.trim() !== '')
+  )
+  const currentPortalSearch = typeof window !== 'undefined' && window.location.search ? window.location.search : '?portal_view=bed-management'
 
   return (
-    <Card className="border-primary/30">
-      <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <Badge variant="secondary" className="w-fit">Built-in Form Builder</Badge>
-          <CardTitle className="mt-2 text-xl tracking-normal">{member ? 'Edit Family Member' : 'Register Family Member'}</CardTitle>
-          <CardDescription>Owner-scoped profile with repeatable vehicles and education history.</CardDescription>
+    <>
+      <article
+        className={cn(
+          'grid gap-3 rounded-md border p-4 transition-shadow sm:grid-cols-[minmax(0,1fr)_auto]',
+          statusMismatch
+            ? 'border-red-500/45 bg-background/80 shadow-[0_0_26px_rgba(239,68,68,0.32)] ring-1 ring-red-500/30'
+            : 'border-transparent bg-background/80 shadow-sm',
+        )}
+        style={hasExistingTaskColor ? portalBedTaskCardStyle(existingTaskColorHex, statusMismatch) : undefined}
+        title={cardTitle || undefined}
+      >
+        <div className="grid min-w-0 gap-3">
+          <div className="flex min-w-0 gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
+              <BedDouble className="size-5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h4 className="truncate text-sm font-semibold">Bed {bedLabel}</h4>
+                <Badge variant={managedStatus === 'ACTIVE' ? 'default' : 'secondary'}>{managedStatus}</Badge>
+                <Badge variant="outline">{sourceStatus}</Badge>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+            <div><span className="block font-medium text-foreground">Location</span>{location || 'Unspecified'}</div>
+            <div><span className="block font-medium text-foreground">Room</span>{room || 'Unspecified'}</div>
+            <div><span className="block font-medium text-foreground">Source</span>{String(row.bed_source_key || 'Unspecified')}</div>
+            <div><span className="block font-medium text-foreground">Last sync</span>{String(row.last_synced_at || 'Not synced')}</div>
+          </div>
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Close form" onClick={onClose}><X /></Button>
-      </CardHeader>
-      <CardContent>
-        <form method="post" action={portalHref('')} className="grid gap-6">
-          <input type="hidden" name="csrf" value={portalData?.csrf || ''} />
-          <input type="hidden" name="action" value="save_family_member" />
-          <input type="hidden" name="member_key" value={portalText(member?.member_key)} />
+        <div className="flex flex-col items-end justify-start gap-2">
+          {primaryActionTasks.length > 0 ? (
+            <Tooltip>
+              <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="border-sky-500/60 bg-sky-500/10 text-sky-500 shadow-[0_0_14px_rgba(14,165,233,0.22)] hover:bg-sky-500/20 hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-200" aria-label={`Show primary bed tasks for bed ${bedLabel}`} title={taskActionLabel('PRIMARY', primaryBedTasks)} onClick={() => setTaskModalType('PRIMARY')} />}>
+                <ClipboardList />
+              </TooltipTrigger>
+              <TooltipContent>{taskActionLabel('PRIMARY', primaryBedTasks)}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {secondaryActionTasks.length > 0 ? (
+            <Tooltip>
+              <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_14px_rgba(139,92,246,0.22)] hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200" aria-label={`Show secondary bed tasks for bed ${bedLabel}`} title={taskActionLabel('SECONDARY', secondaryBedTasks)} onClick={() => setTaskModalType('SECONDARY')} />}>
+                <Workflow />
+              </TooltipTrigger>
+              <TooltipContent>{taskActionLabel('SECONDARY', secondaryBedTasks)}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {isOccupied ? (
+            <Tooltip>
+              <TooltipTrigger render={<a href={pxLookupHref} className={cn(buttonClassName({ variant: 'outline', size: 'icon-sm' }), 'border-emerald-500/60 bg-emerald-500/10 text-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.22)] hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200')} aria-label={`PX lookup for bed ${bedLabel}`} title={`PX Lookup For Bed ${bedLabel}`} />}>
+                <UserRound />
+              </TooltipTrigger>
+              <TooltipContent>PX Lookup</TooltipContent>
+            </Tooltip>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger render={<a href={bedSearchHref} className={cn(buttonClassName({ variant: 'outline', size: 'icon-sm' }), 'border-amber-500/60 bg-amber-500/10 text-amber-500 shadow-[0_0_14px_rgba(245,158,11,0.22)] hover:bg-amber-500/20 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-200')} aria-label={`Search bed ${bedLabel}`} title={`Search Bed ${bedLabel}`} />}>
+              <Search />
+            </TooltipTrigger>
+            <TooltipContent>Search This Bed</TooltipContent>
+          </Tooltip>
+        </div>
+      </article>
+      <Dialog open={taskModalType !== null} onOpenChange={(open) => { if (!open) setTaskModalType(null) }}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{taskModalType === 'SECONDARY' ? 'Secondary' : 'Primary'} Bed Tasks</DialogTitle>
+            <DialogDescription>Manual active tasks allowed for Bed {bedLabel} while status is {sourceStatus}.</DialogDescription>
+          </DialogHeader>
+          <div className="grid max-h-[60vh] gap-2 overflow-y-auto pb-2">
+            {modalTasks.length === 0 ? <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No possible {taskModalType === 'SECONDARY' ? 'secondary' : 'primary'} tasks for this bed status.</p> : modalTasks.map((task) => {
+              const taskColorHex = portalTaskColorHex(task.task_color_hex)
+              const taskColorStyle = taskColorHex !== ''
+                ? {
+                    borderLeftColor: portalHexToRgba(taskColorHex, 0.9),
+                    borderBottomColor: portalHexToRgba(taskColorHex, 0.82),
+                    boxShadow: `inset 3px 0 0 ${portalHexToRgba(taskColorHex, 0.75)}`,
+                  }
+                : undefined
 
-          <section className="grid gap-4 rounded-md border p-4">
-            <div><h3 className="font-semibold">Member Profile</h3><p className="text-sm text-muted-foreground">Required identity, relationship, contact, and consent fields.</p></div>
-            <div className="grid gap-4 md:grid-cols-2">
-              {[
-                ['first_name', 'First name', 'text', true], ['middle_name', 'Middle name', 'text', false], ['last_name', 'Last name', 'text', true], ['suffix', 'Suffix', 'text', false],
-                ['birth_date', 'Birth date', 'date', false], ['relationship_to_user', 'Relationship', 'text', true], ['contact_email', 'Email', 'email', false], ['contact_phone', 'Phone', 'tel', false],
-              ].map(([name, label, type, required]) => (
-                <div className="grid gap-2" key={String(name)}>
-                  <Label htmlFor={`family-${name}`}>{String(label)}{required ? ' *' : ''}</Label>
-                  <Input id={`family-${name}`} name={String(name)} type={String(type)} defaultValue={portalText(member?.[String(name)])} required={Boolean(required)} />
+              return (
+                <button
+                  key={String(task.task_key || task.task_title)}
+                  type="button"
+                  className="grid gap-2 rounded-md border-b border-l-4 border-b-transparent border-l-transparent bg-muted/20 p-3 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  style={taskColorStyle}
+                  onClick={() => {
+                    setTaskFormValues({
+                      roomClass: currentRoomClass,
+                      bedTreatmentKey: '',
+                      bedSourceKey: '',
+                    })
+                    setSelectedTaskForForm(task)
+                    setTaskModalType(null)
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{String(task.task_title || task.task_code || 'Task')}</p>
+                    </div>
+                    <Badge variant="outline">{String(task.task_type || '')}</Badge>
+                  </div>
+                  {String(task.task_description || '').trim() !== '' ? <p className="text-xs leading-5 text-muted-foreground">{String(task.task_description)}</p> : null}
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                    <Badge variant="secondary">Manual</Badge>
+                    <Badge variant="outline">{String(task.task_priority || 'NORMAL')}</Badge>
+                    <span>{isOccupied ? 'Allowed for occupied bed' : 'Allowed for vacant bed'}</span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={selectedTaskForForm !== null} onOpenChange={(open) => { if (!open) setSelectedTaskForForm(null) }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="sticky top-0 z-30 shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close Room Bed Preparation" onClick={() => setSelectedTaskForForm(null)} />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>Room Bed Preparation</DialogTitle>
+            <DialogDescription>{taskFormTitle} for Bed {bedLabel}.</DialogDescription>
+          </DialogHeader>
+          <form
+            method="post"
+            action={portalHref('')}
+            className="contents"
+          >
+            <input type="hidden" name="csrf" value={portalData?.csrf || ''} />
+            <input type="hidden" name="action" value="create_project_bed_task" />
+            <input type="hidden" name="bed_key" value={bedKey} />
+            <input type="hidden" name="task_key" value={String(selectedTaskForForm?.task_key || '')} />
+            <input type="hidden" name="redirect_to" value={currentPortalSearch} />
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">
+              <div className="grid gap-4">
+                <div className="grid gap-4 rounded-md bg-muted/20 p-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor={`portal-task-room-class-${bedKey}`}>Bed Class</Label>
+                    <select
+                      id={`portal-task-room-class-${bedKey}`}
+                      name="room_class"
+                      value={taskFormValues.roomClass}
+                      required
+                      onChange={(event) => setTaskFormValues((current) => ({ ...current, roomClass: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+                    >
+                      <option value="">Select Bed Class</option>
+                      {roomClassOptions.map((option) => {
+                        const value = String(option.value || '')
+                        return <option key={`portal-room-class-${value}`} value={value}>{String(option.label || value || 'Unspecified')}</option>
+                      })}
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor={`portal-task-treatment-${bedKey}`} className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
+                      <span className="grid size-7 place-items-center rounded-md bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/30 dark:text-emerald-300">
+                        <Stethoscope className="size-4" aria-hidden="true" />
+                      </span>
+                      Bed Treatment
+                    </Label>
+                    <select
+                      id={`portal-task-treatment-${bedKey}`}
+                      name="bed_treatment_key"
+                      value={taskFormValues.bedTreatmentKey}
+                      required={selectedTaskRequiresTreatment}
+                      onChange={(event) => setTaskFormValues((current) => ({ ...current, bedTreatmentKey: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                    >
+                      <option value="">Select Bed Treatment</option>
+                      {treatmentRows.map((treatment) => {
+                        const value = String(treatment.bed_treatment_key || treatment.treatment_code || '')
+                        return <option key={`portal-treatment-${value}`} value={value}>{String(treatment.treatment_name || treatment.treatment_code || 'Treatment')}</option>
+                      })}
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor={`portal-task-source-${bedKey}`} className="flex items-center gap-2 text-cyan-700 dark:text-cyan-300">
+                      <span className="grid size-7 place-items-center rounded-md bg-cyan-500/10 text-cyan-600 ring-1 ring-cyan-500/30 dark:text-cyan-300">
+                        <Signpost className="size-4" aria-hidden="true" />
+                      </span>
+                      Bed Source
+                    </Label>
+                    <select
+                      id={`portal-task-source-${bedKey}`}
+                      name="bed_source_key"
+                      value={taskFormValues.bedSourceKey}
+                      required={selectedTaskRequiresSource}
+                      onChange={(event) => setTaskFormValues((current) => ({ ...current, bedSourceKey: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
+                    >
+                      <option value="">Select Bed Source</option>
+                      {sourceRows.map((source) => {
+                        const value = String(source.bed_source_key || source.bed_source_code || '')
+                        return <option key={`portal-source-${value}`} value={value}>{String(source.bed_source_name || source.bed_source_code || 'Source')}</option>
+                      })}
+                    </select>
+                  </div>
                 </div>
-              ))}
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="family-consent-contact">Consent</Label>
-              <label className="flex items-start gap-3 rounded-md border px-3 py-3 text-sm">
-                <input id="family-consent-contact" type="checkbox" name="consent_contact" defaultChecked={Boolean(Number(member?.consent_contact || 0))} className="mt-1 size-4" />
-                <span>Allow contact updates for this family member.</span>
-              </label>
-              <label className="flex items-start gap-3 rounded-md border px-3 py-3 text-sm">
-                <input type="checkbox" name="consent_privacy" defaultChecked={Boolean(Number(member?.consent_privacy || 0))} required className="mt-1 size-4" />
-                <span>I confirm that this profile may be stored and processed under the project privacy rules. *</span>
-              </label>
-            </div>
-          </section>
-
-          <section className="grid gap-4 rounded-md border p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">Vehicles</h3><p className="text-sm text-muted-foreground">Add zero or more cars for this family member.</p></div><Button type="button" variant="outline" size="sm" onClick={() => setVehicles((current) => [...current, emptyPortalVehicle()])}><Plus data-icon="inline-start" />Add Vehicle</Button></div>
-            {vehicles.length === 0 ? <p className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">No vehicles added.</p> : vehicles.map((vehicle, index) => (
-              <div key={`vehicle-${index}`} className="grid gap-4 rounded-md border bg-muted/10 p-4">
-                <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium"><Car className="h-4 w-4" />Vehicle {index + 1}</div><Button type="button" variant="ghost" size="sm" onClick={() => setVehicles((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 data-icon="inline-start" />Remove</Button></div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  {[
-                    ['plate_number', 'Plate number', 'text', true], ['make', 'Make', 'text', false], ['model', 'Model', 'text', false], ['model_year', 'Model year', 'number', false],
-                    ['color', 'Color', 'text', false], ['ownership_type', 'Ownership type', 'text', true], ['registration_status', 'Registration status', 'text', false],
-                  ].map(([name, label, type, required]) => <div className="grid gap-2" key={String(name)}><Label htmlFor={`vehicle-${index}-${name}`}>{String(label)}{required ? ' *' : ''}</Label><Input id={`vehicle-${index}-${name}`} name={`vehicles[${index}][${String(name)}]`} type={String(type)} value={vehicle[String(name)] || ''} onChange={(event) => updateVehicle(index, String(name), event.target.value)} required={Boolean(required)} className={inputClass} /></div>)}
+                <div className="grid gap-2">
+                  <Label htmlFor={`portal-task-remarks-${bedKey}`}>Remarks</Label>
+                  <Textarea id={`portal-task-remarks-${bedKey}`} name="remarks" rows={4} placeholder="Remarks" className="resize-y" />
                 </div>
               </div>
-            ))}
-          </section>
-
-          <section className="grid gap-4 rounded-md border p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">Education Background</h3><p className="text-sm text-muted-foreground">Add zero or more education records for this family member.</p></div><Button type="button" variant="outline" size="sm" onClick={() => setEducation((current) => [...current, emptyPortalEducation()])}><Plus data-icon="inline-start" />Add Education</Button></div>
-            {education.length === 0 ? <p className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">No education records added.</p> : education.map((item, index) => (
-              <div key={`education-${index}`} className="grid gap-4 rounded-md border bg-muted/10 p-4">
-                <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium"><GraduationCap className="h-4 w-4" />Education {index + 1}</div><Button type="button" variant="ghost" size="sm" onClick={() => setEducation((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 data-icon="inline-start" />Remove</Button></div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  {[
-                    ['education_level', 'Education level', 'text', true], ['institution_name', 'Institution', 'text', true], ['program_name', 'Course or program', 'text', false],
-                    ['date_started', 'Start date', 'date', false], ['date_completed', 'Completion date', 'date', false], ['completion_status', 'Completion status', 'text', true],
-                  ].map(([name, label, type, required]) => <div className="grid gap-2" key={String(name)}><Label htmlFor={`education-${index}-${name}`}>{String(label)}{required ? ' *' : ''}</Label><Input id={`education-${index}-${name}`} name={`education[${index}][${String(name)}]`} type={String(type)} value={item[String(name)] || ''} onChange={(event) => updateEducation(index, String(name), event.target.value)} required={Boolean(required)} className={inputClass} /></div>)}
-                </div>
-              </div>
-            ))}
-          </section>
-
-          <div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit"><ClipboardList data-icon="inline-start" />Save Family Member</Button></div>
-        </form>
-      </CardContent>
-    </Card>
+            </div>
+            <DialogFooter className="sticky bottom-0 z-30 m-0 w-full shrink-0 flex-row items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+              <span className="text-xs text-muted-foreground">{taskFormReady ? 'Pending task request' : 'Complete required fields'}</span>
+              <Button type="submit" className="shrink-0" disabled={!taskFormReady}>Submit</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
 function PortalWorkspace({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
-  const [editingKey, setEditingKey] = React.useState<string | null>(null)
-  const members = Array.isArray(portalData?.familyMembers) ? portalData.familyMembers : []
-  const editingMember = editingKey ? members.find((member) => portalText(member.member_key) === editingKey) || null : null
-  const vehicleTotal = members.reduce((total, member) => total + Number(member.vehicle_count || 0), 0)
-  const educationTotal = members.reduce((total, member) => total + Number(member.education_count || 0), 0)
-  const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  {
+    const bedLookupFilters = portalData?.bedLookupFilters || {}
+    const bedLookupOptions = portalData?.bedLookupOptions || {}
+    const bedLookupRows: Array<Record<string, any>> = Array.isArray(portalData?.bedLookupRows) ? portalData.bedLookupRows : []
+    const softwareName = portalData?.softwareName || 'BuilderX'
+
+    return (
+      <PortalShell
+        activeView="bed-management"
+        title="Bed Management"
+        breadcrumbItems={['Portal', 'Bed Management']}
+        buildTarget="PORTAL"
+        footerLabel={`${softwareName} User Portal`}
+        theme={theme}
+        onThemeToggle={onThemeToggle}
+      >
+        <div className="flex min-h-0 w-full flex-1 flex-col gap-5">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+	              <h2 className="text-2xl font-semibold tracking-normal">Bed Lookup</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Search current beds with dropdown filters.</p>
+            </div>
+            <Badge variant="outline">{String(bedLookupRows.length)} shown</Badge>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+            <Card className="min-w-0 shrink-0 overflow-hidden">
+              <CardHeader className="border-b">
+                <CardTitle className="text-base tracking-normal">Lookup Filters</CardTitle>
+                <CardDescription>Dropdown values are loaded from the current bed list.</CardDescription>
+              </CardHeader>
+              <CardContent className="overflow-x-auto pb-4">
+                <form method="get" action={portalHref('')} className="flex min-w-max items-end gap-3" data-skip-submit-confirmation="true">
+                  <input type="hidden" name="portal_view" value="bed-management" />
+                  <div className="grid w-56 shrink-0 gap-2">
+                    <Label htmlFor="bed_lookup_search">Search</Label>
+                    <Input id="bed_lookup_search" name="bed_lookup_search" defaultValue={String(bedLookupFilters.bed_lookup_search || '')} placeholder="Bed no, source, location" className="h-10" />
+                  </div>
+                  {bedLookupDropdownFields.map(([name, label]) => (
+                    <div key={name} className="w-40 shrink-0">
+                      <BedLookupFilterSelect key={name} name={name} label={label} filters={bedLookupFilters} options={bedLookupOptions} />
+                    </div>
+                  ))}
+                  <div className="flex shrink-0 gap-2">
+                    <Button type="submit" className="h-10">
+                      <Search data-icon="inline-start" />
+                      Search Beds
+                    </Button>
+                    <a href={portalViewHref('bed-management')} className={cn(buttonClassName({ variant: 'outline' }), 'h-10')}>
+                      Clear
+                    </a>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+
+            <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <CardHeader className="sticky top-0 z-10 flex shrink-0 flex-row items-start justify-between gap-3 border-b bg-card">
+                <div className="min-w-0">
+                  <CardTitle className="text-base tracking-normal">Lookup Results</CardTitle>
+                  <CardDescription>Beds are loaded from the current list.</CardDescription>
+                </div>
+                <Badge variant="secondary">{String(bedLookupRows.length)} shown</Badge>
+              </CardHeader>
+              <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {bedLookupRows.length > 0
+                    ? bedLookupRows.map((row) => <PortalBedLookupResultCard key={String(row.bed_key)} row={row} />)
+                    : <div className="col-span-full grid place-items-center gap-2 rounded-md bg-muted/20 px-4 py-12 text-center"><BedDouble className="size-8 text-muted-foreground" /><p className="text-sm font-medium">No beds matched the lookup.</p><p className="max-w-md text-xs text-muted-foreground">Adjust the filters or clear the search to see current beds.</p></div>}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </PortalShell>
+    )
+  }
+
+  const workspace = portalData?.operationalWorkspace || {}
+  const tenant = (workspace.tenant || {}) as Record<string, any>
+  const sources: Array<Record<string, any>> = Array.isArray(workspace.sources) ? workspace.sources : []
+  const metrics: Array<Record<string, any>> = Array.isArray(workspace.metrics) ? workspace.metrics : []
+  const bedStatus: Array<Record<string, any>> = Array.isArray(workspace.bedStatus) ? workspace.bedStatus : []
+  const residenceCoverage: Array<Record<string, any>> = Array.isArray(workspace.residenceCoverage) ? workspace.residenceCoverage : []
+  const assignedTasks: Array<Record<string, any>> = Array.isArray(workspace.assignedTasks) ? workspace.assignedTasks : []
+  const notifications: Array<Record<string, any>> = Array.isArray(workspace.notifications) ? workspace.notifications : []
+  const reports: Array<Record<string, any>> = Array.isArray(workspace.reports) ? workspace.reports : []
+  const softwareName = portalData?.softwareName || 'BuilderX'
+  const writeActionsAvailable = Boolean(workspace.writeActionsAvailable)
 
   return (
-    <TooltipProvider>
-      <main className="min-h-screen bg-background p-4 text-foreground sm:p-6">
-        <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-7xl flex-col gap-5">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-            <div className="flex items-center gap-3"><div className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground"><Users /></div><div><p className="font-semibold">{portalData?.softwareName || 'BuilderX'}</p><p className="text-xs text-muted-foreground">Family Member User Portal</p></div></div>
-            <div className="flex flex-wrap items-center gap-2"><a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={portalHref('phases/?view=flow&ui_ux_flow=user&ui_ux_section=body')}><Sparkles data-icon="inline-start" />UI - UX Flow</a>{portalData?.isAdmin ? <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={portalHref('administrator/?tab=family-reports')}><FileBarChart data-icon="inline-start" />Admin Reports</a> : null}<SharinganHeaderToggle /><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={onThemeToggle} />}>{theme === 'dark' ? <Sun /> : <Moon />}</TooltipTrigger><TooltipContent>{nextThemeLabel}</TooltipContent></Tooltip><form method="post" action={portalHref('')}><input type="hidden" name="csrf" value={portalData?.csrf || ''} /><input type="hidden" name="action" value="logout_portal" /><Button type="submit" variant="ghost" size="sm">Sign Out</Button></form></div>
-          </header>
-          {portalData?.flash ? <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{portalData.flash.message}</div> : null}
+    <PortalShell
+      activeView="bed-management"
+      title="Bed Management"
+      breadcrumbItems={['Portal', 'Bed Management']}
+      buildTarget="PORTAL"
+      footerLabel={`${softwareName} User Portal`}
+      theme={theme}
+      onThemeToggle={onThemeToggle}
+    >
+      <div className="flex w-full flex-col gap-5">
           <AiRephraseCard />
           <CoordinatorManagementCard />
-          <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><Badge variant="secondary" className="w-fit">User Portal</Badge><h1 className="mt-2 text-2xl font-semibold tracking-normal text-blue-500">Farmer Member Registration</h1><p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Maintain household members, their vehicles, and complete education history with owner-scoped access.</p></div><Button type="button" onClick={() => setEditingKey('')}><Plus data-icon="inline-start" />Add Farmer</Button></section>
-          <section aria-label="Color columns" className="grid gap-3 md:grid-cols-3">
-            <div className="grid min-h-28 place-items-center rounded-lg bg-red-600 p-4 text-lg font-semibold text-white">RED</div>
-            <div className="grid min-h-28 place-items-center rounded-lg bg-green-700 p-4 text-lg font-semibold text-white">GREEN</div>
-            <div className="grid min-h-28 place-items-center rounded-lg bg-blue-600 p-4 text-lg font-semibold text-white">BLUE</div>
+          <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><Badge variant="secondary" className="w-fit"><Building2 className="mr-1 h-3 w-3" />{portalText(tenant.floorName, 'Assigned floor')}</Badge><h1 className="mt-2 text-2xl font-semibold tracking-normal">Beds, Status, and Task Workspace</h1><p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{portalText(tenant.projectName, 'Current project')} · {portalData?.currentUser ? `signed in as ${phaseField(portalData?.currentUser, 'user_name', 'Portal User')}` : 'not signed in'}</p></div><div className="flex flex-wrap gap-2"><Tooltip><TooltipTrigger render={<Button type="button" disabled={!writeActionsAvailable} /> }><Plus data-icon="inline-start" />Common Task</TooltipTrigger><TooltipContent>{writeActionsAvailable ? 'Create a Common Task' : 'Database rollback protection is required before task writes are enabled.'}</TooltipContent></Tooltip><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" disabled={!writeActionsAvailable} /> }><LockKeyhole data-icon="inline-start" />Lock Ready</TooltipTrigger><TooltipContent>Inactivity lock state is visible; server lock writes remain disabled until rollback protection is available.</TooltipContent></Tooltip></div></section>
+          {!portalData?.currentUser ? <PortalSignInCard /> : null}
+          <section className="grid gap-2 rounded-lg border bg-card p-4"><p className="text-xs font-medium text-muted-foreground">Hospital data sources</p><div className="flex flex-wrap gap-2">{sources.map((source) => <Badge key={portalText(source.table)} variant={source.available ? 'default' : 'outline'}>{portalText(source.table)}</Badge>)}</div></section>
+          <section className="grid gap-0 rounded-lg border bg-card md:grid-cols-3 xl:grid-cols-6">{metrics.map((metric) => <div key={portalText(metric.label)} className="border-b border-r p-4 last:border-r-0 xl:border-b-0"><p className="text-xs text-muted-foreground">{portalText(metric.label)}</p><strong className="mt-1 block text-2xl">{Number(metric.value || 0)}</strong></div>)}<div className="p-4"><p className="text-xs text-muted-foreground">Write actions</p><strong className="mt-1 block text-sm">{writeActionsAvailable ? 'Enabled' : 'Rollback required'}</strong></div></section>
+          <section id="bed-management" className="grid min-h-0 gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="grid gap-5">
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><Database className="size-4" />Bed Status</CardTitle><CardDescription>Vacancy and occupancy status from RBMS_CheckBedStatus.</CardDescription></CardHeader>
+                <CardContent className="grid gap-3 pt-4">
+                  {bedStatus.length === 0 ? <div className="grid place-items-center gap-2 rounded-md bg-muted/20 py-10 text-center"><ClipboardList className="size-7 text-muted-foreground" /><p className="text-sm font-medium">No bed status rows found</p><p className="max-w-md text-xs text-muted-foreground">RBMS_CheckBedStatus did not return visible summary rows.</p></div> : bedStatus.map((row) => <div key={portalText(row.label)} className="flex items-center justify-between gap-3 rounded-md bg-muted/20 p-3"><span className="truncate text-sm font-medium">{portalText(row.label, 'Unspecified')}</span><Badge variant="outline">{Number(row.total || 0)}</Badge></div>)}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><FileBarChart className="size-4" />Residence Coverage</CardTitle><CardDescription>Non-sensitive province totals from px_for_hras.</CardDescription></CardHeader>
+                <CardContent className="grid gap-3 pt-4">
+                  {residenceCoverage.length === 0 ? <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No residence rows were found.</p> : residenceCoverage.map((row) => <div key={portalText(row.label)} className="flex items-center justify-between gap-3 rounded-md bg-muted/20 p-3"><span className="truncate text-sm font-medium">{portalText(row.label, 'Unspecified')}</span><Badge variant="outline">{Number(row.total || 0)}</Badge></div>)}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><Bell className="size-4" />Notifications</CardTitle><CardDescription>Authorization and task state messages for this session.</CardDescription></CardHeader>
+                <CardContent className="grid gap-2 pt-4">{notifications.map((notification, index) => <div key={`notification-${index}`} className="flex gap-3 rounded-md bg-muted/20 p-3 text-sm"><AlertTriangle className="mt-0.5 size-4 text-amber-500" /><p className="leading-5">{portalText(notification.message, 'Notification')}</p></div>)}</CardContent>
+              </Card>
+            </div>
+            <div className="grid content-start gap-5">
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><ClipboardList className="size-4" />Assigned Tasks</CardTitle><CardDescription>Current task stage queue for the selected floor.</CardDescription></CardHeader>
+                <CardContent className="grid gap-3 pt-4">
+                  {assignedTasks.length === 0 ? <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No tasks are assigned to this portal user.</p> : assignedTasks.map((task) => (
+                    <div key={portalText(task.taskKey)} className="grid gap-2 rounded-md bg-muted/20 p-3">
+                      <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{portalText(task.title, 'Task')}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{portalText(task.detail, portalText(task.source))}</p></div><Badge variant={['High', 'Blocked'].includes(portalText(task.priority)) ? 'default' : 'secondary'}>{portalText(task.priority, 'Normal')}</Badge></div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs"><Badge variant="outline">{portalText(task.stage, 'Stage')}</Badge><Badge variant="outline">{Number(task.count || 0)}</Badge><span className="text-muted-foreground">{portalText(task.source)}</span></div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><MessageCircle className="size-4" />Chat and Notes</CardTitle><CardDescription>Task discussion entry point with persistence gated by rollback protection.</CardDescription></CardHeader>
+                <CardContent className="grid gap-3 pt-4"><Textarea rows={4} placeholder="Write a task note for the selected bed..." disabled={!writeActionsAvailable} aria-label="Task note" /><Button type="button" disabled={!writeActionsAvailable} className="w-fit"><Send data-icon="inline-start" />Send Note</Button></CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><FileBarChart className="size-4" />Reports</CardTitle><CardDescription>Read-back counters from the operational workspace.</CardDescription></CardHeader>
+                <CardContent className="grid gap-2 pt-4">{reports.map((report, index) => <div key={`report-${index}`} className="flex items-center justify-between gap-3 rounded-md bg-muted/20 p-3"><span className="text-sm text-muted-foreground">{portalText(report.label, 'Report')}</span><strong>{portalText(report.value, '0')}</strong></div>)}</CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="border-b pb-3"><CardTitle className="flex items-center gap-2 text-base"><KeyRound className="size-4" />Account State</CardTitle><CardDescription>Password resets and lock recovery stay administrator-owned.</CardDescription></CardHeader>
+                <CardContent className="grid gap-2 pt-4 text-sm text-muted-foreground"><p>Contact an administrator for password changes or account unlocks.</p><p className="flex items-center gap-2"><ShieldCheck className="size-4" /> Authorization is checked before this workspace is projected.</p></CardContent>
+              </Card>
+            </div>
           </section>
-          <section className="grid gap-0 rounded-lg border bg-card md:grid-cols-3"><div className="border-b p-4 md:border-b-0 md:border-r"><p className="text-xs text-muted-foreground">Family members</p><strong className="mt-1 block text-2xl">{members.length}</strong></div><div className="border-b p-4 md:border-b-0 md:border-r"><p className="text-xs text-muted-foreground">Registered vehicles</p><strong className="mt-1 block text-2xl">{vehicleTotal}</strong></div><div className="p-4"><p className="text-xs text-muted-foreground">Education records</p><strong className="mt-1 block text-2xl">{educationTotal}</strong></div></section>
-          {editingKey !== null ? <FamilyMemberEditor key={editingKey || 'new'} member={editingMember} onClose={() => setEditingKey(null)} /> : <section className="grid gap-3">{members.length === 0 ? <Card className="border-dashed"><CardContent className="grid place-items-center gap-3 py-12 text-center"><Users className="h-8 w-8 text-muted-foreground" /><div><h2 className="font-semibold">No family members yet</h2><p className="mt-1 text-sm text-muted-foreground">Start with one profile, then add vehicles and education records.</p></div><Button type="button" onClick={() => setEditingKey('')}><Plus data-icon="inline-start" />Register First Member</Button></CardContent></Card> : members.map((member) => <Card key={portalText(member.member_key)}><CardContent className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between"><div className="flex min-w-0 items-start gap-3"><div className="mt-1 flex size-9 shrink-0 items-center justify-center rounded-md bg-muted"><Users className="h-4 w-4" /></div><div className="min-w-0"><h2 className="truncate font-semibold">{[member.first_name, member.middle_name, member.last_name, member.suffix].filter(Boolean).join(' ')}</h2><p className="text-sm text-muted-foreground">{portalText(member.relationship_to_user, 'Relationship not set')} · {portalText(member.member_status, 'ACTIVE')}</p><p className="mt-2 text-xs text-muted-foreground">{portalText(member.contact_email, 'No email')} · {portalText(member.contact_phone, 'No phone')}</p></div></div><div className="flex flex-wrap items-center gap-2 text-xs"><Badge variant="outline"><Car className="mr-1 h-3 w-3" />{portalText(member.vehicle_count, '0')} vehicles</Badge><Badge variant="outline"><GraduationCap className="mr-1 h-3 w-3" />{portalText(member.education_count, '0')} education</Badge><Button type="button" variant="outline" size="sm" onClick={() => setEditingKey(portalText(member.member_key))}><Pencil data-icon="inline-start" />Edit</Button></div></CardContent></Card>)}</section>}
-        </div>
-      </main>
-    </TooltipProvider>
+      </div>
+    </PortalShell>
   )
 }
 
 function PortalApp() {
   const [theme, setTheme] = React.useState<AdminThemeMode>(() => readStoredPortalTheme())
+  const activePortalView = readPortalView()
 
   React.useEffect(() => {
     applyAdminTheme(theme)
@@ -4571,15 +12004,9 @@ function PortalApp() {
     setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')
   }, [])
 
-  if (portalData?.portalMode === 'starter') {
-    return <PortalStarterLanding theme={theme} onThemeToggle={handleThemeToggle} />
-  }
-
-  if (!portalData?.currentUser && !portalData?.hasAdministrator) {
-    return <PortalLanding theme={theme} onThemeToggle={handleThemeToggle} />
-  }
-
-  return portalData?.currentUser ? <PortalWorkspace theme={theme} onThemeToggle={handleThemeToggle} /> : <PortalAuthLanding theme={theme} onThemeToggle={handleThemeToggle} />
+  return activePortalView === 'bed-management'
+    ? <PortalWorkspace theme={theme} onThemeToggle={handleThemeToggle} />
+    : <PortalDashboardView theme={theme} onThemeToggle={handleThemeToggle} />
 }
 
 const phaseStatusOptions = ['Not Started', 'In Progress', 'For Review', 'Completed', 'Blocked']
@@ -5437,7 +12864,7 @@ function FormConfirmationGuard({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     function handleDocumentSubmit(nativeEvent: Event) {
       const form = nativeEvent.target instanceof HTMLFormElement ? nativeEvent.target : null
-      if (!form || bypassFormsRef.current.delete(form)) return
+      if (!form || bypassFormsRef.current.delete(form) || form.dataset.skipSubmitConfirmation === 'true') return
 
       nativeEvent.preventDefault()
       nativeEvent.stopPropagation()
@@ -6494,17 +13921,25 @@ function PhaseShell({
   onThemeToggle: () => void
 }) {
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  const [messengerOpen, setMessengerOpen] = usePersistentMessengerOpen()
+  const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen)
   const aiMonitor = useAiJobMonitor()
   const defaultSidebarOpen = React.useMemo(
     () => readBooleanCookie(sidebarCookieName) ?? true,
     [],
   )
+  const openMessenger = React.useCallback(() => {
+    clearUnread()
+    setMessengerOpen(true)
+  }, [clearUnread, setMessengerOpen])
 
   function openActiveAiJob() {
     const job = aiMonitor.activeJob
     if (!job) return
     window.dispatchEvent(new CustomEvent(phaseAiOperationOpenEvent, { detail: job }))
   }
+  const displayTitle = messengerOpen ? 'Messenger' : title
+  const displayBreadcrumbItems = messengerOpen ? [...breadcrumbItems.slice(0, 1), 'Messenger'] : breadcrumbItems
 
   return (
     <TooltipProvider>
@@ -6515,7 +13950,7 @@ function PhaseShell({
         } as React.CSSProperties}
       >
         <AdminSidebarMobilePersistence defaultOpen={defaultSidebarOpen} />
-        <PhaseSidebar activeView={activeView} />
+        <PhaseSidebar activeView={activeView} onNavigate={() => setMessengerOpen(false)} />
         <SidebarInset className="h-svh max-h-svh min-h-0 overflow-hidden">
           <header className="sticky top-0 z-30 flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-background/95 px-4 py-2 shadow-[0_1px_0_rgba(15,23,42,0.04)] backdrop-blur transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:min-h-12">
             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -6526,12 +13961,12 @@ function PhaseShell({
               </div>
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
-                  <h1 className="truncate text-sm font-semibold tracking-normal">{title}</h1>
+                  <h1 className="truncate text-sm font-semibold tracking-normal">{displayTitle}</h1>
                   <Badge variant="outline" className="hidden shrink-0 text-[10px] font-normal sm:inline-flex">Workspace</Badge>
                 </div>
                 <ShadcnBreadcrumb>
                   <BreadcrumbList>
-                    {breadcrumbItems.map((item, index) => (
+                    {displayBreadcrumbItems.map((item, index) => (
                       <React.Fragment key={`${item}-${index}`}>
                         {index > 0 && <BreadcrumbSeparator />}
                         <BreadcrumbItem>
@@ -6563,6 +13998,8 @@ function PhaseShell({
                 <Download data-icon="inline-start" />
                 Installer
               </a>
+              <MessengerHeaderButton onOpen={openMessenger} unreadCount={unreadCount} />
+              <HeaderControlSeparator />
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -6582,9 +14019,8 @@ function PhaseShell({
             </div>
           </header>
 
-          <main className={cn('min-h-0 flex-1 overflow-y-auto bg-muted/20', activeView === 'data-structure-v2' || activeView === 'ai-flow' || activeView === 'ai-operation' ? 'flex flex-col gap-3 p-3' : activeView === 'phases' ? 'flex flex-col gap-4 p-4 [&>*]:shrink-0' : 'flex flex-col gap-4 p-4')}>
-            <PhaseFlashMessage flash={phaseData?.flash ?? null} />
-            {children}
+          <main className={cn('min-h-0 flex-1 bg-muted/20', messengerOpen ? 'flex flex-col overflow-hidden p-4' : activeView === 'data-structure-v2' || activeView === 'ai-flow' || activeView === 'ai-operation' ? 'flex flex-col gap-3 overflow-y-auto p-3' : activeView === 'phases' ? 'flex flex-col gap-4 overflow-y-auto p-4 [&>*]:shrink-0' : 'flex flex-col gap-4 overflow-y-auto p-4')}>
+            {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><PhaseFlashMessage flash={phaseData?.flash ?? null} />{children}</>}
           </main>
 
           <footer className="sticky bottom-0 z-20 mt-auto flex min-h-11 shrink-0 items-center justify-between gap-3 border-t bg-background/95 px-4 text-xs text-muted-foreground backdrop-blur">
@@ -6601,9 +14037,11 @@ function PhaseShell({
   )
 }
 
-function PhaseSidebar({ activeView, ...props }: React.ComponentProps<typeof Sidebar> & { activeView: PhasePayload['activeView'] }) {
+function PhaseSidebar({ activeView, onNavigate, ...props }: React.ComponentProps<typeof Sidebar> & { activeView: PhasePayload['activeView']; onNavigate?: () => void }) {
   return (
-    <Sidebar collapsible="icon" className="border-r border-sidebar-border/80" {...props}>
+    <Sidebar collapsible="icon" className="border-r border-sidebar-border/80" onClickCapture={(event) => {
+      if ((event.target as HTMLElement).closest('a')) onNavigate?.()
+    }} {...props}>
       <SidebarHeader className="border-b border-sidebar-border/70">
         <PhaseTeamSwitcher />
       </SidebarHeader>
@@ -8320,18 +15758,19 @@ function UiUxFlowChartCanvas({ flowChart }: { flowChart: Array<Record<string, an
     flowDragRef.current = null
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
-  const renderGraph = (interactive: boolean) => <div className={cn('bg-background/70', interactive ? 'h-full min-h-[60vh] overflow-hidden overscroll-none' : 'overflow-x-auto overscroll-x-contain')} onPointerDown={interactive ? handleFlowPointerDown : undefined} onPointerMove={interactive ? handleFlowPointerMove : undefined} onPointerUp={interactive ? finishFlowPointerDrag : undefined} onPointerCancel={interactive ? finishFlowPointerDrag : undefined} style={interactive ? { touchAction: 'none', userSelect: 'none', cursor: flowDragRef.current ? 'grabbing' : 'grab' } : undefined}>
+  const renderGraph = (interactive: boolean) => <div className={cn('bg-[#07111f] bg-[radial-gradient(circle_at_68%_18%,rgba(56,189,248,0.18),transparent_28%),radial-gradient(circle_at_18%_82%,rgba(16,185,129,0.12),transparent_30%),linear-gradient(135deg,#07111f_0%,#0b1628_54%,#020617_100%)]', interactive ? 'h-full min-h-[60vh] overflow-hidden overscroll-none' : 'overflow-x-auto overscroll-x-contain')} onPointerDown={interactive ? handleFlowPointerDown : undefined} onPointerMove={interactive ? handleFlowPointerMove : undefined} onPointerUp={interactive ? finishFlowPointerDrag : undefined} onPointerCancel={interactive ? finishFlowPointerDrag : undefined} style={interactive ? { touchAction: 'none', userSelect: 'none', cursor: flowDragRef.current ? 'grabbing' : 'grab' } : undefined}>
     <div style={{ width, height, transform: interactive ? `translate(${flowPan.x}px, ${flowPan.y}px) scale(${flowZoom})` : undefined, transformOrigin: '0 0' }}>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="AI-generated connected system flow chart" className="text-foreground">
-        <defs><marker id={markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 8 4 L 0 8 z" fill="#38bdf8" /></marker></defs>
-        <g aria-hidden="true">{flowChart.map((flow, index) => { const edge = edgePath(flow, index); if (!edge) return null; const labelLines = edge.labelLines.length > 0 ? edge.labelLines : ['Transition']; const labelWidth = Math.min(190, Math.max(52, Math.max(...labelLines.map((line) => line.length)) * 5.5 + 12)); const labelHeight = labelLines.length * 12 + 6; return <g key={`edge-${index}`}><path d={edge.path} fill="none" stroke="var(--border)" strokeWidth="1.5" markerEnd={`url(#${markerId})`} /><rect x={edge.labelX - labelWidth / 2} y={edge.labelY - labelHeight / 2} width={labelWidth} height={labelHeight} rx="3" fill="var(--background)" opacity="0.96" /><text x={edge.labelX} y={edge.labelY - ((labelLines.length - 1) * 6)} textAnchor="middle" className="fill-muted-foreground text-[9px]">{labelLines.map((line, lineIndex) => <tspan key={lineIndex} x={edge.labelX} dy={lineIndex === 0 ? 0 : 12}>{line}</tspan>)}</text></g> })}</g>
-        {nodes.map((label) => { const position = positions.get(label); if (!position) return null; const lines = wrap(label); return <g key={label}><rect x={position.x} y={position.y} width={nodeWidth} height={nodeHeight} rx="10" fill="var(--muted)" stroke="#38bdf8" strokeWidth="1.5" /><text x={position.x + nodeWidth / 2} y={position.y + nodeHeight / 2 - (lines.length - 1) * 8} textAnchor="middle" className="fill-foreground text-xs font-semibold">{lines.map((line, index) => <tspan key={index} x={position.x + nodeWidth / 2} dy={index === 0 ? 0 : 16}>{line}</tspan>)}</text></g> })}
+        <defs><marker id={markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 8 4 L 0 8 z" fill="#38bdf8" /></marker><pattern id={`${markerId}-grid`} width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 H 0 V 32" fill="none" stroke="#93c5fd" strokeOpacity="0.08" strokeWidth="1" /></pattern><linearGradient id={`${markerId}-node`} x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#12345a" /><stop offset="55%" stopColor="#071827" /><stop offset="100%" stopColor="#020617" /></linearGradient><filter id={`${markerId}-lift`} x="-30%" y="-45%" width="160%" height="190%"><feDropShadow dx="0" dy="10" stdDeviation="8" floodColor="#020617" floodOpacity="0.45" /><feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#38bdf8" floodOpacity="0.35" /></filter></defs>
+        <rect width={width} height={height} fill={`url(#${markerId}-grid)`} opacity="0.9" />
+        <g aria-hidden="true">{flowChart.map((flow, index) => { const edge = edgePath(flow, index); if (!edge) return null; const labelLines = edge.labelLines.length > 0 ? edge.labelLines : ['Transition']; const labelWidth = Math.min(190, Math.max(52, Math.max(...labelLines.map((line) => line.length)) * 5.5 + 12)); const labelHeight = labelLines.length * 12 + 6; return <g key={`edge-${index}`}><path d={edge.path} fill="none" stroke="#38bdf8" strokeOpacity="0.22" strokeWidth="5" /><path d={edge.path} fill="none" stroke="#7dd3fc" strokeOpacity="0.76" strokeWidth="1.5" markerEnd={`url(#${markerId})`} /><rect x={edge.labelX - labelWidth / 2} y={edge.labelY - labelHeight / 2} width={labelWidth} height={labelHeight} rx="5" fill="#06111f" opacity="0.95" /><text x={edge.labelX} y={edge.labelY - ((labelLines.length - 1) * 6)} textAnchor="middle" className="fill-sky-100 text-[9px]">{labelLines.map((line, lineIndex) => <tspan key={lineIndex} x={edge.labelX} dy={lineIndex === 0 ? 0 : 12}>{line}</tspan>)}</text></g> })}</g>
+        {nodes.map((label) => { const position = positions.get(label); if (!position) return null; const lines = wrap(label); return <g key={label} filter={`url(#${markerId}-lift)`}><rect x={position.x + 8} y={position.y + 8} width={nodeWidth} height={nodeHeight} rx="10" fill="#020617" opacity="0.54" /><rect x={position.x} y={position.y} width={nodeWidth} height={nodeHeight} rx="10" fill={`url(#${markerId}-node)`} stroke="#38bdf8" strokeWidth="1.5" /><path d={`M ${position.x + 10} ${position.y + 10} H ${position.x + nodeWidth - 10}`} stroke="#e0f2fe" strokeOpacity="0.4" strokeWidth="1.2" /><text x={position.x + nodeWidth / 2} y={position.y + nodeHeight / 2 - (lines.length - 1) * 8} textAnchor="middle" className="fill-slate-50 text-xs font-semibold">{lines.map((line, index) => <tspan key={index} x={position.x + nodeWidth / 2} dy={index === 0 ? 0 : 16}>{line}</tspan>)}</text></g> })}
       </svg>
     </div>
     <div className="sr-only">{flowChart.map((flow, index) => `${index + 1}. ${String(flow.from)} to ${String(flow.to)}: ${String(flow.label)}${flow.condition ? `, condition: ${String(flow.condition)}` : ''}`).join(' ')}</div>
   </div>
   return <>
-    <section className="grid gap-3 bg-background/70 p-3" aria-labelledby="ui-ux-system-flow-title">
+    <section className="grid gap-3 bg-[#07111f] p-3 text-slate-100" aria-labelledby="ui-ux-system-flow-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h3 id="ui-ux-system-flow-title" className="flex items-center gap-2 text-sm font-semibold"><Workflow className="size-4 text-sky-600 dark:text-sky-300" />Connected system flow</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">AI-generated screens and transitions are shown as a connected flow. Open the map to pan and zoom.</p></div>
         <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => { resetFlowViewport(); setFlowDialogOpen(true) }}><Workflow className="size-4" />Open full flow</Button>
@@ -8764,10 +16203,19 @@ function ExecutionRoadmapProposalCanvas({ phases, proposal, targetFlow, targetSe
       selected && 'stroke-ring',
     )
   }
+  function proposalNodeFill(node: ExecutionProposalCanvasNode, selected: boolean) {
+    if (selected) return 'rgba(56, 189, 248, 0.28)'
+    if (node.kind === 'target') return 'rgba(14, 165, 233, 0.18)'
+    if (node.kind === 'form') return 'rgba(168, 85, 247, 0.18)'
+    if (node.kind === 'database') return 'rgba(16, 185, 129, 0.18)'
+    if (node.kind === 'surface') return 'rgba(30, 64, 175, 0.2)'
+    if (node.kind === 'source') return 'rgba(15, 23, 42, 0.92)'
+    return 'rgba(8, 21, 38, 0.92)'
+  }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-muted/10">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b bg-background px-3 py-2">
+    <div className="flex h-full min-h-0 flex-col bg-[#07111f] text-slate-100">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#06111f] px-3 py-2">
         <div className="flex flex-wrap items-center gap-2"><Badge variant="secondary"><LockKeyhole />Read-only proposal</Badge><Badge variant="outline">{graph.nodes.length} Nodes</Badge><Badge variant="outline">{graph.edges.length} Preview links</Badge></div>
         <div className="flex items-center gap-1">
           <Tooltip><TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label="Zoom proposal out" onClick={() => setZoom((value) => Math.max(0.7, Number((value - 0.15).toFixed(2))))} disabled={zoom <= 0.7} />}><ZoomOut /></TooltipTrigger><TooltipContent>Zoom out</TooltipContent></Tooltip>
@@ -8776,11 +16224,12 @@ function ExecutionRoadmapProposalCanvas({ phases, proposal, targetFlow, targetSe
           <Button type="button" variant="outline" size="sm" onClick={() => setZoom(1)}><Frame data-icon="inline-start" />Fit</Button>
         </div>
       </div>
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#07111f] bg-[radial-gradient(circle_at_72%_20%,rgba(14,165,233,0.16),transparent_28%),linear-gradient(135deg,#07111f_0%,#0b1628_58%,#020617_100%)]">
         <svg width="100%" height="100%" viewBox={`0 0 ${graph.width} ${graph.height}`} preserveAspectRatio="xMidYMid meet" role="group" aria-label="Read-only UI/UX proposal graph" className="h-full w-full select-none">
           <defs>
-            <pattern id={`${markerId}-grid`} width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" className="fill-border" /></pattern>
+            <pattern id={`${markerId}-grid`} width="28" height="28" patternUnits="userSpaceOnUse"><path d="M 28 0 H 0 V 28" fill="none" stroke="#93c5fd" strokeOpacity="0.08" strokeWidth="1" /></pattern>
             <marker id={`${markerId}-arrow`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 8 4 L 0 8 z" className="fill-primary" /></marker>
+            <filter id={`${markerId}-proposal-lift`} x="-25%" y="-35%" width="150%" height="170%"><feDropShadow dx="0" dy="9" stdDeviation="7" floodColor="#020617" floodOpacity="0.5" /><feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#38bdf8" floodOpacity="0.22" /></filter>
           </defs>
           <rect width={graph.width} height={graph.height} fill={`url(#${markerId}-grid)`} />
           <g transform={`translate(${graph.width * (1 - zoom) / 2} ${graph.height * (1 - zoom) / 2}) scale(${zoom})`}>
@@ -8793,17 +16242,19 @@ function ExecutionRoadmapProposalCanvas({ phases, proposal, targetFlow, targetSe
               const endX = to.x
               const endY = to.y + to.height / 2
               const active = selectedNodeId === from.id || selectedNodeId === to.id
-              return <path key={edge.id} d={`M ${startX} ${startY} C ${startX + (endX - startX) * 0.45} ${startY}, ${startX + (endX - startX) * 0.55} ${endY}, ${endX} ${endY}`} className={cn('fill-none stroke-primary', active ? 'opacity-100' : 'opacity-35')} strokeWidth={active ? 2 : 1.25} markerEnd={`url(#${markerId}-arrow)`} vectorEffect="non-scaling-stroke" />
+              return <g key={edge.id}><path d={`M ${startX} ${startY} C ${startX + (endX - startX) * 0.45} ${startY}, ${startX + (endX - startX) * 0.55} ${endY}, ${endX} ${endY}`} className={cn('fill-none stroke-sky-400', active ? 'opacity-45' : 'opacity-15')} strokeWidth={active ? 6 : 4} vectorEffect="non-scaling-stroke" /><path d={`M ${startX} ${startY} C ${startX + (endX - startX) * 0.45} ${startY}, ${startX + (endX - startX) * 0.55} ${endY}, ${endX} ${endY}`} className={cn('fill-none stroke-sky-300', active ? 'opacity-100' : 'opacity-45')} strokeWidth={active ? 2 : 1.25} markerEnd={`url(#${markerId}-arrow)`} vectorEffect="non-scaling-stroke" /></g>
             })}
             {graph.nodes.map((node) => {
               const selected = selectedNodeId === node.id
               const labelLines = executionProposalLabelLines(node.label, node.kind === 'milestone' ? 32 : 24)
               return (
-                <g key={node.id} role="button" tabIndex={0} aria-label={`${node.kind}: ${node.label}. ${node.subtitle}`} aria-pressed={selected} className="cursor-pointer outline-none" onClick={(event) => { event.stopPropagation(); selectNode(node.id) }} onKeyDown={(event) => activateSvgControl(event, () => selectNode(node.id))}>
-                  <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={10} className={nodeClassName(node, selected)} strokeWidth={selected ? 2.5 : 1.2} vectorEffect="non-scaling-stroke" />
-                  <text x={node.x + 14} y={node.y + 18} className="pointer-events-none fill-muted-foreground text-[9px] font-semibold uppercase tracking-wider">{node.kind}</text>
-                  {labelLines.map((line, lineIndex) => <text key={`${node.id}-line-${lineIndex}`} x={node.x + 14} y={node.y + 39 + lineIndex * 16} className="pointer-events-none fill-foreground text-[12px] font-semibold">{line}</text>)}
-                  <text x={node.x + 14} y={node.y + node.height - 11} className="pointer-events-none fill-muted-foreground text-[9px]">{node.subtitle.length > 42 ? `${node.subtitle.slice(0, 41)}…` : node.subtitle}</text>
+                <g key={node.id} role="button" tabIndex={0} aria-label={`${node.kind}: ${node.label}. ${node.subtitle}`} aria-pressed={selected} className="cursor-pointer outline-none" filter={`url(#${markerId}-proposal-lift)`} onClick={(event) => { event.stopPropagation(); selectNode(node.id) }} onKeyDown={(event) => activateSvgControl(event, () => selectNode(node.id))}>
+                  <rect x={node.x + 8} y={node.y + 8} width={node.width} height={node.height} rx={10} fill="#020617" opacity="0.48" />
+                  <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={10} className={nodeClassName(node, selected)} style={{ fill: proposalNodeFill(node, selected) }} strokeWidth={selected ? 2.5 : 1.2} vectorEffect="non-scaling-stroke" />
+                  <path d={`M ${node.x + 12} ${node.y + 10} H ${node.x + node.width - 12}`} stroke="#e0f2fe" strokeOpacity="0.28" strokeWidth="1" />
+                  <text x={node.x + 14} y={node.y + 18} className="pointer-events-none fill-sky-200 text-[9px] font-semibold uppercase tracking-wider">{node.kind}</text>
+                  {labelLines.map((line, lineIndex) => <text key={`${node.id}-line-${lineIndex}`} x={node.x + 14} y={node.y + 39 + lineIndex * 16} className="pointer-events-none fill-slate-50 text-[12px] font-semibold">{line}</text>)}
+                  <text x={node.x + 14} y={node.y + node.height - 11} className="pointer-events-none fill-slate-300 text-[9px]">{node.subtitle.length > 42 ? `${node.subtitle.slice(0, 41)}…` : node.subtitle}</text>
                 </g>
               )
             })}
@@ -8811,7 +16262,7 @@ function ExecutionRoadmapProposalCanvas({ phases, proposal, targetFlow, targetSe
         </svg>
         {phases.length === 0 ? <div className="pointer-events-none absolute inset-0 grid place-items-center"><p className="rounded-lg border bg-background/95 px-4 py-3 text-sm text-muted-foreground shadow-sm">Select a roadmap milestone to populate the proposed flow.</p></div> : null}
       </div>
-      <div className="grid shrink-0 gap-2 border-t bg-background p-3 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
+      <div className="grid shrink-0 gap-2 border-t border-white/10 bg-[#06111f] p-3 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
         <Badge variant="outline" className="w-fit uppercase">{selectedNode?.kind || 'source'}</Badge>
         <div className="min-w-0"><p className="font-semibold">{selectedNode?.label || 'Tab 4 roadmap'}</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{selectedNode?.detail || 'Select a GUI node to inspect its proposed responsibility.'}</p><p className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground">Inspection only · nodes cannot be moved or edited</p></div>
       </div>
@@ -10321,6 +17772,7 @@ function ProjectFlowSymbol({ node, isSelected, onPointerDown, onClick }: { node:
   const labelY = node.y + node.height / 2 + 3
   const symbolProps = {
     className: 'cursor-move select-none',
+    style: { filter: isSelected ? 'drop-shadow(0 0 12px rgba(56, 189, 248, 0.62)) drop-shadow(0 12px 14px rgba(2, 6, 23, 0.52))' : 'drop-shadow(0 8px 10px rgba(2, 6, 23, 0.48))' },
     'data-node-id': node.id,
     'data-node-kind': node.kind,
     role: 'button',
@@ -10863,7 +18315,7 @@ function ProjectFlowCanvas({ entries, totalViews, totalActions, sourcePath }: { 
       </CardHeader>
       <CardContent className="p-0">
         <div className="grid min-w-0 bg-[#101726] lg:grid-cols-[minmax(0,1fr)_280px]">
-          <div className="relative h-[calc(100vh-350px)] min-h-[360px] min-w-0 overflow-hidden bg-[radial-gradient(circle_at_50%_48%,rgba(31,51,87,0.82)_0%,rgba(20,36,63,0.74)_58%,#0b1020_100%)]">
+            <div className="relative h-[calc(100vh-350px)] min-h-[360px] min-w-0 overflow-hidden bg-[radial-gradient(circle_at_68%_20%,rgba(14,165,233,0.22),transparent_27%),radial-gradient(circle_at_22%_76%,rgba(16,185,129,0.13),transparent_28%),linear-gradient(135deg,#07111f_0%,#0b1628_58%,#020617_100%)]">
           <svg
             ref={svgRef}
             width="100%"
@@ -10884,8 +18336,11 @@ function ProjectFlowCanvas({ entries, totalViews, totalActions, sourcePath }: { 
               <marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
                 <path d="M 0 0 L 8 4 L 0 8 z" fill="#83a6d9" />
               </marker>
+              <pattern id="flow-map-grid" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M 36 0 H 0 V 36" fill="none" stroke="#93c5fd" strokeOpacity="0.08" strokeWidth="1" /></pattern>
+              <radialGradient id="flow-map-glow" cx="58%" cy="34%" r="62%"><stop offset="0%" stopColor="#38bdf8" stopOpacity="0.16" /><stop offset="68%" stopColor="#1d4ed8" stopOpacity="0.05" /><stop offset="100%" stopColor="#020617" stopOpacity="0" /></radialGradient>
             </defs>
-            <rect width={chart.width} height={chart.height} fill="transparent" />
+            <rect width={chart.width} height={chart.height} fill="url(#flow-map-glow)" />
+            <rect width={chart.width} height={chart.height} fill="url(#flow-map-grid)" />
             <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
             {chart.edges.map((edge) => {
               const from = nodesById.get(edge.from)
@@ -10897,14 +18352,21 @@ function ProjectFlowCanvas({ entries, totalViews, totalActions, sourcePath }: { 
               const endX = fromCenter.x < toCenter.x ? to.x : to.x + to.width
 
               return (
-                <path
-                  key={edge.id}
-                  d={`M ${startX} ${fromCenter.y} C ${(startX + endX) / 2} ${fromCenter.y}, ${(startX + endX) / 2} ${toCenter.y}, ${endX} ${toCenter.y}`}
-                  className="fill-none stroke-[#5f7fb8]"
-                  strokeOpacity="0.62"
-                  strokeWidth="1.25"
-                  markerEnd="url(#flow-arrow)"
-                />
+                <g key={edge.id}>
+                  <path
+                    d={`M ${startX} ${fromCenter.y} C ${(startX + endX) / 2} ${fromCenter.y}, ${(startX + endX) / 2} ${toCenter.y}, ${endX} ${toCenter.y}`}
+                    className="fill-none stroke-[#38bdf8]"
+                    strokeOpacity="0.16"
+                    strokeWidth="5"
+                  />
+                  <path
+                    d={`M ${startX} ${fromCenter.y} C ${(startX + endX) / 2} ${fromCenter.y}, ${(startX + endX) / 2} ${toCenter.y}, ${endX} ${toCenter.y}`}
+                    className="fill-none stroke-[#83a6d9]"
+                    strokeOpacity="0.72"
+                    strokeWidth="1.25"
+                    markerEnd="url(#flow-arrow)"
+                  />
+                </g>
               )
             })}
             {chart.nodes.map((node) => (
@@ -11532,7 +18994,7 @@ function ProjectFlowNetworkView({ entries, totalViews, totalActions, sourcePath 
         </CardHeader>
         <CardContent className="p-0">
           <div className="grid min-w-0 bg-[#101726] lg:grid-cols-[minmax(0,1fr)_280px]">
-            <div className="relative h-[calc(100vh-266px)] min-h-[340px] overflow-hidden bg-[radial-gradient(circle_at_50%_48%,rgba(31,51,87,0.82)_0%,rgba(20,36,63,0.74)_58%,#0b1020_100%)]">
+            <div className="relative h-[calc(100vh-266px)] min-h-[340px] overflow-hidden bg-[radial-gradient(circle_at_63%_20%,rgba(56,189,248,0.22),transparent_26%),radial-gradient(circle_at_24%_72%,rgba(129,140,248,0.14),transparent_30%),linear-gradient(135deg,#07111f_0%,#0b1628_58%,#020617_100%)]">
               <svg
                 ref={svgRef}
                 width="100%"
@@ -11561,8 +19023,11 @@ function ProjectFlowNetworkView({ entries, totalViews, totalActions, sourcePath 
                     <stop offset="58%" stopColor="#0ea5e9" stopOpacity="0.08" />
                     <stop offset="100%" stopColor="#020617" stopOpacity="0" />
                   </radialGradient>
+                  <pattern id="data-v2-grid" width="38" height="38" patternUnits="userSpaceOnUse"><path d="M 38 0 H 0 V 38" fill="none" stroke="#93c5fd" strokeOpacity="0.06" strokeWidth="1" /></pattern>
+                  <radialGradient id="data-v2-space" cx="57%" cy="34%" r="66%"><stop offset="0%" stopColor="#38bdf8" stopOpacity="0.16" /><stop offset="55%" stopColor="#1d4ed8" stopOpacity="0.06" /><stop offset="100%" stopColor="#020617" stopOpacity="0" /></radialGradient>
                 </defs>
-	                <rect width={graph.width} height={graph.height} fill="transparent" />
+	                <rect width={graph.width} height={graph.height} fill="url(#data-v2-space)" />
+                <rect width={graph.width} height={graph.height} fill="url(#data-v2-grid)" />
                 <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
                   <g aria-hidden="true" pointerEvents="none">
                     <ellipse cx={graph.width / 2} cy={graph.height / 2} rx={800} ry={624} fill="url(#data-v2-globe)" stroke="#38bdf8" strokeOpacity={0.22} strokeWidth={1.2} />
@@ -11583,17 +19048,28 @@ function ProjectFlowNetworkView({ entries, totalViews, totalActions, sourcePath 
                     const startPoint = projectFlowNetworkEdgePoint(from, to)
                     const endPoint = projectFlowNetworkEdgePoint(to, from)
                     return (
-                      <line
-                        key={edge.id}
-                        x1={startPoint.x}
-                        y1={startPoint.y}
-                        x2={endPoint.x}
-                        y2={endPoint.y}
-                        stroke={active ? '#8fd3ff' : '#5f7fb8'}
-                        strokeOpacity={active ? 0.92 : (edge.kind === 'primary' ? 0.46 : 0.28) * depthOpacity}
-                        strokeWidth={active ? 1.7 : edge.kind === 'primary' ? 1.1 : 0.8}
-                        vectorEffect="non-scaling-stroke"
-                      />
+                      <g key={edge.id}>
+                        <line
+                          x1={startPoint.x}
+                          y1={startPoint.y}
+                          x2={endPoint.x}
+                          y2={endPoint.y}
+                          stroke="#38bdf8"
+                          strokeOpacity={active ? 0.28 : (edge.kind === 'primary' ? 0.14 : 0.08) * depthOpacity}
+                          strokeWidth={active ? 5 : edge.kind === 'primary' ? 3.5 : 2.5}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <line
+                          x1={startPoint.x}
+                          y1={startPoint.y}
+                          x2={endPoint.x}
+                          y2={endPoint.y}
+                          stroke={active ? '#8fd3ff' : '#5f7fb8'}
+                          strokeOpacity={active ? 0.92 : (edge.kind === 'primary' ? 0.46 : 0.28) * depthOpacity}
+                          strokeWidth={active ? 1.7 : edge.kind === 'primary' ? 1.1 : 0.8}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      </g>
                     )
                   })}
                   {[...nodes].sort((first, second) => (first.depth || 0) - (second.depth || 0)).map((node) => {
@@ -11656,6 +19132,7 @@ function ProjectFlowNetworkView({ entries, totalViews, totalActions, sourcePath 
                         {compact ? (
                           <>
                             <rect x={node.x - box.width / 2} y={node.y - box.height / 2} width={box.width} height={box.height} fill="transparent" />
+                            <circle cx={node.x + 3} cy={node.y + 5} r={node.kind === 'note' ? (selected ? 11 : 8.5) : 18} fill="#020617" fillOpacity="0.58" />
                             <circle cx={node.x} cy={node.y} r={node.kind === 'note' ? (selected ? 11 : 8.5) : 18} fill="#07111f" fillOpacity={0.96} stroke={color} strokeOpacity={selected ? 1 : 0.82} strokeWidth={selected ? 2.2 : 1.2} vectorEffect="non-scaling-stroke" />
                             {node.kind === 'entry' ? (
                               <g fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke">
@@ -11692,6 +19169,7 @@ function ProjectFlowNetworkView({ entries, totalViews, totalActions, sourcePath 
                           </>
                         ) : (
                           <>
+                            <rect x={node.x - box.width / 2 + 8} y={node.y - box.height / 2 + 9} width={box.width} height={box.height} rx={10} fill="#020617" fillOpacity="0.42" />
                             <rect
                               x={node.x - box.width / 2}
                               y={node.y - box.height / 2}
@@ -12368,7 +19846,7 @@ function AiFlowView() {
           </div>
         </div>
         <div className="grid min-w-0 bg-[#101726] lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="relative h-[calc(100vh-350px)] min-h-[360px] min-w-0 overflow-hidden bg-[radial-gradient(circle_at_50%_48%,rgba(31,51,87,0.82)_0%,rgba(20,36,63,0.74)_58%,#0b1020_100%)]">
+          <div className="relative h-[calc(100vh-350px)] min-h-[360px] min-w-0 overflow-hidden bg-[radial-gradient(circle_at_68%_22%,rgba(56,189,248,0.2),transparent_27%),radial-gradient(circle_at_20%_78%,rgba(34,197,94,0.12),transparent_30%),linear-gradient(135deg,#07111f_0%,#0b1628_58%,#020617_100%)]">
             <svg
               ref={svgRef}
               width="100%"
@@ -12392,8 +19870,11 @@ function AiFlowView() {
                     <feMergeNode in="SourceGraphic" />
                   </feMerge>
                 </filter>
+                <pattern id="ai-flow-grid" width="38" height="38" patternUnits="userSpaceOnUse"><path d="M 38 0 H 0 V 38" fill="none" stroke="#93c5fd" strokeOpacity="0.06" strokeWidth="1" /></pattern>
+                <radialGradient id="ai-flow-space" cx="58%" cy="35%" r="64%"><stop offset="0%" stopColor="#38bdf8" stopOpacity="0.16" /><stop offset="56%" stopColor="#1d4ed8" stopOpacity="0.05" /><stop offset="100%" stopColor="#020617" stopOpacity="0" /></radialGradient>
               </defs>
-              <rect width={graph.width} height={graph.height} fill="transparent" />
+              <rect width={graph.width} height={graph.height} fill="url(#ai-flow-space)" />
+              <rect width={graph.width} height={graph.height} fill="url(#ai-flow-grid)" />
               <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
                 {graph.edges.map((edge) => {
                   const from = nodesById.get(edge.from)
@@ -12402,18 +19883,29 @@ function AiFlowView() {
                   const active = selectedNodeId === from.id || selectedNodeId === to.id
 
                   return (
-                    <line
-                      key={edge.id}
-                      x1={from.x}
-                      y1={from.y}
-                      x2={to.x}
-                      y2={to.y}
-                      stroke={active ? '#8fd3ff' : '#5f7fb8'}
-                      strokeOpacity={active ? 0.92 : edge.kind === 'primary' ? 0.48 : 0.3}
-                      strokeWidth={active ? 1.8 : edge.kind === 'primary' ? 1.1 : 0.8}
-                      strokeDasharray={aiProcessing ? '5 5' : undefined}
-                      vectorEffect="non-scaling-stroke"
-                    />
+                    <g key={edge.id}>
+                      <line
+                        x1={from.x}
+                        y1={from.y}
+                        x2={to.x}
+                        y2={to.y}
+                        stroke="#38bdf8"
+                        strokeOpacity={active ? 0.28 : edge.kind === 'primary' ? 0.14 : 0.08}
+                        strokeWidth={active ? 5.5 : edge.kind === 'primary' ? 3.6 : 2.6}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <line
+                        x1={from.x}
+                        y1={from.y}
+                        x2={to.x}
+                        y2={to.y}
+                        stroke={active ? '#8fd3ff' : '#5f7fb8'}
+                        strokeOpacity={active ? 0.92 : edge.kind === 'primary' ? 0.48 : 0.3}
+                        strokeWidth={active ? 1.8 : edge.kind === 'primary' ? 1.1 : 0.8}
+                        strokeDasharray={aiProcessing ? '5 5' : undefined}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    </g>
                   )
                 })}
                 {nodes.map((node) => {
@@ -24088,15 +31580,24 @@ function builderxCsrfToken(): string {
   return String(phaseData?.csrf || data?.csrf || portalData?.csrf || '')
 }
 
-const sharinganEnabledStorageKey = `builderx:${projectPublicPath}:sharingan:enabled`
 const sharinganStateEvent = 'builderx:sharingan-state'
 
 function readSharinganEnabled(): boolean {
-  return window.localStorage.getItem(sharinganEnabledStorageKey) === '1'
+  return Boolean(phaseData?.sharinganEnabled ?? portalData?.sharinganEnabled ?? data?.sharinganEnabled)
 }
 
-function writeSharinganEnabled(enabled: boolean) {
-  window.localStorage.setItem(sharinganEnabledStorageKey, enabled ? '1' : '0')
+function updateSharinganPayload(enabled: boolean) {
+  if (data) {
+    data.sharinganEnabled = enabled
+    const setting = data.settings?.find((item) => item.setting_name === 'sharingan_enabled')
+    if (setting) setting.setting_value = enabled ? '1' : '0'
+  }
+  if (phaseData) phaseData.sharinganEnabled = enabled
+  if (portalData) portalData.sharinganEnabled = enabled
+}
+
+function emitSharinganEnabled(enabled: boolean) {
+  updateSharinganPayload(enabled)
   window.dispatchEvent(new CustomEvent(sharinganStateEvent, { detail: { enabled } }))
 }
 
@@ -24109,16 +31610,41 @@ function useSharinganEnabled(): [boolean, (enabled: boolean) => void] {
       setEnabled(typeof detail?.enabled === 'boolean' ? detail.enabled : readSharinganEnabled())
     }
     window.addEventListener(sharinganStateEvent, sync)
-    window.addEventListener('storage', sync)
     return () => {
       window.removeEventListener(sharinganStateEvent, sync)
-      window.removeEventListener('storage', sync)
     }
   }, [])
 
   const update = React.useCallback((next: boolean) => {
+    if (!data?.isAdmin || portalData || phaseData) {
+      return
+    }
+    const previous = readSharinganEnabled()
     setEnabled(next)
-    writeSharinganEnabled(next)
+    emitSharinganEnabled(next)
+
+    const formData = new FormData()
+    formData.set('csrf', data.csrf)
+    formData.set('action', 'set_sharingan_enabled')
+    formData.set('enabled', next ? '1' : '0')
+
+    void fetch(projectUrl('administrator/'), {
+      method: 'POST',
+      body: formData,
+      headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    }).then(async (response) => {
+      const result = await response.json() as { ok?: boolean; message?: string; sharinganEnabled?: boolean }
+      if (!response.ok || result.ok !== true) {
+        throw new Error(result.message || 'Sharingan setting could not be saved.')
+      }
+      const persisted = Boolean(result.sharinganEnabled)
+      setEnabled(persisted)
+      emitSharinganEnabled(persisted)
+    }).catch((error) => {
+      setEnabled(previous)
+      emitSharinganEnabled(previous)
+      window.alert(error instanceof Error ? error.message : 'Sharingan setting could not be saved.')
+    })
   }, [])
 
   return [enabled, update]
@@ -24126,12 +31652,29 @@ function useSharinganEnabled(): [boolean, (enabled: boolean) => void] {
 
 function SharinganHeaderToggle() {
   const [enabled, setEnabled] = useSharinganEnabled()
+  if (!data?.isAdmin || portalData || phaseData) return null
+
   return (
     <div className="flex shrink-0 items-center gap-2 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5">
       <SharinganIcon className={cn('size-4', enabled ? 'text-red-500' : 'text-muted-foreground')} />
       <span className="hidden text-xs font-medium sm:inline">Sharingan</span>
       <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={`${enabled ? 'Disable' : 'Enable'} Sharingan visual tool`} />
     </div>
+  )
+}
+
+function SharinganSidebarToggle() {
+  const [enabled, setEnabled] = useSharinganEnabled()
+  if (!data?.isAdmin || portalData || phaseData) return null
+
+  return (
+    <label className="flex min-h-8 w-full cursor-pointer items-center justify-between gap-2 rounded-md border border-sidebar-border/70 px-2 py-1.5 text-xs">
+      <span className="flex min-w-0 items-center gap-2">
+        <SharinganIcon className={cn('size-4 shrink-0', enabled ? 'text-red-500' : 'text-muted-foreground')} />
+        <span className="truncate">Sharingan</span>
+      </span>
+      <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={`${enabled ? 'Disable' : 'Enable'} Sharingan visual tool`} />
+    </label>
   )
 }
 
@@ -25155,28 +32698,38 @@ function AdminApp() {
 
   const viewTitle = activeView === 'branches'
     ? 'Branches'
-    : activeView === 'family-reports'
-      ? 'Family Reports'
     : activeView === 'projects'
       ? 'Projects'
       : activeView === 'users'
         ? 'Users'
-        : activeView === 'groups'
-          ? 'Groups'
-          : activeView === 'roles'
-            ? 'Roles'
-            : activeView === 'permissions'
-              ? 'Permissions'
-              : activeView === 'settings'
-                ? 'System Settings'
-                : activeView === 'health'
-                  ? 'Runtime Health'
-                  : activeView === 'audit'
-                    ? 'Audit Logs'
-                    : activeView === 'template'
-                        ? 'Template'
-                        : 'Dashboard'
-  const buildTarget = activeView === 'family-reports' ? 'P1-T4' : activeView === 'template' ? 'TEMPLATE' : activeView === 'health' ? 'P1-T17' : activeView === 'audit' ? 'P1-T15' : activeView === 'settings' ? 'P1-T14' : activeView === 'permissions' ? 'P1-T13' : activeView === 'roles' ? 'P1-T12' : activeView === 'groups' ? 'P1-T11' : activeView === 'users' ? 'P1-T10' : activeView === 'projects' ? 'P1-T9' : activeView === 'branches' ? 'P1-T8' : 'P1'
+        : activeView === 'positions'
+          ? 'Positions'
+          : activeView === 'groups'
+            ? 'Groups'
+            : activeView === 'roles'
+              ? 'Roles'
+              : activeView === 'permissions'
+                ? 'Permissions'
+                : activeView === 'settings'
+                  ? 'System Settings'
+                  : activeView === 'bed-management'
+                    ? 'Bed Management'
+                    : activeView === 'bed-lookup'
+                      ? 'Bed Lookup'
+                      : activeView === 'bed-treatment'
+                        ? 'Bed Treatment'
+                        : activeView === 'bed-source'
+                          ? 'Bed Source'
+                    : activeView === 'task-builder'
+                      ? 'Task Builder'
+                  : activeView === 'health'
+                    ? 'Runtime Health'
+                    : activeView === 'audit'
+                      ? 'Audit Logs'
+                      : activeView === 'template'
+                          ? 'Template'
+                          : 'Dashboard'
+  const buildTarget = activeView === 'template' ? 'TEMPLATE' : activeView === 'health' ? 'P1-T17' : activeView === 'audit' ? 'P1-T15' : activeView === 'task-builder' ? 'TASK-BUILDER' : activeView === 'bed-source' ? 'BED-SOURCE' : activeView === 'bed-treatment' ? 'BED-TREATMENT' : activeView === 'bed-lookup' ? 'BED-LOOKUP' : activeView === 'bed-management' ? 'BED' : activeView === 'settings' ? 'P1-T14' : activeView === 'permissions' ? 'P1-T13' : activeView === 'roles' ? 'P1-T12' : activeView === 'groups' ? 'P1-T11' : activeView === 'positions' ? 'P1-T10-POS' : activeView === 'users' ? 'P1-T10' : activeView === 'projects' ? 'P1-T9' : activeView === 'branches' ? 'P1-T8' : 'P1'
   const breadcrumbItems = ['Administrator', viewTitle]
 
   return (
@@ -25192,27 +32745,37 @@ function AdminApp() {
       {data.isSignedIn && data.isAdmin ? (
         activeView === 'branches'
           ? <BranchCrudView />
-          : activeView === 'family-reports'
-            ? <FamilyReportsView />
           : activeView === 'projects'
             ? <ProjectCrudView />
             : activeView === 'users'
               ? <UserCrudView />
-              : activeView === 'groups'
-                ? <GroupCrudView />
-                : activeView === 'roles'
-                  ? <RoleCrudView />
-                  : activeView === 'permissions'
-                    ? <PermissionMatrixView />
-                    : activeView === 'settings'
-                      ? <SystemSettingsView />
-                      : activeView === 'health'
-                      ? <RuntimeHealthView />
-                      : activeView === 'audit'
-                        ? <AuditLogView />
-                        : activeView === 'template'
-                            ? <TemplateCommandView />
-                            : <Dashboard />
+              : activeView === 'positions'
+                ? <UserPositionCrudView />
+                : activeView === 'groups'
+                  ? <GroupCrudView />
+                  : activeView === 'roles'
+                    ? <RoleCrudView />
+                    : activeView === 'permissions'
+                      ? <PermissionMatrixView />
+                      : activeView === 'settings'
+                        ? <SystemSettingsView />
+                        : activeView === 'bed-management'
+                          ? <BedManagementView />
+                        : activeView === 'bed-lookup'
+                          ? <BedLookupView />
+                        : activeView === 'bed-treatment'
+                          ? <BedReferenceManagementView type="treatment" />
+                        : activeView === 'bed-source'
+                          ? <BedReferenceManagementView type="source" />
+                        : activeView === 'task-builder'
+                          ? <TaskBuilderView />
+                        : activeView === 'health'
+                        ? <RuntimeHealthView />
+                        : activeView === 'audit'
+                          ? <AuditLogView />
+                          : activeView === 'template'
+                              ? <TemplateCommandView />
+                              : <Dashboard />
       ) : (
         <AuthLanding theme={theme} onThemeToggle={handleThemeToggle} />
       )}
@@ -25246,12 +32809,16 @@ function ShadcnPhaseAuthApp() {
                 <p className="text-xs text-muted-foreground">Administrator Portal credentials</p>
               </div>
             </div>
-            <Tooltip>
-              <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />}>
-                {theme === 'dark' ? <Sun /> : <Moon />}
-              </TooltipTrigger>
-              <TooltipContent>{nextThemeLabel}</TooltipContent>
-            </Tooltip>
+            <div className="flex items-center gap-2">
+              <MessengerHeaderButton />
+              <HeaderControlSeparator />
+              <Tooltip>
+                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />}>
+                  {theme === 'dark' ? <Sun /> : <Moon />}
+                </TooltipTrigger>
+                <TooltipContent>{nextThemeLabel}</TooltipContent>
+              </Tooltip>
+            </div>
           </header>
 
           <Card className="w-full">
@@ -27750,7 +35317,7 @@ function ShadcnPhaseBuilderApp() {
                 </DialogContent>
               </Dialog>
               <Dialog open={phase2DialogOpen} onOpenChange={setPhase2DialogOpen}><DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"><DialogHeader className="sticky top-0 z-30 shrink-0 border-b bg-popover px-6 py-5 pr-14"><DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close Phase Builder Narrative & Cleanup workflow" title="Close Phase Builder Narrative & Cleanup workflow" />}><X /></DialogClose><DialogTitle className="flex items-center gap-2"><Sparkles className={bridgeIndicatorClass} />Phase Builder · Narrative &amp; Cleanup</DialogTitle><DialogDescription>Persistent Planning Engine stages → validated transaction → UI read-back.</DialogDescription></DialogHeader><div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-6"><div className="grid gap-4"><div className={cn('bg-muted/30 p-3 text-sm', phase2Workflow.status === 'error' ? 'text-destructive' : 'text-foreground')} role={phase2Workflow.status === 'error' ? 'alert' : 'status'} aria-live="polite"><p className="font-medium">{phase2Workflow.message || 'Phase Builder Narrative & Cleanup is ready.'}</p>{phase2Workflow.error ? <p className="mt-2 whitespace-pre-wrap text-xs">{phase2Workflow.error}</p> : null}</div>{phase2PersistentRun ? <dl className="grid grid-cols-1 gap-2 rounded-md border bg-muted/10 p-3 text-xs sm:grid-cols-2"><div><dt className="text-muted-foreground">Persistent run</dt><dd className="mt-1 break-all font-mono">{String(phase2PersistentRun.run_key || 'Not created')}</dd></div><div><dt className="text-muted-foreground">Saved state</dt><dd className="mt-1 font-medium">{String(phase2PersistentRun.status || 'Unknown')} · {String(phase2PersistentRun.stage_key || 'context')}</dd></div></dl> : null}<ol className="grid gap-2 text-sm">{([['context', 'Capture and checkpoint current Tab 1 context'], ['coordinator', 'Deterministic orchestrator selects the next stage'], ['grammar', 'Planning Engine corrects spelling and grammar'], ['database', 'Planning Engine validates the correction'], ['save', 'Transaction, backup, read-back, and final checkpoint']] as const).map(([step, label], index) => { const active = phase2Workflow.step === step; const complete = phase2Workflow.status === 'success' || (phase2Workflow.status === 'running' && ['context', 'coordinator', 'grammar', 'database', 'save'].indexOf(phase2Workflow.step) > index); return <li key={step} className="flex items-start gap-3 border-b pb-3 last:border-b-0 last:pb-0"><span className={cn('mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs', complete ? 'text-emerald-500' : active ? bridgeIndicatorClass : 'text-muted-foreground')}>{complete ? <CheckCircle2 className="size-4" /> : active && phase2Workflow.status === 'running' ? <LoaderCircle className="size-4 animate-spin" /> : index + 1}</span><span className={cn(active ? 'font-medium' : 'text-muted-foreground')}>{label}</span></li> })}</ol><OneFlowEventLog events={phase2Workflow.events} />{phase2Workflow.report ? <div className="grid gap-2 border-t pt-4"><p className="text-sm font-medium">Verified workflow report</p><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-muted/30 p-3 font-mono text-xs leading-5">{phase2Workflow.report}</pre></div> : null}</div></div><DialogFooter className="sticky bottom-0 z-30 m-0 w-full shrink-0 flex-row items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-4 sm:justify-between"><span className="text-xs text-muted-foreground">{phase2Workflow.status === 'success' ? 'Database read-back and persistent run complete' : 'No database write is reported until verification succeeds'}</span><DialogClose render={<Button type="button" variant="secondary" className="shrink-0" />}>Close</DialogClose></DialogFooter></DialogContent></Dialog>
-              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={managerHref()}>Phase Manager</a><SharinganHeaderToggle /><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />}>{theme === 'dark' ? <Sun /> : <Moon />}</TooltipTrigger><TooltipContent>{nextThemeLabel}</TooltipContent></Tooltip><form method="post" className="contents"><input type="hidden" name="csrf" value={phaseData?.csrf || ''} /><input type="hidden" name="action" value="phase_logout" /><input type="hidden" name="target" value="builder" /><Button type="submit" variant="outline" size="sm"><LogIn data-icon="inline-start" />Sign Out</Button></form>
+              <a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={managerHref()}>Phase Manager</a><SharinganHeaderToggle /><MessengerHeaderButton /><HeaderControlSeparator /><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />}>{theme === 'dark' ? <Sun /> : <Moon />}</TooltipTrigger><TooltipContent>{nextThemeLabel}</TooltipContent></Tooltip><form method="post" className="contents"><input type="hidden" name="csrf" value={phaseData?.csrf || ''} /><input type="hidden" name="action" value="phase_logout" /><input type="hidden" name="target" value="builder" /><Button type="submit" variant="outline" size="sm"><LogIn data-icon="inline-start" />Sign Out</Button></form>
             </div>
           </header>
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/20"><PhaseFlashMessage flash={phaseData?.flash ?? null} /><div className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
@@ -28234,12 +35801,32 @@ async function completePersistentPhaseAiPersistence(endpoint: string, csrf: stri
   return completed.run
 }
 
+function phaseAiResultHasActualDatabaseWrite(result: Record<string, any> | undefined): boolean {
+  if (!result || typeof result !== 'object') return false
+  const changes = result.databaseChanges
+  const rows = Array.isArray(changes) ? changes : (changes && typeof changes === 'object' ? [changes] : [])
+  return rows.some((row) => Boolean(row?.schemaChanged || row?.dataChanged || row?.writesMade || row?.required))
+}
+
+function phaseAiBlockedStageIsFatal(stageKey: string, result: Record<string, any> | undefined, implementation: Record<string, any> | undefined): boolean {
+  if (result?.status !== 'blocked') return false
+  if (stageKey === 'implementation') {
+    const changedFiles = Array.isArray(result.changedFiles) ? result.changedFiles : []
+    return !(changedFiles.length > 0 && !phaseAiResultHasActualDatabaseWrite(result))
+  }
+  if (['verification', 'evidence'].includes(stageKey)) {
+    const changedFiles = Array.isArray(implementation?.changedFiles) ? implementation.changedFiles : []
+    return !(changedFiles.length > 0 && !phaseAiResultHasActualDatabaseWrite(implementation))
+  }
+  return true
+}
+
 async function runPersistentCodingWorkflow(options: PersistentPhaseAiStart & { implementationInstruction: string; onProgress?: (message: string) => void }): Promise<{ run: Record<string, any>; runKey: string; implementation: Record<string, any>; overallStatus: 'completed' | 'blocked' | 'failed' }> {
   let run = await startPersistentPhaseAiWorkflow(options)
   const runKey = String(run.run_key || '')
   const workflowLabel = options.workflowKey === 'todo_rollback' ? 'rollback' : 'implementation'
   let implementation = persistentPhaseAiStage(run, 'implementation')?.result as Record<string, any> | undefined
-  let overallStatus: 'completed' | 'blocked' | 'failed' = implementation?.status === 'failed' ? 'failed' : implementation?.status === 'blocked' ? 'blocked' : 'completed'
+  let overallStatus: 'completed' | 'blocked' | 'failed' = implementation?.status === 'failed' ? 'failed' : phaseAiBlockedStageIsFatal('implementation', implementation, implementation) ? 'blocked' : 'completed'
   const stages = options.workflowKey === 'todo_execution'
     ? ['inspection', 'plan', 'implementation', 'verification', 'evidence', 'git_update'] as const
     : ['inspection', 'plan', 'implementation', 'verification', 'evidence'] as const
@@ -28247,7 +35834,7 @@ async function runPersistentCodingWorkflow(options: PersistentPhaseAiStart & { i
     const savedStage = persistentPhaseAiStage(run, stageKey)
     if (savedStage?.status === 'SUCCEEDED') {
       if (stageKey === 'implementation' && savedStage.result) implementation = savedStage.result
-      if (savedStage.result?.status === 'blocked') overallStatus = 'blocked'
+      if (phaseAiBlockedStageIsFatal(stageKey, savedStage.result, implementation)) overallStatus = 'blocked'
       if (savedStage.result?.status === 'failed') overallStatus = 'failed'
       continue
     }
@@ -28280,7 +35867,7 @@ async function runPersistentCodingWorkflow(options: PersistentPhaseAiStart & { i
     run = dispatched.run
     const stageResult = dispatched.result
     if (stageKey === 'implementation') implementation = stageResult
-    if (stageResult.status === 'blocked') overallStatus = 'blocked'
+    if (phaseAiBlockedStageIsFatal(stageKey, stageResult, implementation)) overallStatus = 'blocked'
     if (stageResult.status === 'failed') overallStatus = 'failed'
     if (['inspection', 'plan'].includes(stageKey) && stageResult.status === 'blocked') {
       options.onProgress?.(`Coding Engine ${stageKey} stage recorded a blocker; continuing to produce durable evidence.`)
@@ -28390,8 +35977,11 @@ async function sendSharinganAiExecution(runKey: string, surfaceKey: 'user_portal
 
 function ShadcnPhaseManagerApp() {
   const [theme, setTheme] = React.useState<AdminThemeMode>(() => readStoredPhaseTheme())
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const phaseBedSyncFormRef = React.useRef<HTMLFormElement>(null)
   const phases = phaseData?.phases ?? []
   const tasks = phaseData?.tasks ?? []
+  const phaseBedSummary = phaseData?.bedMasterListSummary || {}
   const savedRoadmap = phaseData?.phaseBuilderExecutionRoadmap && typeof phaseData.phaseBuilderExecutionRoadmap === 'object' ? phaseData.phaseBuilderExecutionRoadmap : null
   const savedRoadmapStages = phaseData?.phaseBuilderExecutionRoadmapStages && typeof phaseData.phaseBuilderExecutionRoadmapStages === 'object' ? phaseData.phaseBuilderExecutionRoadmapStages : {}
   const roadmapPhaseStage = [savedRoadmapStages.resources?.stage, savedRoadmapStages.subtasks?.stage, savedRoadmapStages.tasks?.stage, savedRoadmapStages.phases?.stage, savedRoadmap].find((stage) => stage && Array.isArray(stage.phases)) || {}
@@ -28418,6 +36008,7 @@ function ShadcnPhaseManagerApp() {
     ? roadmapPhases
     : roadmapPhases.filter((phase) => String(phase.moduleId || phase.module_id || '') === selectedRoadmapModuleId)
   const roadmapProgress = phaseData?.phaseBuilderExecutionRoadmapProgress || {}
+  const roadmapTodoExecutionStatus = phaseData?.phaseBuilderTodoExecutionStatus && typeof phaseData.phaseBuilderTodoExecutionStatus === 'object' ? phaseData.phaseBuilderTodoExecutionStatus as Record<string, Record<string, any>> : {}
   const hasRoadmap = roadmapPhases.length > 0
   const phaseManagerView = phaseManagerParams.get('phase_view')
   const initialPhaseManagerTab: 'roadmap' | 'custom' | 'tasks' = ['roadmap', 'custom', 'tasks'].includes(phaseManagerView || '')
@@ -28438,15 +36029,43 @@ function ShadcnPhaseManagerApp() {
   const userEmail = phaseData?.user?.user_email || 'Administrator'
   const roadmapPhaseId = (phase: Record<string, any>, index: number) => String(phase.phaseId || phase.phase_id || `PHASE-${String(index + 1).padStart(2, '0')}`)
   const roadmapTaskKey = (phaseId: string, track: 'web' | 'android', index: number) => `${phaseId}:${track}:${index}`
+  const roadmapTodoStatusKey = (phaseId: string, taskId: string, subtaskId: string, todoId: string) => [phaseId, taskId, subtaskId, todoId].map((part) => String(part || '')).join(':')
+  const executionStatusLabel = (log: Record<string, any> | null | undefined, fallback = 'Pending') => {
+    if (!log) return fallback
+    const status = String(log.status || '').toUpperCase()
+    const rollbackStatus = String(log.rollback_status || '').toUpperCase()
+    if (status === 'ROLLED_BACK' || rollbackStatus === 'COMPLETED') return 'Rolled back'
+    if (status === 'COMPLETED') return 'Completed'
+    if (status === 'BLOCKED') return 'Blocked'
+    if (status === 'FAILED') return 'Failed'
+    if (status === 'RUNNING') return 'Running'
+    return fallback
+  }
+  const latestRoadmapTodoExecution = (phaseId: string, taskId: string, subtaskId: string, todoId: string) => {
+    return roadmapTodoExecutionStatus[roadmapTodoStatusKey(phaseId, taskId, subtaskId, todoId)] || null
+  }
+  const roadmapTaskStatus = (phaseId: string, task: DisplayRoadmapTask) => {
+    const todos = task.subTasks.flatMap((subTask) => subTask.todos.map((todo) => ({ subTaskId: subTask.subtaskId, todo })))
+    if (todos.length > 0) {
+      const statuses = todos.map(({ subTaskId, todo }) => executionStatusLabel(latestRoadmapTodoExecution(phaseId, task.taskId, subTaskId, todo.todoId), String(todo.status || 'Pending')))
+      if (statuses.every((status) => status === 'Completed')) return 'Completed'
+      if (statuses.some((status) => status !== 'Pending')) return 'In Progress'
+      return String(task.subTasks[0]?.todos[0]?.status || 'Pending')
+    }
+    if (task.legacyTrack) {
+      const progressKey = roadmapTaskKey(phaseId, task.legacyTrack, task.legacyIndex || 0)
+      return roadmapProgress[progressKey] === true ? 'Completed' : 'Pending'
+    }
+    return roadmapProgress[`${phaseId}:${task.taskId}`] === true ? 'Completed' : 'Pending'
+  }
   const roadmapTaskCount = roadmapPhasesForView.reduce((total, phase) => total + displayRoadmapTasks(phase, roadmapPhaseId(phase, roadmapPhases.indexOf(phase))).length, 0)
   const roadmapPhaseStatus = (phase: Record<string, any>, index: number) => {
     const id = roadmapPhaseId(phase, index)
     const phaseTasks = displayRoadmapTasks(phase, id)
     const total = phaseTasks.length
-    const completed = phaseTasks.filter((task) => {
-      const progressKey = task.legacyTrack ? roadmapTaskKey(id, task.legacyTrack, task.legacyIndex || 0) : `${id}:${task.taskId}`
-      return roadmapProgress[progressKey] === true
-    }).length
+    const taskStatuses = phaseTasks.map((task) => roadmapTaskStatus(id, task))
+    const completed = taskStatuses.filter((status) => status === 'Completed').length
+    if (taskStatuses.some((status) => ['Blocked', 'Failed', 'Running', 'In Progress', 'Rolled back'].includes(status))) return completed === total && total > 0 ? 'Completed' : 'In Progress'
     return completed === total && total > 0 ? 'Completed' : completed > 0 ? 'In Progress' : String(phase.status || 'Pending')
   }
   const activePhaseCount = hasRoadmap ? roadmapPhasesForView.filter((phase) => ['In Progress', 'For Review'].includes(roadmapPhaseStatus(phase, roadmapPhases.indexOf(phase)))).length : phases.filter((phase) => ['In Progress', 'For Review'].includes(phaseField(phase, 'phase_status'))).length
@@ -28475,6 +36094,17 @@ function ShadcnPhaseManagerApp() {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     event.preventDefault()
     navigatePhaseManager(href)
+  }
+  const builderHref = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('target', 'builder')
+    url.searchParams.delete('phase')
+    url.searchParams.delete('phase_view')
+    url.searchParams.delete('roadmap_phase')
+    url.searchParams.delete('roadmap_module')
+    url.searchParams.delete('roadmap_task')
+    url.searchParams.delete('roadmap_todo')
+    return url.pathname + url.search
   }
   const phaseHref = (phaseKey = '') => {
     const url = new URL(window.location.href)
@@ -28541,15 +36171,6 @@ function ShadcnPhaseManagerApp() {
     const id = roadmapPhaseId(phase, phaseIndex)
     const taskList = track === 'web' ? (Array.isArray(phase.webTrackTasks) ? phase.webTrackTasks : []) : (Array.isArray(phase.androidTrackTasks) ? phase.androidTrackTasks : [])
     return <section aria-label={`${track === 'web' ? 'Web' : 'Mobile'} target tasks`} className="min-w-0 rounded-md bg-muted/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="flex items-center gap-2 font-semibold">{track === 'web' ? <ExternalLink className="size-4 text-sky-600 dark:text-sky-300" /> : <Activity className="size-4 text-emerald-600 dark:text-emerald-300" />}{track === 'web' ? 'Web Track' : 'Mobile / Android Track'}</h4><div className="flex items-center gap-2"><Badge variant="secondary">{taskList.length} target{taskList.length === 1 ? '' : 's'}</Badge><Badge variant="outline">{track === 'web' ? 'User + Admin Portal' : 'Kotlin · Firebase'}</Badge></div></div><ol className="mt-3 grid gap-2">{taskList.map((task: unknown, taskIndex: number) => { const completed = roadmapProgress[roadmapTaskKey(id, track, taskIndex)] === true; return <li key={`${id}-${track}-${taskIndex}`} className={cn('flex items-start gap-2 rounded-md bg-background/70 p-3 text-sm leading-5', completed && 'text-muted-foreground line-through')}><span className="font-mono text-[10px] text-muted-foreground">{track === 'web' ? 'WEB' : 'ANDROID'}-{String(taskIndex + 1).padStart(2, '0')}</span><span className="min-w-0 flex-1">{String(task)}</span>{completed ? <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-300" /> : null}</li> })}</ol>{taskList.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No {track === 'web' ? 'Web' : 'Mobile'} tasks were saved for this phase.</p> : null}</section>
-  }
-  const builderHref = () => {
-    const url = new URL(window.location.href)
-    url.searchParams.set('target', 'builder')
-    url.searchParams.delete('phase')
-    url.searchParams.delete('phase_view')
-    url.searchParams.delete('roadmap_phase')
-    url.searchParams.delete('roadmap_module')
-    return url.pathname + url.search
   }
   const csrf = phaseData?.csrf || ''
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
@@ -28781,7 +36402,7 @@ function ShadcnPhaseManagerApp() {
         todoId: executionFields.todo_id,
         semanticChunkKey: `todo:${executionFields.todo_id.toLowerCase()}`,
         context: { context_id: String(prepared.data?.context_id || ''), context_path: contextPath, bytes: Number(prepared.data?.bytes || 0), sha256: String(prepared.data?.sha256 || '') },
-        implementationInstruction: 'Implement only the approved todo in the real current project after verifying the exact server_source checkpoint supplied in the stage context. Review prior inspection and plan blockers, but treat them as fatal only when they prove missing required context, dirty hunks that cannot be preserved or conflict with the needed edit hunks, unavailable dependencies, required database writes without rollback protection, or unverifiable scope. Same-file dirty overlap is not fatal when you can preserve the existing hunk and make an attributable new hunk. Reference the server checkpoint in recoveryCheckpoints with exact keys type, reference, scope, manifestSha256, createdBeforeWrite, and databaseRollbackProtected; use reference for the checkpoint key and scope project_source_files. Do not create or substitute a model-reported checkpoint. The server checkpoint protects eligible source files only and does not protect database rollback, so return blocked instead of completed when actual database schema or data changes are required. Source-only or Android-only work may proceed without database rollback protection when focused verification can prove no database writes were made. Make the actual source or Kotlin Android changes required while excluding the BuilderX Phase Manager control plane. Use authorization, direct read-back, focused tests, and builds as applicable. Preserve unrelated changes. Return only JSON with keys status, summary, recoveryCheckpoints, changedFiles, databaseChanges, androidChanges, tests, blockers, and nextSteps. Use completed only for actual verified work.',
+        implementationInstruction: 'Implement only the approved todo in the real current project after verifying the exact server_source checkpoint supplied in the stage context. Review prior inspection and plan blockers, but treat them as fatal only when they prove missing required context, dirty hunks that cannot be preserved or conflict with the needed edit hunks, unavailable dependencies, required database writes without rollback protection, or unverifiable scope. Same-file dirty overlap is not fatal when you can preserve the existing hunk and make an attributable new hunk. Reference the server checkpoint in recoveryCheckpoints with exact keys type, reference, scope, manifestSha256, createdBeforeWrite, and databaseRollbackProtected; use reference for the checkpoint key and scope project_source_files. Do not create or substitute a model-reported checkpoint. The server checkpoint protects eligible source files only and does not protect database rollback, so return blocked instead of completed when actual database schema or data changes are required. Source-only or Android-only work may proceed without database rollback protection when focused verification can prove no database writes were made. For UI tasks, disabled buttons, read-only projections, and visibly gated write affordances count as completed source-only work when the approved todo is to build screens or workspace read-back and no schema/data mutation is required. Make the actual source or Kotlin Android changes required while excluding the BuilderX Phase Manager control plane. Use authorization, direct read-back, focused tests, and builds as applicable. Preserve unrelated changes. Return only JSON with keys status, summary, recoveryCheckpoints, changedFiles, databaseChanges, androidChanges, tests, blockers, and nextSteps. Use completed only for actual verified work.',
         onProgress: (message) => {
         setTodoChatProcessMessage(message)
         addProcessEvent(message, 'active')
@@ -28890,23 +36511,22 @@ function ShadcnPhaseManagerApp() {
       ['Next steps', result.nextSteps ?? result.next_steps],
 	    ] as Array<[string, unknown]>
 	  }
-	  const latestTodoExecutionLog = (todoId: string) => {
+	  const latestTodoExecutionLog = (phaseId: string, taskId: string, subtaskId: string, todoId: string) => {
 	    const normalizedTodoId = String(todoId || '')
-	    if (!normalizedTodoId || todoExecutionLogs.length === 0) return null
-	    return todoExecutionLogs.find((log) => String(log.todo_id || '') === normalizedTodoId) || (selectedRoadmapTodoId === normalizedTodoId ? todoExecutionLogs[0] || null : null)
+	    if (!normalizedTodoId) return null
+	    const scopedLog = todoExecutionLogs.find((log) =>
+	      String(log.phase_id || '') === phaseId
+	      && String(log.task_id || '') === taskId
+	      && String(log.subtask_id || '') === subtaskId
+	      && String(log.todo_id || '') === normalizedTodoId
+	    )
+	    if (scopedLog) return scopedLog
+	    if (selectedRoadmapTodoId === normalizedTodoId && todoExecutionLogs.length > 0) return todoExecutionLogs[0] || null
+	    return latestRoadmapTodoExecution(phaseId, taskId, subtaskId, normalizedTodoId)
 	  }
-	  const todoDisplayStatus = (todo: { todoId?: string; status?: string }) => {
+	  const todoDisplayStatus = (todo: { todoId?: string; status?: string }, phaseId = selectedPhaseId, taskId = selectedGeneratedTask?.taskId || '', subtaskId = selectedSubtask?.subtaskId || '') => {
 	    const fallback = String(todo.status || 'Pending')
-	    const log = latestTodoExecutionLog(String(todo.todoId || ''))
-	    if (!log) return fallback
-	    const status = String(log.status || '').toUpperCase()
-	    const rollbackStatus = String(log.rollback_status || '').toUpperCase()
-	    if (status === 'ROLLED_BACK' || rollbackStatus === 'COMPLETED') return 'Rolled back'
-	    if (status === 'COMPLETED') return 'Completed'
-	    if (status === 'BLOCKED') return 'Blocked'
-	    if (status === 'FAILED') return 'Failed'
-	    if (status === 'RUNNING') return 'Running'
-	    return fallback
+	    return executionStatusLabel(latestTodoExecutionLog(phaseId, taskId, subtaskId, String(todo.todoId || '')), fallback)
 	  }
   const approveTodoChatResult = async () => {
     if (!todoChatAiResult || !todoChatConsolidationKey || todoChatBusy) return
@@ -29017,7 +36637,7 @@ function ShadcnPhaseManagerApp() {
   const renderTodoChatPanel = () => (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden border-0 shadow-none">
       <CardHeader className="shrink-0 border-b px-4 py-4">
-        <div className="flex items-start justify-between gap-2"><div className="min-w-0 flex-1"><CardDescription>Todo chat</CardDescription>{selectedGeneratedTodo ? <p className="mt-1 font-mono text-[11px] font-medium text-primary">{selectedGeneratedTodo.todo.todoId}</p> : null}<CardTitle className="mt-1 whitespace-normal break-words text-base [overflow-wrap:anywhere]">{selectedGeneratedTodo ? selectedGeneratedTodo.todo.todoTitle : 'Select a todo'}</CardTitle></div>{selectedGeneratedTodo ? <Badge className="shrink-0" variant={phaseStatusVariant(todoDisplayStatus(selectedGeneratedTodo.todo))}>{todoDisplayStatus(selectedGeneratedTodo.todo)}</Badge> : null}</div>
+        <div className="flex items-start justify-between gap-2"><div className="min-w-0 flex-1"><CardDescription>Todo chat</CardDescription>{selectedGeneratedTodo ? <p className="mt-1 font-mono text-[11px] font-medium text-primary">{selectedGeneratedTodo.todo.todoId}</p> : null}<CardTitle className="mt-1 whitespace-normal break-words text-base [overflow-wrap:anywhere]">{selectedGeneratedTodo ? selectedGeneratedTodo.todo.todoTitle : 'Select a todo'}</CardTitle></div>{selectedGeneratedTodo ? <Badge className="shrink-0" variant={phaseStatusVariant(todoDisplayStatus(selectedGeneratedTodo.todo, selectedPhaseId, selectedGeneratedTask?.taskId || '', selectedGeneratedTodo.subTask.subtaskId))}>{todoDisplayStatus(selectedGeneratedTodo.todo, selectedPhaseId, selectedGeneratedTask?.taskId || '', selectedGeneratedTodo.subTask.subtaskId)}</Badge> : null}</div>
         {selectedGeneratedTodo ? <p className="mt-2 whitespace-normal break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">Chat is saved for this todo. Consolidate it for an AI summary and suggested adjustment.</p> : <p className="mt-2 whitespace-normal break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">Click a todo in the task details to open its saved conversation.</p>}
       </CardHeader>
       {!selectedGeneratedTodo ? <CardContent className="p-4"><div className="rounded-md bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">No todo selected.</div></CardContent> : <>
@@ -29051,7 +36671,7 @@ function ShadcnPhaseManagerApp() {
           <Badge variant="secondary">{selectedGeneratedTask.subTasks.length} sub-task{selectedGeneratedTask.subTasks.length === 1 ? '' : 's'} · {selectedTodoCount} todo{selectedTodoCount === 1 ? '' : 's'}</Badge>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-0 [scrollbar-gutter:stable]">
-          {selectedGeneratedTask.subTasks.length > 0 ? selectedGeneratedTask.subTasks.map((subTask) => <section key={subTask.subtaskId} className="grid gap-3 rounded-md bg-muted/10 p-4"><div><p className="font-mono text-[11px] text-blue-700 dark:text-blue-300">{subTask.subtaskId}</p><h3 className="mt-1 text-sm font-semibold">{subTask.subtaskTitle}</h3><p className="mt-1 text-sm leading-5 text-muted-foreground">{subTask.subtaskDescription}</p></div>{subTask.acceptanceCriteria.length > 0 ? <p className="text-xs leading-5 text-muted-foreground"><span className="font-medium text-foreground">Acceptance:</span> {subTask.acceptanceCriteria.join(' · ')}</p> : null}<div className="grid gap-2"><div className="flex items-center justify-between gap-2"><h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Todos</h4><Badge variant="outline">{subTask.todos.length}</Badge></div>{subTask.todos.length > 0 ? <ul className="grid gap-2">{subTask.todos.map((todo) => <li key={todo.todoId}><div className={cn('flex items-start gap-2 rounded-md bg-background/70 p-3 transition-colors hover:bg-muted/50', selectedRoadmapTodoId === todo.todoId && 'bg-primary/10 ring-1 ring-primary/40')}><a href={roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)} onClick={(event) => handlePhaseManagerNavigation(event, roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId))} className="grid min-w-0 flex-1 gap-1"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] text-blue-700 dark:text-blue-300">{todo.todoId}</span><span className="text-sm font-medium">{todo.todoTitle}</span><div className="flex items-center gap-1" aria-label={`Todo involvement for ${todo.todoId}`}>{roadmapTodoInvolvement(todo, selectedGeneratedTask).map(({ key, label, Icon }) => <Tooltip key={key}><TooltipTrigger render={<span className="grid size-5 place-items-center rounded-full bg-sky-500/10 text-sky-700 dark:text-sky-300" aria-label={label} title={label}><Icon className="size-3.5" /></span>} /><TooltipContent>{label}</TooltipContent></Tooltip>)}</div><Badge variant={phaseStatusVariant(todoDisplayStatus(todo))}>{todoDisplayStatus(todo)}</Badge></div><p className="text-xs leading-5 text-muted-foreground">{todo.todoDescription}</p></a><div className="flex shrink-0 items-center gap-1"><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`View change logs for ${todo.todoId}`} title="View change logs" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionLogsOpen(true) }}><FileText /></Button><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`Execute ${todo.todoId} with AI`} title="Execute this todo with AI" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionConfirmOpen(true) }}><Sparkles /></Button></div></div></li>)}</ul> : <p className="text-xs text-muted-foreground">No todos were generated for this sub-task.</p>}</div></section>) : <p className="rounded-md bg-muted/10 p-4 text-sm text-muted-foreground">No sub-tasks were generated for this task.</p>}
+          {selectedGeneratedTask.subTasks.length > 0 ? selectedGeneratedTask.subTasks.map((subTask) => <section key={subTask.subtaskId} className="grid gap-3 rounded-md bg-muted/10 p-4"><div><p className="font-mono text-[11px] text-blue-700 dark:text-blue-300">{subTask.subtaskId}</p><h3 className="mt-1 text-sm font-semibold">{subTask.subtaskTitle}</h3><p className="mt-1 text-sm leading-5 text-muted-foreground">{subTask.subtaskDescription}</p></div>{subTask.acceptanceCriteria.length > 0 ? <p className="text-xs leading-5 text-muted-foreground"><span className="font-medium text-foreground">Acceptance:</span> {subTask.acceptanceCriteria.join(' · ')}</p> : null}<div className="grid gap-2"><div className="flex items-center justify-between gap-2"><h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Todos</h4><Badge variant="outline">{subTask.todos.length}</Badge></div>{subTask.todos.length > 0 ? <ul className="grid gap-2">{subTask.todos.map((todo) => <li key={todo.todoId}><div className={cn('flex items-start gap-2 rounded-md bg-background/70 p-3 transition-colors hover:bg-muted/50', selectedRoadmapTodoId === todo.todoId && 'bg-primary/10 ring-1 ring-primary/40')}><a href={roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)} onClick={(event) => handlePhaseManagerNavigation(event, roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId))} className="grid min-w-0 flex-1 gap-1"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] text-blue-700 dark:text-blue-300">{todo.todoId}</span><span className="text-sm font-medium">{todo.todoTitle}</span><div className="flex items-center gap-1" aria-label={`Todo involvement for ${todo.todoId}`}>{roadmapTodoInvolvement(todo, selectedGeneratedTask).map(({ key, label, Icon }) => <Tooltip key={key}><TooltipTrigger render={<span className="grid size-5 place-items-center rounded-full bg-sky-500/10 text-sky-700 dark:text-sky-300" aria-label={label} title={label}><Icon className="size-3.5" /></span>} /><TooltipContent>{label}</TooltipContent></Tooltip>)}</div><Badge variant={phaseStatusVariant(todoDisplayStatus(todo, selectedPhaseId, selectedGeneratedTask.taskId, subTask.subtaskId))}>{todoDisplayStatus(todo, selectedPhaseId, selectedGeneratedTask.taskId, subTask.subtaskId)}</Badge></div><p className="text-xs leading-5 text-muted-foreground">{todo.todoDescription}</p></a><div className="flex shrink-0 items-center gap-1"><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`View change logs for ${todo.todoId}`} title="View change logs" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionLogsOpen(true) }}><FileText /></Button><Button type="button" variant="outline" size="icon-sm" className="mt-0.5 rounded-full" aria-label={`Execute ${todo.todoId} with AI`} title="Execute this todo with AI" disabled={todoChatBusy} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setTodoExecutionTarget({ todo, subTask }); if (selectedRoadmapTodoId !== todo.todoId) navigatePhaseManager(roadmapTodoHref(selectedPhaseId, selectedGeneratedTask.taskId, todo.todoId)); setTodoExecutionConfirmOpen(true) }}><Sparkles /></Button></div></div></li>)}</ul> : <p className="text-xs text-muted-foreground">No todos were generated for this sub-task.</p>}</div></section>) : <p className="rounded-md bg-muted/10 p-4 text-sm text-muted-foreground">No sub-tasks were generated for this task.</p>}
         </CardContent>
       </Card>
     }
@@ -29091,6 +36711,7 @@ function ShadcnPhaseManagerApp() {
 
   return (
     <TooltipProvider>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
       <SidebarProvider defaultOpen className="h-svh min-h-0 w-full overflow-hidden" style={{ '--sidebar-width': '16rem' } as React.CSSProperties}>
         <Sidebar collapsible="icon">
           <SidebarHeader className="border-b p-1">
@@ -29135,12 +36756,42 @@ function ShadcnPhaseManagerApp() {
         <SidebarInset className="h-svh min-h-0 overflow-hidden">
           <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background/95 px-4 py-2 backdrop-blur sm:px-6">
             <div className="flex min-w-0 items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-vertical:h-4" /><div className="min-w-0"><h1 className="truncate text-sm font-semibold">Phase Manager</h1><ShadcnBreadcrumb><BreadcrumbList><BreadcrumbItem><BreadcrumbPage>Administrator</BreadcrumbPage></BreadcrumbItem><BreadcrumbSeparator /><BreadcrumbItem><BreadcrumbPage>Phase Manager</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></ShadcnBreadcrumb></div></div>
-            <div className="flex items-center gap-1.5"><a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={phaseHref(selectedPhaseKey)} onClick={(event) => handlePhaseManagerNavigation(event, phaseHref(selectedPhaseKey))}>Phase Manager</a><SharinganHeaderToggle /><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />}>{theme === 'dark' ? <Sun /> : <Moon />}</TooltipTrigger><TooltipContent>{nextThemeLabel}</TooltipContent></Tooltip><form method="post" className="contents"><input type="hidden" name="csrf" value={csrf} /><input type="hidden" name="action" value="phase_logout" /><input type="hidden" name="target" value="manager" /><Button type="submit" variant="outline" size="sm"><LogIn data-icon="inline-start" />Sign Out</Button></form></div>
+            <div className="flex items-center gap-1.5"><a className={buttonClassName({ variant: 'outline', size: 'sm' })} href={phaseHref(selectedPhaseKey)} onClick={(event) => handlePhaseManagerNavigation(event, phaseHref(selectedPhaseKey))}>Phase Manager</a><SharinganHeaderToggle /><MessengerHeaderButton /><HeaderControlSeparator /><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={nextThemeLabel} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} />}>{theme === 'dark' ? <Sun /> : <Moon />}</TooltipTrigger><TooltipContent>{nextThemeLabel}</TooltipContent></Tooltip><form method="post" className="contents"><input type="hidden" name="csrf" value={csrf} /><input type="hidden" name="action" value="phase_logout" /><input type="hidden" name="target" value="manager" /><Button type="submit" variant="outline" size="sm"><LogIn data-icon="inline-start" />Sign Out</Button></form></div>
           </header>
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/20"><div className="min-h-0 w-full flex-1 overflow-hidden p-4 sm:p-6"><div className="grid h-full min-h-0 w-full gap-4 lg:grid-cols-[minmax(0,9fr)_minmax(0,3fr)]"><div className="min-h-0 min-w-0 flex flex-col gap-4 overflow-hidden">
             <Tabs value={activeTab} onValueChange={handlePhaseManagerTabChange} className="flex min-h-0 min-w-0 flex-1 flex-col"><Card className="shrink-0"><CardHeader className="sticky top-0 z-20 grid gap-3 border-b bg-card"><div><CardTitle className="text-xl tracking-normal">Phase Manager</CardTitle><CardDescription className="mt-1 max-w-3xl">{activeTab === 'roadmap' ? 'Review generated tasks grouped by module without mixing them with manually created phases.' : activeTab === 'tasks' ? 'Manage tasks belonging to the selected custom phase.' : 'Review and manage custom Phase Manager records separately from generated tasks.'}</CardDescription></div><div className="flex flex-wrap items-center gap-2" aria-label="BuilderX two-engine architecture"><Badge variant="outline">Planning Engine · read-only</Badge><Badge variant="outline">Coding Engine · approved todos</Badge><span className="text-xs text-muted-foreground">One shared visible BuilderX AI Bridge and active Codex Chat.</span></div><TabsList aria-label="Phase Manager views" className="h-auto w-fit max-w-full flex-wrap justify-start"><TabsTrigger value="roadmap" className="flex-none gap-2"><ClipboardList data-icon="inline-start" />Tasks<span className="rounded-full bg-background/70 px-1.5 text-[11px]">{roadmapTaskCount}</span></TabsTrigger><TabsTrigger value="custom" className="flex-none gap-2"><FolderKanban data-icon="inline-start" />Custom phases<span className="rounded-full bg-background/70 px-1.5 text-[11px]">{phases.length}</span></TabsTrigger><TabsTrigger value="tasks" className="flex-none gap-2"><ClipboardList data-icon="inline-start" />Custom tasks<span className="rounded-full bg-background/70 px-1.5 text-[11px]">{tasks.length}</span></TabsTrigger></TabsList></CardHeader></Card>
             {phaseData?.flash ? <div className="shrink-0 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{phaseData.flash.message}</div> : null}
-              {renderRoadmapWorkspace()}
+            <Card className="shrink-0">
+              <CardHeader className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">Managed Beds</Badge>
+                    <span className="text-xs text-muted-foreground">Latest hospital bed list</span>
+                  </div>
+                  <CardDescription className="mt-2">
+                    Beds {String(phaseBedSummary.managedRows ?? 0)} · active {String(phaseBedSummary.activeRows ?? 0)} · updated {String(phaseBedSummary.firebaseDocumentRows ?? 0)} · latest list {String(phaseBedSummary.sourceRows ?? 0)} · last refresh {String(phaseBedSummary.lastSyncedAt || 'not refreshed')}
+                  </CardDescription>
+                </div>
+                <form ref={phaseBedSyncFormRef} method="post" className="contents">
+                  <input type="hidden" name="csrf" value={csrf} />
+                  <input type="hidden" name="action" value="resync_bed_master_list" />
+                  <input type="hidden" name="phase_view" value={activeTab} />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setConfirmation({
+                      title: 'Refresh bed list',
+                      message: 'Update the bed list with the latest hospital bed information? Beds that are no longer available will be marked inactive, not deleted.',
+                      confirmLabel: 'Refresh Beds',
+                      onConfirm: () => phaseBedSyncFormRef.current?.requestSubmit(),
+                    })}
+                  >
+                    <RotateCcw data-icon="inline-start" />Refresh Beds
+                  </Button>
+                </form>
+              </CardHeader>
+            </Card>
+            {renderRoadmapWorkspace()}
               {renderCustomWorkspace()}
               {renderTasksWorkspace()}
             </Tabs>
@@ -29317,7 +36968,12 @@ function App() {
       ? 'User Portal'
       : 'Administrator Portal'
   const sharinganSurfaceKey: 'user_portal' | 'administrator_portal' | 'phases' = phaseData ? 'phases' : portalData ? 'user_portal' : 'administrator_portal'
-  const sharinganAuthorized = phaseData ? phaseData.isAdmin === true && phaseData.requiresLogin !== true : portalData ? Boolean(portalData.currentUser) : data?.isAdmin === true
+  const sharinganEnabled = readSharinganEnabled()
+  const sharinganAuthorized = phaseData
+    ? phaseData.isAdmin === true && phaseData.requiresLogin !== true && sharinganEnabled
+    : portalData
+      ? Boolean(portalData.currentUser) && sharinganEnabled
+      : data?.isAdmin === true
   const sharinganSelectedPhase = phaseData?.selectedPhase ?? null
 
   return (

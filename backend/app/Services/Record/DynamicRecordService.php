@@ -17,6 +17,7 @@ final class DynamicRecordService
         private readonly PhysicalTableNameGuard $tableNameGuard = new PhysicalTableNameGuard(),
         private readonly TableSchemaBuilder $schemaBuilder = new TableSchemaBuilder(),
         private readonly RecordIndexService|null $recordIndexService = null,
+        private readonly RecordTenantPersistence|null $tenantPersistence = null,
     ) {
     }
 
@@ -66,17 +67,12 @@ final class DynamicRecordService
             'updated_by_key' => $userKey,
         ], $fields);
 
-        $this->db->begin_transaction();
-        try {
+        $readBack = fn (): array => $this->getByRecordKey((string) $registry['record_key'], $recordKey);
+        return $this->tenantPersistence()->afterCommitReadBack(function () use ($tableName, $values, $registry, $readBack): void {
             $this->insertRow($tableName, $values);
-            $record = $this->getByRecordKey((string) $registry['record_key'], $recordKey);
+            $record = $readBack();
             $this->indexService()->upsert($this->indexPayload($registry, $record));
-            $this->db->commit();
-            return $record;
-        } catch (\Throwable $error) {
-            $this->db->rollback();
-            throw $error;
-        }
+        }, $readBack);
     }
 
     public function update(array $payload, ?string $userKey = null): array
@@ -88,38 +84,19 @@ final class DynamicRecordService
         $fields = $this->filterWritableFields((string) $registry['form_key'], $tableName, $prepared['fields']);
         $fields['updated_by_key'] = $userKey;
 
-        $this->db->begin_transaction();
-        try {
-            $this->updateRow($tableName, $recordKey, $fields);
-            $record = $this->getByRecordKey((string) $registry['record_key'], $recordKey);
+        $readBack = fn (): array => $this->getByRecordKey((string) $registry['record_key'], $recordKey);
+        return $this->tenantPersistence()->afterCommitReadBack(function () use ($tableName, $recordKey, $fields, $registry, $readBack): void {
+            $this->updateRow($tableName, $recordKey, $fields, $registry);
+            $record = $readBack();
             $this->indexService()->upsert($this->indexPayload($registry, $record));
-            $this->db->commit();
-            return $record;
-        } catch (\Throwable $error) {
-            $this->db->rollback();
-            throw $error;
-        }
+        }, $readBack);
     }
 
     public function getByRecordKey(string $dataRecordKey, string $recordKey): array
     {
         $registry = $this->tableResolver->resolveByDataRecordKey($dataRecordKey);
         $tableName = (string) $registry['record_table_name'];
-        $stmt = $this->db->prepare(
-            'SELECT * FROM ' . $this->schemaBuilder->quoteIdentifier($tableName) . " WHERE record_key = ? AND record_status <> 'DELETED' LIMIT 1"
-        );
-        if (!$stmt) {
-            throw new RuntimeException($this->db->error);
-        }
-
-        $stmt->bind_param('s', $recordKey);
-        $stmt->execute();
-        $record = $stmt->get_result()->fetch_assoc();
-        if (!$record) {
-            throw new RuntimeException('Record was not found.');
-        }
-
-        return $record;
+        return $this->tenantPersistence()->readActiveRecord($tableName, $recordKey, $registry);
     }
 
     private function insertRow(string $tableName, array $values): void
@@ -138,7 +115,7 @@ final class DynamicRecordService
         $stmt->execute();
     }
 
-    private function updateRow(string $tableName, string $recordKey, array $values): void
+    private function updateRow(string $tableName, string $recordKey, array $values, array $tenant): void
     {
         if ($values === []) {
             return;
@@ -148,9 +125,10 @@ final class DynamicRecordService
             fn (string $column): string => $this->schemaBuilder->quoteIdentifier($column) . ' = ?',
             array_keys($values)
         );
+        [$where, $tenantTypes, $tenantParams] = $this->tenantPersistence()->tenantScopedActiveWhere($tenant);
         $sql = 'UPDATE ' . $this->schemaBuilder->quoteIdentifier($tableName)
             . ' SET ' . implode(', ', $assignments)
-            . ' WHERE record_key = ? AND record_status <> \'DELETED\'';
+            . ' WHERE record_key = ? AND ' . $where;
         $stmt = $this->db->prepare($sql);
         if (!$stmt) {
             throw new RuntimeException($this->db->error);
@@ -158,7 +136,8 @@ final class DynamicRecordService
 
         $params = array_values($values);
         $params[] = $recordKey;
-        $stmt->bind_param(str_repeat('s', count($params)), ...$params);
+        array_push($params, ...$tenantParams);
+        $stmt->bind_param(str_repeat('s', count($values)) . 's' . $tenantTypes, ...$params);
         $stmt->execute();
         if ($stmt->affected_rows < 1) {
             throw new RuntimeException('Record update did not affect an active row.');
@@ -242,6 +221,11 @@ final class DynamicRecordService
     private function indexService(): RecordIndexService
     {
         return $this->recordIndexService ?? new RecordIndexService($this->db);
+    }
+
+    private function tenantPersistence(): RecordTenantPersistence
+    {
+        return $this->tenantPersistence ?? new RecordTenantPersistence($this->db, $this->schemaBuilder);
     }
 
     private function uuid(): string

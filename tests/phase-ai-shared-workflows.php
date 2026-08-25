@@ -502,6 +502,14 @@ try {
         if (!array_is_list($normalizedObjectShapedChangeEvidence['databaseChanges'] ?? null) || !array_is_list($normalizedObjectShapedChangeEvidence['androidChanges'] ?? null)) {
             throw new RuntimeException('Object-shaped Coding Engine change evidence was not normalized.');
         }
+        $mappedCheckpointEvidence = $objectShapedChangeEvidence;
+        $mappedCheckpointEvidence['recoveryCheckpoints'] = [
+            (string) ($serverSourceCheckpoint['checkpoint_key'] ?? '') => PhaseAiSourceCheckpoint::modelEvidence($serverSourceCheckpoint),
+        ];
+        $normalizedMappedCheckpointEvidence = PhaseAiWorkflowContract::validate($coding, 'implementation', $mappedCheckpointEvidence);
+        if (!array_is_list($normalizedMappedCheckpointEvidence['recoveryCheckpoints'] ?? null)) {
+            throw new RuntimeException('Mapped Coding Engine recovery checkpoint evidence was not normalized.');
+        }
         $aliasedSourceCheckpointEvidence = $objectShapedChangeEvidence;
         $aliasedSourceCheckpointEvidence['recoveryCheckpoints'] = [[
             'type' => 'server_source_checkpoint',

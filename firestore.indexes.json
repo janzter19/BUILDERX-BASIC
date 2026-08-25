@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "project_messenger_chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "group_key", "order": "ASCENDING" },
+        { "fieldPath": "mysql_created_at", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

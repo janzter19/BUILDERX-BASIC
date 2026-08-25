@@ -426,6 +426,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     bx_verify_csrf();
     $action = trim((string) ($_POST['action'] ?? ''));
 
+    if ($action === 'resync_bed_master_list') {
+        if (!$isAdmin) {
+            $respondJson(['ok' => false, 'message' => 'Administrator access is required.'], 403);
+        }
+        $phaseView = trim((string) ($_POST['phase_view'] ?? 'roadmap'));
+        $phaseView = in_array($phaseView, ['roadmap', 'custom', 'tasks'], true) ? $phaseView : 'roadmap';
+        try {
+            $summary = bx_resync_bed_master_list((string) ($user['user_key'] ?? ''));
+            bx_mutation_lifecycle_flash('Bed list refreshed.', 'success', [
+                ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                ['label' => 'Latest list', 'status' => 'complete', 'detail' => (string) $summary['sourceRows'] . ' bed(s) checked from the latest hospital list.'],
+                ['label' => 'Saved beds', 'status' => 'complete', 'detail' => 'The bed list now has ' . (string) $summary['managedRows'] . ' saved bed(s).'],
+                ['label' => 'History', 'status' => 'complete', 'detail' => 'Existing task links and history were kept.'],
+                ['label' => 'Review', 'status' => 'complete', 'detail' => (string) $summary['activeRows'] . ' active bed(s), ' . (string) $summary['inactiveRows'] . ' inactive bed(s).'],
+            ]);
+        } catch (Throwable $error) {
+            bx_mutation_lifecycle_flash('Bed list refresh failed.', 'error', [
+                ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                ['label' => 'Latest list', 'status' => 'blocked', 'detail' => $error->getMessage()],
+                ['label' => 'Saved beds', 'status' => 'not_started', 'detail' => 'No verified bed list update was completed.'],
+            ]);
+        }
+        header('Location: ./?phase_view=' . rawurlencode($phaseView));
+        exit;
+    }
+
     if ($action === 'phase_login') {
         $login = trim((string) ($_POST['login'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
@@ -4343,6 +4369,7 @@ if ($isAdmin && $phaseBuilderDraftKey !== '') {
 $phaseBuilderExecutionRoadmap = null;
 $phaseBuilderExecutionRoadmapProgress = [];
 $phaseBuilderExecutionRoadmapStages = [];
+$phaseBuilderTodoExecutionStatus = [];
 $phaseBuilderLatestAiRun = null;
 $phaseBuilderLatestRequirementsAiRun = null;
 if ($isAdmin && $phaseBuilderDraftKey !== '') {
@@ -4358,6 +4385,33 @@ if ($isAdmin && $phaseBuilderDraftKey !== '') {
     $decodedRoadmapStages = is_array($roadmapRow) ? json_decode((string) ($roadmapRow['stages_json'] ?? '{}'), true) : null;
     if (is_array($decodedRoadmapStages) && !array_is_list($decodedRoadmapStages)) {
         $phaseBuilderExecutionRoadmapStages = $decodedRoadmapStages;
+    }
+    $todoStatusRows = $db->GetAll(
+        'SELECT l.execution_key, l.phase_id, l.task_id, l.subtask_id, l.todo_id, l.status, l.rollback_status, l.updated_at, l.completed_at, l.rolled_back_at
+        FROM phase_builder_todo_execution_logs l
+        INNER JOIN (
+            SELECT phase_id, task_id, subtask_id, todo_id, MAX(x_id) AS max_x_id
+            FROM phase_builder_todo_execution_logs
+            WHERE draft_key = ?
+            GROUP BY phase_id, task_id, subtask_id, todo_id
+        ) latest ON latest.max_x_id = l.x_id
+        WHERE l.draft_key = ?
+        ORDER BY l.phase_id, l.task_id, l.subtask_id, l.todo_id',
+        [$phaseBuilderDraftKey, $phaseBuilderDraftKey]
+    );
+    if (is_array($todoStatusRows)) {
+        foreach ($todoStatusRows as $todoStatusRow) {
+            $statusKey = implode(':', [
+                (string) ($todoStatusRow['phase_id'] ?? ''),
+                (string) ($todoStatusRow['task_id'] ?? ''),
+                (string) ($todoStatusRow['subtask_id'] ?? ''),
+                (string) ($todoStatusRow['todo_id'] ?? ''),
+            ]);
+            if ($statusKey === ':::') {
+                continue;
+            }
+            $phaseBuilderTodoExecutionStatus[$statusKey] = $todoStatusRow;
+        }
     }
     try {
         $phaseAiRunStore = new \BuilderX\AI\PhaseAiRunStore((string) ($user['user_key'] ?? ''));
@@ -4384,6 +4438,7 @@ $payload = [
     'isAdmin' => $isAdmin,
     'isAuthenticated' => $user !== null,
     'requiresLogin' => !$isAdmin,
+    'sharinganEnabled' => bx_setting('sharingan_enabled', '0') === '1',
     'user' => $user ? [
         'user_name' => (string) ($user['user_name'] ?? 'Administrator'),
         'user_email' => (string) ($user['user_email'] ?? 'Administrator'),
@@ -4402,6 +4457,8 @@ $payload = [
     'phaseBuilderExecutionRoadmap' => $phaseBuilderExecutionRoadmap,
     'phaseBuilderExecutionRoadmapProgress' => $phaseBuilderExecutionRoadmapProgress,
     'phaseBuilderExecutionRoadmapStages' => $phaseBuilderExecutionRoadmapStages,
+    'phaseBuilderTodoExecutionStatus' => $phaseBuilderTodoExecutionStatus,
+    'bedMasterListSummary' => $isAdmin ? bx_bed_master_list_summary() : null,
     'phaseBuilderLatestAiRun' => $phaseBuilderLatestAiRun,
     'phaseBuilderLatestRequirementsAiRun' => $phaseBuilderLatestRequirementsAiRun,
     'flash' => $flash,

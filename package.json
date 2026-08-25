@@ -1,0 +1,15 @@
+{
+  "name": "rbmsv4-firebase-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:messenger": "node scripts/firebase-messenger-sync.mjs",
+    "sync:bed-task": "php scripts/sync-bed-task-pending.php",
+    "stream:messenger": "node scripts/firebase-messenger-stream.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "firebase-admin": "^13.6.0",
+    "mysql2": "^3.24.1"
+  }
+}

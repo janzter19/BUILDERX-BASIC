@@ -17,6 +17,8 @@
 
 - Use the full available width for the primary workspace; do not add arbitrary max-width constraints.
 - Do not place a nested bordered box or card inside another bordered box or card.
+- Only top-level main cards should carry a visible border, and main card headers should show a clear header divider.
+- Main card headers must remain sticky when their content scrolls; place overflow on the card body/content, not the outer card or page column.
 - When nested grouping is necessary, use spacing, a different surface/background color, or a separator without adding another border.
 - Prefer the existing shadcn/ui surface tokens and layout primitives so hierarchy comes from spacing, typography, and contrast rather than stacked boxes.
 - Follow the project-local `ui-ux-main` skill for the shared sidebar, header, full-width workspace, responsive columns, and sticky footer labels.
@@ -31,6 +33,8 @@
 - Follow the project-specific sticky-tab guidance in `docs/project/ui-ux-skills.md`.
 - Use the project-local `ui-ux-modal` and `ui-ux-tabs` skills for modal and tab implementation/review.
 - Use the project-local `ui-ux-form` skill for every form. After native validation succeeds, show a confirmation modal before any native navigation, React submit handler, or persisted action runs.
+- Form modal footers must not include a Cancel button. Keep dismissal on the header close control and Escape, with the footer reserved for the left status label and right primary action.
+- Use the project-local `brainstorming` skill when the user asks to brainstorm, refine direction, compare approaches, or choose between product/UI/database/phase options before implementation.
 - After a confirmed form submission, show exactly one result: a dismissing success toast on success, or an accessible informational modal on failure. If a technical reason is available, keep it collapsed behind `View more`. Do not use a transient error toast for failed submissions.
 - A persisted form is not complete until both create and update work, the committed row is read back, and the refreshed form displays the saved database values instead of fallback defaults.
 

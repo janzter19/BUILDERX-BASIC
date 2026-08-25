@@ -12,6 +12,7 @@ final class RecordSearchService
     public function __construct(
         private readonly mysqli $db,
         private readonly PhysicalTableNameGuard $tableNameGuard = new PhysicalTableNameGuard(),
+        private readonly RecordTenantPersistence|null $tenantPersistence = null,
     ) {
     }
 
@@ -76,17 +77,25 @@ final class RecordSearchService
 
     private function buildWhere(array $filters): array
     {
-        $clauses = ["record_status <> 'DELETED'"];
+        $clauses = [$this->tenantPersistence()->activeRecordPredicate(null, false)];
         $types = '';
         $params = [];
 
-        foreach (['form_key', 'branch_key', 'project_key', 'data_record_key'] as $field) {
-            if (!empty($filters[$field])) {
-                $this->assertUuid((string) $filters[$field], $field);
-                $clauses[] = "{$field} = ?";
-                $types .= 's';
-                $params[] = (string) $filters[$field];
+        if (!empty($filters['branch_key']) || !empty($filters['project_key'])) {
+            [$tenantSql, $tenantTypes, $tenantParams] = $this->tenantPersistence()->tenantPredicate($filters, null, false);
+            $clauses[] = $tenantSql;
+            $types .= $tenantTypes;
+            array_push($params, ...$tenantParams);
+        }
+
+        foreach (['form_key', 'data_record_key'] as $field) {
+            if (empty($filters[$field])) {
+                continue;
             }
+            $this->assertUuid((string) $filters[$field], $field);
+            $clauses[] = "{$field} = ?";
+            $types .= 's';
+            $params[] = (string) $filters[$field];
         }
 
         if (!empty($filters['record_status'])) {
@@ -169,5 +178,10 @@ final class RecordSearchService
         if (preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/', $value) !== 1) {
             throw new RuntimeException("Invalid {$field}.");
         }
+    }
+
+    private function tenantPersistence(): RecordTenantPersistence
+    {
+        return $this->tenantPersistence ?? new RecordTenantPersistence($this->db);
     }
 }

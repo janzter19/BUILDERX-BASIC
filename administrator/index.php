@@ -9,10 +9,64 @@ function bx_admin_redirect(string $tab): void
     exit;
 }
 
+function bx_admin_redirect_settings(string $group = ''): void
+{
+    $params = ['tab' => 'settings'];
+    $group = trim($group);
+    if ($group !== '' && preg_match('/^[A-Za-z0-9_-]{2,80}$/', $group)) {
+        $params['settings_group'] = $group;
+    }
+
+    header('Location: ./?' . http_build_query($params));
+    exit;
+}
+
 function bx_admin_redirect_with_state(string $tab, array $state): void
 {
     $_SESSION['builderx_admin_state'] = $state;
     bx_admin_redirect($tab);
+}
+
+function bx_admin_redirect_position_return(string $tab, string $groupKey): void
+{
+    if ($tab === 'groups' && $groupKey !== '') {
+        bx_admin_redirect_with_state('groups', [
+            'activeGroupKey' => $groupKey,
+            'positionGroupKey' => $groupKey,
+        ]);
+    }
+
+    bx_admin_redirect($tab);
+}
+
+function bx_admin_redirect_bed_lookup(array $filters): void
+{
+    $params = ['tab' => 'bed-lookup'];
+    foreach ($filters as $key => $value) {
+        $value = trim((string) $value);
+        if ($value !== '') {
+            $params[$key] = $value;
+        }
+    }
+
+    header('Location: ./?' . http_build_query($params));
+    exit;
+}
+
+function bx_admin_project_key(string $postedProjectKey = ''): string
+{
+    $postedProjectKey = trim($postedProjectKey);
+    if ($postedProjectKey !== '') {
+        $projectExists = (int) bx_db()->GetOne(
+            "SELECT COUNT(*) FROM builder_project WHERE project_key = ? AND project_status <> 'DELETED'",
+            [$postedProjectKey]
+        );
+        if ($projectExists > 0) {
+            return $postedProjectKey;
+        }
+    }
+
+    return (string) (bx_db()->GetOne("SELECT project_key FROM builder_project WHERE project_status <> 'DELETED' ORDER BY x_id ASC LIMIT 1") ?: '');
 }
 
 function bx_admin_json_response(array $payload, int $status = 200): void
@@ -21,6 +75,52 @@ function bx_admin_json_response(array $payload, int $status = 200): void
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+function bx_admin_wants_json(): bool
+{
+    $requestedWith = strtolower(trim((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')));
+    $accept = strtolower(trim((string) ($_SERVER['HTTP_ACCEPT'] ?? '')));
+
+    return $requestedWith === 'xmlhttprequest' || str_contains($accept, 'application/json');
+}
+
+function bx_admin_bed_reference_firebase_step(array $sync): array
+{
+    if (($sync['ok'] ?? false) === true) {
+        $synced = max(1, (int) ($sync['synced'] ?? 1));
+        return [
+            'label' => 'Sync',
+            'status' => 'complete',
+            'detail' => $synced . ' option' . ($synced === 1 ? '' : 's') . ' updated for connected users.',
+        ];
+    }
+
+    return [
+        'label' => 'Sync',
+        'status' => 'failed',
+        'detail' => 'Sync not completed. Please check the service status and try again.',
+    ];
+}
+
+function bx_admin_project_bed_firebase_step(array $sync): array
+{
+    if (($sync['ok'] ?? false) === true) {
+        $synced = max(1, (int) ($sync['synced'] ?? 1));
+        $analyticsSynced = max(0, (int) ($sync['analytics_synced'] ?? 0));
+        $floorSynced = max(0, (int) ($sync['floor_synced'] ?? 0));
+        return [
+            'label' => 'Update',
+            'status' => 'complete',
+            'detail' => $synced . ' bed record' . ($synced === 1 ? '' : 's') . ', ' . $analyticsSynced . ' report group' . ($analyticsSynced === 1 ? '' : 's') . ', and ' . $floorSynced . ' floor group' . ($floorSynced === 1 ? '' : 's') . ' updated for connected users.',
+        ];
+    }
+
+    return [
+        'label' => 'Update',
+        'status' => 'failed',
+        'detail' => 'Bed list update was not completed. Please check the service status and try again.',
+    ];
 }
 
 function bx_admin_require_authorization(array $requirements = []): array
@@ -406,17 +506,33 @@ function bx_post_array(string $key): array
 
 function bx_replace_user_links(string $table, string $userKey, string $targetColumn, array $targetKeys): void
 {
-    bx_db()->Execute("DELETE FROM {$table} WHERE user_key = ?", [$userKey]);
+    $allowed = [
+        'builder_user_role' => 'role_key',
+        'builder_user_group' => 'group_key',
+        'builder_user_branch' => 'branch_key',
+        'builder_user_project' => 'project_key',
+    ];
+    if (($allowed[$table] ?? '') !== $targetColumn) {
+        throw new RuntimeException('Invalid access assignment target.');
+    }
+
+    $deleted = bx_db()->Execute("DELETE FROM {$table} WHERE user_key = ?", [$userKey]);
+    if ($deleted === false) {
+        throw new RuntimeException('Existing access assignments could not be replaced.');
+    }
 
     foreach (array_unique($targetKeys) as $targetKey) {
         if ($targetKey === '') {
             continue;
         }
 
-        bx_db()->Execute(
+        $saved = bx_db()->Execute(
             "INSERT IGNORE INTO {$table} (user_key, {$targetColumn}) VALUES (?, ?)",
             [$userKey, $targetKey]
         );
+        if ($saved === false) {
+            throw new RuntimeException('Access assignment could not be saved.');
+        }
     }
 }
 
@@ -438,6 +554,270 @@ function bx_validate_existing_keys(string $table, string $keyColumn, array $keys
     }
 
     return true;
+}
+
+function bx_admin_access_transaction(callable $callback): mixed
+{
+    $db = bx_db();
+    $transactionStarted = false;
+    if ($db->BeginTrans() === false) {
+        throw new RuntimeException('Access management transaction could not start.');
+    }
+    $transactionStarted = true;
+
+    try {
+        $result = $callback($db);
+        if ($db->CommitTrans() === false) {
+            throw new RuntimeException('Access management transaction could not commit.');
+        }
+        $transactionStarted = false;
+
+        return $result;
+    } catch (Throwable $exception) {
+        if ($transactionStarted) {
+            $db->RollbackTrans();
+        }
+        throw $exception;
+    }
+}
+
+function bx_admin_unique_keys(array $keys): array
+{
+    return array_values(array_unique(array_filter(array_map(static fn ($key): string => trim((string) $key), $keys), static fn (string $key): bool => $key !== '')));
+}
+
+function bx_admin_role_key_by_name(string $roleName): string
+{
+    return (string) (bx_db()->GetOne("SELECT role_key FROM builder_role WHERE role_name = ? AND role_status <> 'DELETED' LIMIT 1", [$roleName]) ?: '');
+}
+
+function bx_admin_role_name(string $roleKey): string
+{
+    return (string) (bx_db()->GetOne('SELECT role_name FROM builder_role WHERE role_key = ? LIMIT 1', [$roleKey]) ?: '');
+}
+
+function bx_admin_active_permission_keys(): array
+{
+    $rows = bx_db()->GetAll("SELECT permission_key FROM builder_permission WHERE permission_status = 'ACTIVE' ORDER BY permission_key ASC") ?: [];
+
+    return array_values(array_map(static fn (array $row): string => (string) $row['permission_key'], $rows));
+}
+
+function bx_admin_selected_roles_include_administrator(array $roleKeys): bool
+{
+    $adminRoleKey = bx_admin_role_key_by_name('Administrator');
+
+    return $adminRoleKey !== '' && in_array($adminRoleKey, bx_admin_unique_keys($roleKeys), true);
+}
+
+function bx_admin_user_has_active_administrator_role(string $userKey): bool
+{
+    return (int) bx_db()->GetOne(
+        "SELECT COUNT(*)
+        FROM builder_user u
+        JOIN builder_user_role ur ON ur.user_key = u.user_key
+        JOIN builder_role r ON r.role_key = ur.role_key AND r.role_name = 'Administrator' AND r.role_status = 'ACTIVE'
+        WHERE u.user_key = ? AND u.user_status = 'ACTIVE' AND u.user_deleted_at IS NULL",
+        [$userKey]
+    ) > 0;
+}
+
+function bx_admin_active_administrator_count(?string $excludeUserKey = null): int
+{
+    $params = [];
+    $excludeSql = '';
+    if ($excludeUserKey !== null && $excludeUserKey !== '') {
+        $excludeSql = ' AND u.user_key <> ?';
+        $params[] = $excludeUserKey;
+    }
+
+    return (int) bx_db()->GetOne(
+        "SELECT COUNT(DISTINCT u.user_key)
+        FROM builder_user u
+        JOIN builder_user_role ur ON ur.user_key = u.user_key
+        JOIN builder_role r ON r.role_key = ur.role_key AND r.role_name = 'Administrator' AND r.role_status = 'ACTIVE'
+        WHERE u.user_status = 'ACTIVE' AND u.user_deleted_at IS NULL{$excludeSql}",
+        $params
+    );
+}
+
+function bx_admin_assert_user_administrator_continuity(string $userKey, string $nextStatus, array $nextRoleKeys): void
+{
+    if ($userKey === '' || !bx_admin_user_has_active_administrator_role($userKey)) {
+        return;
+    }
+
+    $targetRemainsActiveAdministrator = $nextStatus === 'ACTIVE' && bx_admin_selected_roles_include_administrator($nextRoleKeys);
+    if (!$targetRemainsActiveAdministrator && bx_admin_active_administrator_count($userKey) < 1) {
+        throw new RuntimeException('At least one active Administrator account must remain.');
+    }
+}
+
+function bx_admin_assert_current_user_not_disabled(string $targetUserKey, string $nextStatus, string $currentUserKey): void
+{
+    if ($targetUserKey === $currentUserKey && in_array($nextStatus, ['DRAFT', 'INACTIVE', 'LOCKED', 'DELETED'], true)) {
+        throw new RuntimeException('You cannot disable, lock, draft, or delete your own active administrator session.');
+    }
+}
+
+function bx_admin_validate_project_branch_assignments(array $projectKeys, array $branchKeys): bool
+{
+    $branchLookup = array_fill_keys(bx_admin_unique_keys($branchKeys), true);
+    foreach (bx_admin_unique_keys($projectKeys) as $projectKey) {
+        $branchKey = (string) (bx_db()->GetOne("SELECT branch_key FROM builder_project WHERE project_key = ? AND project_status <> 'DELETED'", [$projectKey]) ?: '');
+        if ($branchKey === '' || !isset($branchLookup[$branchKey])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function bx_admin_assert_role_guardrails(string $existingRoleKey, string $nextRoleName, string $nextRoleStatus, array $permissionKeys): void
+{
+    if ($existingRoleKey === '' || bx_admin_role_name($existingRoleKey) !== 'Administrator') {
+        return;
+    }
+
+    if ($nextRoleName !== 'Administrator' || $nextRoleStatus !== 'ACTIVE') {
+        throw new RuntimeException('The built-in Administrator role must remain active and keep its name.');
+    }
+
+    $missingPermissions = array_diff(bx_admin_active_permission_keys(), bx_admin_unique_keys($permissionKeys));
+    if ($missingPermissions !== []) {
+        throw new RuntimeException('The Administrator role must retain all active permissions.');
+    }
+}
+
+function bx_admin_assert_permission_matrix_guardrails(array $roleKeys, array $permissionKeys, array $matrix): void
+{
+    $adminRoleKey = bx_admin_role_key_by_name('Administrator');
+    if ($adminRoleKey === '' || !in_array($adminRoleKey, bx_admin_unique_keys($roleKeys), true)) {
+        return;
+    }
+
+    $selected = $matrix[$adminRoleKey] ?? [];
+    if (!is_array($selected)) {
+        $selected = [];
+    }
+
+    $missingPermissions = array_diff(bx_admin_unique_keys($permissionKeys), bx_admin_unique_keys($selected));
+    if ($missingPermissions !== []) {
+        throw new RuntimeException('The permission matrix must keep every listed permission assigned to the Administrator role.');
+    }
+}
+
+function bx_admin_link_count(string $table, string $userKey, string $targetColumn): int
+{
+    $allowed = [
+        'builder_user_role' => 'role_key',
+        'builder_user_group' => 'group_key',
+        'builder_user_branch' => 'branch_key',
+        'builder_user_project' => 'project_key',
+    ];
+    if (($allowed[$table] ?? '') !== $targetColumn) {
+        throw new RuntimeException('Invalid access read-back target.');
+    }
+
+    return (int) bx_db()->GetOne("SELECT COUNT(*) FROM {$table} WHERE user_key = ?", [$userKey]);
+}
+
+function bx_admin_assert_user_readback(string $userKey, string $userLogin, string $userChatName, string $userMobileNumber, string $positionKey, string $userStatus, array $roleKeys, array $groupKeys, array $branchKeys, array $projectKeys): void
+{
+    $row = bx_db()->GetRow('SELECT user_login, COALESCE(user_chat_name, \'\') AS user_chat_name, user_mobile_number, group_key, position_key, user_status FROM project_user WHERE user_key = ? LIMIT 1', [$userKey]);
+    if (!is_array($row)
+        || (string) $row['user_login'] !== $userLogin
+        || (string) ($row['user_chat_name'] ?? '') !== $userChatName
+        || (string) ($row['user_mobile_number'] ?? '') !== $userMobileNumber
+        || (string) ($row['position_key'] ?? '') !== $positionKey
+        || (string) $row['user_status'] !== $userStatus
+    ) {
+        throw new RuntimeException('User read-back verification failed.');
+    }
+
+    unset($roleKeys, $branchKeys, $projectKeys);
+    $groupKey = bx_admin_unique_keys($groupKeys)[0] ?? '';
+    $savedGroupKey = (string) ($row['group_key'] ?? '');
+    if ($groupKey !== '' && $savedGroupKey !== $groupKey) {
+        throw new RuntimeException('Project user group read-back verification failed.');
+    }
+}
+
+function bx_admin_normalize_mobile_number(string $mobileNumber): string
+{
+    $normalized = preg_replace('/[^\d+]/', '', trim($mobileNumber));
+    if (!is_string($normalized) || $normalized === '') {
+        return '';
+    }
+    if (str_starts_with($normalized, '00')) {
+        $normalized = '+' . substr($normalized, 2);
+    } elseif ($normalized[0] !== '+') {
+        $digits = ltrim($normalized, '+');
+        if (str_starts_with($digits, '0')) {
+            $digits = '63' . ltrim($digits, '0');
+        }
+        $normalized = '+' . $digits;
+    }
+
+    return $normalized;
+}
+
+function bx_admin_assert_position_readback(string $positionKey, string $positionCode, string $positionName, string $groupKey, string $positionStatus): void
+{
+    $row = bx_db()->GetRow('SELECT position_code, position_name, group_key, position_status FROM project_user_position WHERE position_key = ? LIMIT 1', [$positionKey]);
+    if (!is_array($row)
+        || (string) $row['position_code'] !== $positionCode
+        || (string) $row['position_name'] !== $positionName
+        || (string) ($row['group_key'] ?? '') !== $groupKey
+        || (string) $row['position_status'] !== $positionStatus
+    ) {
+        throw new RuntimeException('Position read-back verification failed.');
+    }
+}
+
+function bx_admin_assert_group_readback(string $groupKey, string $groupName, string $groupStatus, array $memberUserKeys): void
+{
+    $row = bx_db()->GetRow('SELECT group_name, group_status FROM project_user_group WHERE group_key = ? LIMIT 1', [$groupKey]);
+    $memberCount = (int) bx_db()->GetOne('SELECT COUNT(*) FROM project_user WHERE group_key = ? AND user_status <> \'DELETED\'', [$groupKey]);
+    if (!is_array($row)
+        || (string) $row['group_name'] !== $groupName
+        || (string) $row['group_status'] !== $groupStatus
+        || $memberCount !== count(bx_admin_unique_keys($memberUserKeys))
+    ) {
+        throw new RuntimeException('Group read-back verification failed.');
+    }
+}
+
+function bx_admin_is_original_administrators_group(string $groupKey): bool
+{
+    if ($groupKey === '') {
+        return false;
+    }
+
+    return (int) bx_db()->GetOne(
+        "SELECT COUNT(*)
+         FROM project_user_group g
+         INNER JOIN project_user_position p ON p.group_key = g.group_key
+         WHERE g.group_key = ?
+           AND g.group_name = 'Administrators'
+           AND g.group_status <> 'DELETED'
+           AND p.position_code = 'ADMINISTRATOR'
+           AND p.position_status <> 'DELETED'",
+        [$groupKey]
+    ) > 0;
+}
+
+function bx_admin_assert_role_readback(string $roleKey, string $roleName, string $roleStatus, array $permissionKeys): void
+{
+    $row = bx_db()->GetRow('SELECT role_name, role_status FROM builder_role WHERE role_key = ? LIMIT 1', [$roleKey]);
+    $permissionCount = (int) bx_db()->GetOne('SELECT COUNT(*) FROM builder_role_permission WHERE role_key = ?', [$roleKey]);
+    if (!is_array($row)
+        || (string) $row['role_name'] !== $roleName
+        || (string) $row['role_status'] !== $roleStatus
+        || $permissionCount !== count(bx_admin_unique_keys($permissionKeys))
+    ) {
+        throw new RuntimeException('Role read-back verification failed.');
+    }
 }
 
 function bx_ini_bytes(string $value): int
@@ -503,6 +883,89 @@ function bx_command_version(string $command): string
     }
 
     return strtok($output, "\n") ?: $output;
+}
+
+function bx_systemd_service_health(string $serviceName): array
+{
+    $allowedServices = [
+        'rbmsv4-firebase-messenger-stream.service' => [
+            'label' => 'Firebase Messenger Stream',
+            'unitFile' => '/etc/systemd/system/rbmsv4-firebase-messenger-stream.service',
+            'sourceUnitFile' => dirname(__DIR__) . '/deploy/systemd/rbmsv4-firebase-messenger-stream.service',
+        ],
+    ];
+
+    if (!isset($allowedServices[$serviceName])) {
+        return [
+            'service' => $serviceName,
+            'label' => $serviceName,
+            'status' => 'Unavailable',
+            'activeState' => 'unknown',
+            'enabledState' => 'unknown',
+            'loadState' => 'unknown',
+            'detail' => 'Service check is not allow-listed.',
+        ];
+    }
+
+    $definition = $allowedServices[$serviceName];
+    $result = [
+        'service' => $serviceName,
+        'label' => $definition['label'],
+        'status' => 'Unavailable',
+        'activeState' => 'unknown',
+        'enabledState' => 'unknown',
+        'loadState' => 'unknown',
+        'subState' => 'unknown',
+        'unitFileState' => 'unknown',
+        'mainPid' => '',
+        'restartCount' => '',
+        'execMainStatus' => '',
+        'unitFile' => $definition['unitFile'],
+        'sourceUnitFile' => $definition['sourceUnitFile'],
+        'unitFileInstalled' => is_file((string) $definition['unitFile']),
+        'sourceUnitFileExists' => is_file((string) $definition['sourceUnitFile']),
+        'detail' => 'systemctl is not available to PHP.',
+    ];
+
+    if (!function_exists('shell_exec')) {
+        return $result;
+    }
+
+    $unit = escapeshellarg($serviceName);
+    $activeState = trim((string) @shell_exec('systemctl is-active ' . $unit . ' 2>/dev/null'));
+    $enabledState = trim((string) @shell_exec('systemctl is-enabled ' . $unit . ' 2>/dev/null'));
+    $showOutput = trim((string) @shell_exec('systemctl show ' . $unit . ' --property=LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus,NRestarts --no-pager 2>/dev/null'));
+    $properties = [];
+
+    foreach (explode("\n", $showOutput) as $line) {
+        if (!str_contains($line, '=')) {
+            continue;
+        }
+        [$key, $value] = explode('=', $line, 2);
+        $properties[$key] = $value;
+    }
+
+    $loadState = (string) ($properties['LoadState'] ?? 'unknown');
+    $activeState = $activeState !== '' ? $activeState : (string) ($properties['ActiveState'] ?? 'unknown');
+    $enabledState = $enabledState !== '' ? $enabledState : (string) ($properties['UnitFileState'] ?? 'unknown');
+    $isRunning = $activeState === 'active';
+    $isLoaded = in_array($loadState, ['loaded', 'masked'], true);
+    $isEnabled = in_array($enabledState, ['enabled', 'linked', 'static'], true);
+
+    $result['activeState'] = $activeState;
+    $result['enabledState'] = $enabledState;
+    $result['loadState'] = $loadState;
+    $result['subState'] = (string) ($properties['SubState'] ?? 'unknown');
+    $result['unitFileState'] = (string) ($properties['UnitFileState'] ?? $enabledState);
+    $result['mainPid'] = (string) ($properties['MainPID'] ?? '');
+    $result['restartCount'] = (string) ($properties['NRestarts'] ?? '');
+    $result['execMainStatus'] = (string) ($properties['ExecMainStatus'] ?? '');
+    $result['status'] = $isRunning && $isLoaded && $isEnabled ? 'OK' : 'Needs Attention';
+    $result['detail'] = $isRunning
+        ? 'Service is active.'
+        : 'Service is not running or not installed. Install and enable the unit, then reload Runtime Health.';
+
+    return $result;
 }
 
 function bx_system_memory(): array
@@ -811,6 +1274,9 @@ function bx_runtime_health_snapshot(): array
     $requiredFolders = bx_required_folder_checks();
     $errorLogs = bx_recent_error_log_entries();
     $attachmentStorage = bx_attachment_storage_check();
+    $systemServices = [
+        bx_systemd_service_health('rbmsv4-firebase-messenger-stream.service'),
+    ];
     $runtimeAlerts = [];
 
     foreach ($requiredFolders as $folder) {
@@ -827,6 +1293,21 @@ function bx_runtime_health_snapshot(): array
             'level' => 'error',
             'message' => 'Phase note attachment storage has unreadable or missing files.',
         ];
+    }
+
+    foreach ($systemServices as $service) {
+        if (($service['status'] ?? '') !== 'OK') {
+            $runtimeAlerts[] = [
+                'level' => 'warning',
+                'message' => (string) ($service['service'] ?? 'System service') . ' is not running. ' . (string) ($service['detail'] ?? ''),
+                'fixSteps' => [
+                    'sudo install -m 0644 /var/www/html/rbmsv4/deploy/systemd/rbmsv4-firebase-messenger-stream.service /etc/systemd/system/rbmsv4-firebase-messenger-stream.service',
+                    'sudo systemctl daemon-reload',
+                    'sudo systemctl enable --now rbmsv4-firebase-messenger-stream.service',
+                    'sudo systemctl status rbmsv4-firebase-messenger-stream.service',
+                ],
+            ];
+        }
     }
 
     foreach (array_slice($errorLogs, 0, 5) as $entry) {
@@ -867,6 +1348,7 @@ function bx_runtime_health_snapshot(): array
         'configFiles' => $configFiles,
         'requiredFolders' => $requiredFolders,
         'attachmentStorage' => $attachmentStorage,
+        'systemServices' => $systemServices,
         'errorLogs' => $errorLogs,
         'runtimeAlerts' => $runtimeAlerts,
         'recommendations' => [
@@ -953,6 +1435,9 @@ function bx_admin_seed_settings(): void
         ['contact_phone', '', 'contact'],
         ['contact_address', '', 'contact'],
         ['admin_default_tab', 'dashboard', 'interface'],
+        ['sharingan_enabled', '0', 'interface'],
+        ['media_uploader_target_url', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/upload-image.php', 'media'],
+        ['media_image_viewer_url', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/view.php', 'media'],
         ['login_header_title', $softwareName, 'login'],
         ['login_header_subtitle', 'Administrator Portal', 'login'],
         ['login_badge_label', 'Administrator Portal', 'login'],
@@ -996,6 +1481,62 @@ function bx_admin_seed_settings(): void
             );
         }
     }
+
+    $positions = [
+        ['ADMINISTRATOR', 'Administrator', 'Full administrative operator position.', 'Administrators'],
+        ['NURSE', 'Nurse', 'Clinical ward or station user position.', 'Encoders'],
+        ['ENCODER', 'Encoder', 'Data entry and record maintenance position.', 'Encoders'],
+        ['AUDITOR', 'Auditor', 'Read-back and audit review position.', 'Auditors'],
+    ];
+    foreach ($positions as $position) {
+        $groupKey = (string) (bx_db()->GetOne('SELECT group_key FROM builder_group WHERE group_name = ? LIMIT 1', [$position[3]]) ?: '');
+        if ((int) bx_db()->GetOne('SELECT COUNT(*) FROM builder_user_position WHERE position_code = ?', [$position[0]]) === 0) {
+            bx_db()->Execute(
+                'INSERT INTO builder_user_position (position_key, position_code, position_name, group_key, position_description) VALUES (?, ?, ?, ?, ?)',
+                [bx_uuid(), $position[0], $position[1], $groupKey === '' ? null : $groupKey, $position[2]]
+            );
+        } elseif ($groupKey !== '') {
+            bx_db()->Execute(
+                "UPDATE builder_user_position SET group_key = ? WHERE position_code = ? AND (group_key IS NULL OR group_key = '')",
+                [$groupKey, $position[0]]
+            );
+        }
+    }
+
+    foreach (bx_db()->GetAll("SELECT project_key FROM builder_project WHERE project_status <> 'DELETED'") ?: [] as $project) {
+        $projectKey = (string) ($project['project_key'] ?? '');
+        if ($projectKey === '') {
+            continue;
+        }
+
+        foreach ([
+            ['Administrators', 'Project administration group.'],
+            ['Encoders', 'Project data entry group.'],
+            ['Auditors', 'Project read-back and audit review group.'],
+        ] as $group) {
+            if ((int) bx_db()->GetOne('SELECT COUNT(*) FROM project_user_group WHERE project_key = ? AND group_name = ?', [$projectKey, $group[0]]) === 0) {
+                bx_db()->Execute(
+                    'INSERT INTO project_user_group (group_key, project_key, group_name, group_description) VALUES (?, ?, ?, ?)',
+                    [bx_unique_firebase_document_key('project_user_group', 'group_key'), $projectKey, $group[0], $group[1]]
+                );
+            }
+        }
+
+        foreach ($positions as $position) {
+            $projectGroupKey = (string) (bx_db()->GetOne('SELECT group_key FROM project_user_group WHERE project_key = ? AND group_name = ? LIMIT 1', [$projectKey, $position[3]]) ?: '');
+            if ($projectGroupKey === '') {
+                continue;
+            }
+            if ((int) bx_db()->GetOne('SELECT COUNT(*) FROM project_user_position WHERE project_key = ? AND position_code = ?', [$projectKey, $position[0]]) === 0) {
+                bx_db()->Execute(
+                    'INSERT INTO project_user_position (position_key, project_key, group_key, position_code, position_name, position_description) VALUES (?, ?, ?, ?, ?, ?)',
+                    [bx_unique_firebase_document_key('project_user_position', 'position_key'), $projectKey, $projectGroupKey, $position[0], $position[1], $position[2]]
+                );
+            }
+        }
+    }
+
+    bx_seed_android_project_settings();
 }
 
 function bx_audit_filters_from_request(): array
@@ -1121,132 +1662,6 @@ function bx_admin_table_exists(string $table): bool
     ) > 0;
 }
 
-function bx_family_report_filters_from_request(): array
-{
-    $filters = [];
-    foreach (['family_report_search', 'family_report_status', 'family_report_relationship', 'family_report_date_from', 'family_report_date_to'] as $key) {
-        $filters[$key] = trim((string) ($_GET[$key] ?? ''));
-    }
-
-    foreach (['family_report_date_from', 'family_report_date_to'] as $key) {
-        if ($filters[$key] !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $filters[$key])) {
-            $filters[$key] = '';
-        }
-    }
-
-    return $filters;
-}
-
-function bx_family_report_csv(array $rows): void
-{
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="family-member-report.csv"');
-    $output = fopen('php://output', 'w');
-    fputcsv($output, ['member_key', 'full_name', 'relationship', 'email', 'phone', 'vehicles', 'education_records', 'status', 'updated_at']);
-    foreach ($rows as $row) {
-        fputcsv($output, [
-            $row['member_key'] ?? '',
-            $row['full_name'] ?? '',
-            $row['relationship_to_user'] ?? '',
-            $row['contact_email'] ?? '',
-            $row['contact_phone'] ?? '',
-            $row['vehicle_count'] ?? 0,
-            $row['education_count'] ?? 0,
-            $row['member_status'] ?? '',
-            $row['member_updated_at'] ?? $row['member_created_at'] ?? '',
-        ]);
-    }
-    exit;
-}
-
-function bx_family_report_data(?array $user, array $filters, bool $allowed): array
-{
-    $empty = [
-        'allowed' => $allowed,
-        'filters' => $filters,
-        'summary' => ['members' => 0, 'vehicles' => 0, 'education' => 0],
-        'rows' => [],
-        'pagination' => ['page' => 1, 'page_size' => 25, 'total' => 0, 'pages' => 1],
-    ];
-    if (!$allowed || !$user || !bx_admin_table_exists('builder_family_member') || !bx_admin_table_exists('builder_family_member_vehicle') || !bx_admin_table_exists('builder_family_member_education')) {
-        return $empty;
-    }
-
-    $where = ["m.member_status <> 'DELETED'"];
-    $params = [];
-    if (($filters['family_report_search'] ?? '') !== '') {
-        $where[] = "CONCAT_WS(' ', m.member_key, m.first_name, m.middle_name, m.last_name, m.relationship_to_user, m.contact_email, m.contact_phone) LIKE ?";
-        $params[] = '%' . $filters['family_report_search'] . '%';
-    }
-    if (($filters['family_report_status'] ?? '') !== '') {
-        $where[] = 'm.member_status = ?';
-        $params[] = $filters['family_report_status'];
-    }
-    if (($filters['family_report_relationship'] ?? '') !== '') {
-        $where[] = 'm.relationship_to_user LIKE ?';
-        $params[] = '%' . $filters['family_report_relationship'] . '%';
-    }
-    if (($filters['family_report_date_from'] ?? '') !== '') {
-        $where[] = 'm.member_created_at >= ?';
-        $params[] = $filters['family_report_date_from'] . ' 00:00:00';
-    }
-    if (($filters['family_report_date_to'] ?? '') !== '') {
-        $where[] = 'm.member_created_at <= ?';
-        $params[] = $filters['family_report_date_to'] . ' 23:59:59';
-    }
-
-    $whereSql = implode(' AND ', $where);
-    $total = (int) bx_db()->GetOne("SELECT COUNT(*) FROM builder_family_member m WHERE {$whereSql}", $params);
-    $page = max(1, (int) ($_GET['family_report_page'] ?? 1));
-    $pageSize = 25;
-    $pages = max(1, (int) ceil($total / $pageSize));
-    $page = min($page, $pages);
-    $offset = ($page - 1) * $pageSize;
-    $rows = bx_db()->GetAll(
-        "SELECT
-            m.member_key, m.first_name, m.middle_name, m.last_name, m.suffix, m.relationship_to_user,
-            m.contact_email, m.contact_phone, m.member_status, m.member_created_at, m.member_updated_at,
-            COUNT(DISTINCT CASE WHEN v.vehicle_status <> 'DELETED' THEN v.vehicle_key END) AS vehicle_count,
-            COUNT(DISTINCT CASE WHEN e.education_status <> 'DELETED' THEN e.education_key END) AS education_count
-        FROM builder_family_member m
-        LEFT JOIN builder_family_member_vehicle v ON v.member_key = m.member_key AND v.owner_user_key = m.owner_user_key
-        LEFT JOIN builder_family_member_education e ON e.member_key = m.member_key AND e.owner_user_key = m.owner_user_key
-        WHERE {$whereSql}
-        GROUP BY m.x_id, m.member_key, m.first_name, m.middle_name, m.last_name, m.suffix, m.relationship_to_user,
-            m.contact_email, m.contact_phone, m.member_status, m.member_created_at, m.member_updated_at
-        ORDER BY m.member_updated_at DESC, m.x_id DESC
-        LIMIT {$pageSize} OFFSET {$offset}",
-        $params
-    ) ?: [];
-
-    $safeRows = [];
-    foreach ($rows as $row) {
-        $row['full_name'] = trim(implode(' ', array_filter([
-            (string) ($row['first_name'] ?? ''),
-            (string) ($row['middle_name'] ?? ''),
-            (string) ($row['last_name'] ?? ''),
-            (string) ($row['suffix'] ?? ''),
-        ])));
-        $row['contact_email'] = bx_mask_email((string) ($row['contact_email'] ?? ''));
-        $row['contact_phone'] = bx_mask_phone((string) ($row['contact_phone'] ?? ''));
-        $safeRows[] = $row;
-    }
-
-    $summary = [
-        'members' => (int) bx_db()->GetOne("SELECT COUNT(*) FROM builder_family_member m WHERE {$whereSql}", $params),
-        'vehicles' => (int) bx_db()->GetOne("SELECT COUNT(*) FROM builder_family_member_vehicle v JOIN builder_family_member m ON m.member_key = v.member_key AND m.owner_user_key = v.owner_user_key WHERE v.vehicle_status <> 'DELETED' AND {$whereSql}", $params),
-        'education' => (int) bx_db()->GetOne("SELECT COUNT(*) FROM builder_family_member_education e JOIN builder_family_member m ON m.member_key = e.member_key AND m.owner_user_key = e.owner_user_key WHERE e.education_status <> 'DELETED' AND {$whereSql}", $params),
-    ];
-
-    return [
-        'allowed' => true,
-        'filters' => $filters,
-        'summary' => $summary,
-        'rows' => $safeRows,
-        'pagination' => ['page' => $page, 'page_size' => $pageSize, 'total' => $total, 'pages' => $pages],
-    ];
-}
-
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($requestMethod === 'POST') {
@@ -1297,8 +1712,479 @@ if ($requestMethod === 'POST') {
         exit;
     }
 
-    if (in_array($action, ['save_branch', 'set_branch_status', 'save_project', 'set_project_status', 'save_user', 'set_user_status', 'reset_user_password', 'save_group', 'set_group_status', 'save_role', 'set_role_status', 'set_permission_status', 'save_permission_matrix', 'save_form', 'set_form_status', 'clone_form', 'publish_form', 'unpublish_form', 'import_form_json', 'export_form_json', 'save_form_field', 'set_form_field_status', 'move_form_field', 'save_form_layout', 'set_form_layout_status', 'save_system_settings', 'apply_runtime_project_config', 'save_template_preset', 'run_template_command'], true)) {
+    if (in_array($action, ['save_branch', 'set_branch_status', 'save_project', 'set_project_status', 'save_user_position', 'set_user_position_status', 'save_user', 'set_user_status', 'reset_user_password', 'save_group', 'set_group_status', 'save_role', 'set_role_status', 'set_permission_status', 'save_permission_matrix', 'save_form', 'set_form_status', 'clone_form', 'publish_form', 'unpublish_form', 'import_form_json', 'export_form_json', 'save_form_field', 'set_form_field_status', 'move_form_field', 'save_form_layout', 'set_form_layout_status', 'save_system_settings', 'set_sharingan_enabled', 'save_bed_treatment', 'set_bed_treatment_status', 'save_bed_source', 'set_bed_source_status', 'sync_bed_reference_firebase', 'update_bed_reference_sort_order', 'resync_bed_master_list', 'resync_project_bed', 'create_project_task', 'update_project_task', 'delete_project_task', 'update_project_task_canvas_position', 'create_project_task_stage', 'update_project_task_stage', 'delete_project_task_stage', 'create_project_task_stage_response', 'update_project_task_stage_response', 'delete_project_task_stage_response', 'update_project_task_stage_connection', 'update_project_task_stage_sort_order', 'update_project_task_stage_response_sort_order', 'apply_runtime_project_config', 'save_template_preset', 'run_template_command'], true)) {
         $currentUser = bx_admin_require_authorization(['requireAdmin' => true])['user'];
+
+        if ($action === 'set_sharingan_enabled') {
+            $newValue = (string) ($_POST['enabled'] ?? '');
+            if (!in_array($newValue, ['0', '1'], true)) {
+                bx_admin_json_response(['ok' => false, 'message' => 'Sharingan must be on or off.'], 422);
+            }
+
+            $settingKey = (string) bx_db()->GetOne(
+                "SELECT setting_key FROM builder_system_setting WHERE setting_name = 'sharingan_enabled' AND setting_status = 'ACTIVE'"
+            );
+            if ($settingKey === '') {
+                $settingKey = bx_uuid();
+                bx_db()->Execute(
+                    'INSERT INTO builder_system_setting (setting_key, setting_name, setting_value, setting_group) VALUES (?, ?, ?, ?)',
+                    [$settingKey, 'sharingan_enabled', '0', 'interface']
+                );
+            }
+
+            $previousValue = (string) bx_setting('sharingan_enabled', '0');
+            if ($newValue !== $previousValue) {
+                bx_db()->Execute(
+                    "UPDATE builder_system_setting SET setting_value = ?, setting_group = 'interface', setting_status = 'ACTIVE' WHERE setting_key = ?",
+                    [$newValue, $settingKey]
+                );
+                bx_audit('UPDATE', 'builder_system_setting', $settingKey, [
+                    'setting_name' => 'sharingan_enabled',
+                    'enabled' => $newValue === '1',
+                ], 'Administrator changed Sharingan availability.');
+            }
+
+            bx_admin_json_response([
+                'ok' => true,
+                'message' => $newValue === '1' ? 'Sharingan is enabled for allowed product surfaces.' : 'Sharingan is disabled outside Administrator control.',
+                'sharinganEnabled' => $newValue === '1',
+            ]);
+        }
+
+        $bedReferenceReturnTab = static function (string $fallback): string {
+            $returnTab = trim((string) ($_POST['return_tab'] ?? $fallback));
+            return in_array($returnTab, ['bed-management', 'bed-treatment', 'bed-source'], true) ? $returnTab : $fallback;
+        };
+
+        if ($action === 'sync_bed_reference_firebase') {
+            $referenceType = strtolower(trim((string) ($_POST['reference_type'] ?? '')));
+            $referenceRows = [];
+            $label = '';
+            $fallbackTab = 'bed-management';
+            try {
+                if ($referenceType === 'treatment') {
+                    $referenceRows = bx_project_bed_treatment_rows();
+                    $label = 'Bed treatment';
+                    $fallbackTab = 'bed-treatment';
+                } elseif ($referenceType === 'source') {
+                    $referenceRows = bx_project_bed_source_rows();
+                    $label = 'Bed source';
+                    $fallbackTab = 'bed-source';
+                } else {
+                    throw new RuntimeException('Invalid bed reference type.');
+                }
+
+                $firebaseSync = bx_sync_project_bed_reference_rows_to_firebase($referenceType, $referenceRows);
+                $firebaseStep = bx_admin_bed_reference_firebase_step($firebaseSync);
+                $firebaseOk = $firebaseStep['status'] === 'complete';
+                bx_mutation_lifecycle_flash($firebaseOk ? $label . ' options synced.' : $label . ' sync needs attention.', $firebaseOk ? 'success' : 'error', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => (string) count($referenceRows) . ' option(s) prepared.'],
+                    $firebaseStep,
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Bed option sync failed.', 'error', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Read-back', 'status' => 'blocked', 'detail' => $error->getMessage()],
+                    ['label' => 'Sync', 'status' => 'not_started', 'detail' => 'No option sync was completed.'],
+                ], $error->getMessage());
+            }
+            bx_admin_redirect($bedReferenceReturnTab($fallbackTab));
+        }
+
+        if ($action === 'save_bed_treatment') {
+            try {
+                $treatment = bx_save_project_bed_treatment($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $firebaseSync = bx_sync_project_bed_reference_to_firebase('treatment', $treatment);
+                bx_mutation_lifecycle_flash('Bed treatment saved.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Treatment fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'Bed treatment option was saved.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Bed treatment option was verified after save.'],
+                    bx_admin_bed_reference_firebase_step($firebaseSync),
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Bed treatment was not saved.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified bed treatment save was completed.'],
+                ], $error->getMessage());
+            }
+            bx_admin_redirect($bedReferenceReturnTab('bed-treatment'));
+        }
+
+        if ($action === 'set_bed_treatment_status') {
+            try {
+                $treatment = bx_set_project_bed_treatment_status($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $firebaseSync = bx_sync_project_bed_reference_to_firebase('treatment', $treatment);
+                bx_mutation_lifecycle_flash('Bed treatment status updated.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Treatment status accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'Bed treatment status is ' . (string) ($treatment['treatment_status'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Bed treatment status was verified after update.'],
+                    bx_admin_bed_reference_firebase_step($firebaseSync),
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Bed treatment status was not updated.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified bed treatment status update was completed.'],
+                ], $error->getMessage());
+            }
+            bx_admin_redirect($bedReferenceReturnTab('bed-treatment'));
+        }
+
+        if ($action === 'save_bed_source') {
+            try {
+                $source = bx_save_project_bed_source($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $firebaseSync = bx_sync_project_bed_reference_to_firebase('source', $source);
+                bx_mutation_lifecycle_flash('Admission source saved.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Admission source fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'Admission source option was saved.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Admission source option was verified after save.'],
+                    bx_admin_bed_reference_firebase_step($firebaseSync),
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Admission source was not saved.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified admission source save was completed.'],
+                ], $error->getMessage());
+            }
+            bx_admin_redirect($bedReferenceReturnTab('bed-source'));
+        }
+
+        if ($action === 'set_bed_source_status') {
+            try {
+                $source = bx_set_project_bed_source_status($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $firebaseSync = bx_sync_project_bed_reference_to_firebase('source', $source);
+                bx_mutation_lifecycle_flash('Admission source status updated.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Admission source status accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'Admission source status is ' . (string) ($source['bed_source_status'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Admission source status was verified after update.'],
+                    bx_admin_bed_reference_firebase_step($firebaseSync),
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Admission source status was not updated.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified admission source status update was completed.'],
+                ], $error->getMessage());
+            }
+            bx_admin_redirect($bedReferenceReturnTab('bed-source'));
+        }
+
+        if ($action === 'update_bed_reference_sort_order') {
+            try {
+                $rows = bx_update_project_bed_reference_sort_order($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $referenceType = strtolower(trim((string) ($_POST['reference_type'] ?? '')));
+                $firebaseSync = bx_sync_project_bed_reference_rows_to_firebase($referenceType, $rows);
+                bx_admin_json_response([
+                    'ok' => true,
+                    'message' => 'Bed reference order saved.',
+                    'rows' => $rows,
+                    'firebase_sync' => $firebaseSync,
+                ]);
+            } catch (Throwable $error) {
+                bx_admin_json_response([
+                    'ok' => false,
+                    'message' => $error->getMessage(),
+                ], 422);
+            }
+        }
+
+        if ($action === 'update_project_task_canvas_position') {
+            try {
+                $task = bx_update_project_task_canvas_position($_POST, (string) ($currentUser['user_key'] ?? ''));
+                bx_admin_json_response([
+                    'ok' => true,
+                    'message' => 'Task canvas position saved.',
+                    'task' => $task,
+                ]);
+            } catch (Throwable $error) {
+                bx_admin_json_response([
+                    'ok' => false,
+                    'message' => $error->getMessage(),
+                ], 422);
+            }
+        }
+
+        if ($action === 'update_project_task_stage_sort_order') {
+            try {
+                $stages = bx_update_project_task_stage_sort_order($_POST, (string) ($currentUser['user_key'] ?? ''));
+                bx_admin_json_response([
+                    'ok' => true,
+                    'message' => 'Task stage order saved.',
+                    'stages' => $stages,
+                ]);
+            } catch (Throwable $error) {
+                bx_admin_json_response([
+                    'ok' => false,
+                    'message' => $error->getMessage(),
+                ], 422);
+            }
+        }
+
+        if ($action === 'update_project_task_stage_response_sort_order') {
+            try {
+                $responses = bx_update_project_task_stage_response_sort_order($_POST, (string) ($currentUser['user_key'] ?? ''));
+                bx_admin_json_response([
+                    'ok' => true,
+                    'message' => 'Task stage response order saved.',
+                    'responses' => $responses,
+                ]);
+            } catch (Throwable $error) {
+                bx_admin_json_response([
+                    'ok' => false,
+                    'message' => $error->getMessage(),
+                ], 422);
+            }
+        }
+
+        if ($action === 'update_project_task_stage_connection') {
+            $taskBuilderSelectedTaskKey = '';
+            try {
+                $stage = bx_update_project_task_stage_connection($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($stage['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Task stage connection saved.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Connected task is a secondary task.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage connection updated.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task stage connection was read back after update.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task stage connection was not saved.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage connection update was completed.'],
+                ], $error->getMessage());
+            }
+            if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey)) {
+                $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'create_project_task_stage') {
+            $taskBuilderSelectedTaskKey = '';
+            try {
+                $stage = bx_create_project_task_stage($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($stage['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Task stage created.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Stage fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage row committed with key ' . (string) ($stage['task_stage_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task stage row was read back after insert.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task stage was not created.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage commit was completed.'],
+                ], $error->getMessage());
+            }
+            if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey)) {
+                $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'update_project_task_stage') {
+            $taskBuilderSelectedTaskKey = '';
+            try {
+                $stage = bx_update_project_task_stage($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($stage['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Task stage updated.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Stage fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage row updated with key ' . (string) ($stage['task_stage_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task stage row was read back after update.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task stage was not updated.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage update was completed.'],
+                ], $error->getMessage());
+            }
+            if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey)) {
+                $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'delete_project_task_stage') {
+            $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            try {
+                $stage = bx_delete_project_task_stage($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($stage['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Task stage deleted.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Task stage key accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage row deleted with key ' . (string) ($stage['task_stage_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task stage was absent after delete and stage order was cleaned.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task stage was not deleted.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage delete was completed.'],
+                ], $error->getMessage());
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'create_project_task_stage_response') {
+            $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            $wantsJson = bx_admin_wants_json();
+            try {
+                $response = bx_create_project_task_stage_response($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($response['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Stage response created.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Response fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage_response row committed with key ' . (string) ($response['task_stage_response_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Stage response row was read back after insert.'],
+                ]);
+                if ($wantsJson) {
+                    bx_admin_json_response([
+                        'ok' => true,
+                        'message' => 'Stage response created.',
+                        'response' => $response,
+                        'responses' => bx_project_task_stage_response_rows(),
+                    ]);
+                }
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Stage response was not created.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage_response commit was completed.'],
+                ], $error->getMessage());
+                if ($wantsJson) {
+                    bx_admin_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
+                }
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'update_project_task_stage_response') {
+            $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            $wantsJson = bx_admin_wants_json();
+            try {
+                $response = bx_update_project_task_stage_response($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($response['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Stage response updated.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Response fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage_response row updated with key ' . (string) ($response['task_stage_response_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Stage response row was read back after update.'],
+                ]);
+                if ($wantsJson) {
+                    bx_admin_json_response([
+                        'ok' => true,
+                        'message' => 'Stage response updated.',
+                        'response' => $response,
+                        'responses' => bx_project_task_stage_response_rows(),
+                    ]);
+                }
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Stage response was not updated.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage_response update was completed.'],
+                ], $error->getMessage());
+                if ($wantsJson) {
+                    bx_admin_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
+                }
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'delete_project_task_stage_response') {
+            $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            $wantsJson = bx_admin_wants_json();
+            try {
+                $response = bx_delete_project_task_stage_response($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($response['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Stage response deleted.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Response key accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task_stage_response row deleted with key ' . (string) ($response['task_stage_response_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Stage response was absent after delete and response order was cleaned.'],
+                ]);
+                if ($wantsJson) {
+                    bx_admin_json_response([
+                        'ok' => true,
+                        'message' => 'Stage response deleted.',
+                        'response' => $response,
+                        'responses' => bx_project_task_stage_response_rows(),
+                    ]);
+                }
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Stage response was not deleted.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task_stage_response delete was completed.'],
+                ], $error->getMessage());
+                if ($wantsJson) {
+                    bx_admin_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
+                }
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'create_project_task') {
+            $taskBuilderSelectedTaskKey = '';
+            try {
+                $task = bx_create_project_task($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($task['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Task created.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Task fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task row committed with key ' . (string) ($task['task_key'] ?? '') . ' and default NEW stage.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task row and default stage were read back after insert.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task was not created.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task commit was completed.'],
+                ], $error->getMessage());
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'update_project_task') {
+            $taskBuilderSelectedTaskKey = '';
+            try {
+                $task = bx_update_project_task($_POST, (string) ($currentUser['user_key'] ?? ''));
+                $taskBuilderSelectedTaskKey = (string) ($task['task_key'] ?? '');
+                bx_mutation_lifecycle_flash('Task updated.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Task fields accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task row updated with key ' . (string) ($task['task_key'] ?? '') . '.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task row was read back after update.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task was not updated.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task update was completed.'],
+                ], $error->getMessage());
+            }
+            if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey)) {
+                $taskBuilderSelectedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
+
+        if ($action === 'delete_project_task') {
+            $taskBuilderSelectedTaskKey = trim((string) ($_POST['selected_task_key'] ?? ''));
+            $deletedTaskKey = trim((string) ($_POST['task_key'] ?? ''));
+            try {
+                $task = bx_delete_project_task($_POST, (string) ($currentUser['user_key'] ?? ''));
+                if ($taskBuilderSelectedTaskKey === $deletedTaskKey) {
+                    $taskBuilderSelectedTaskKey = '';
+                }
+                bx_mutation_lifecycle_flash('Task deleted.', 'success', [
+                    ['label' => 'Validation', 'status' => 'complete', 'detail' => 'Task key accepted.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'project_task row and ' . (int) ($task['deleted_stage_count'] ?? 0) . ' stage row(s) deleted.'],
+                    ['label' => 'Read-back', 'status' => 'complete', 'detail' => 'Task and related stages were absent after delete.'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Task was not deleted.', 'error', [
+                    ['label' => 'Validation', 'status' => 'action_required', 'detail' => $error->getMessage()],
+                    ['label' => 'Persistence', 'status' => 'not_started', 'detail' => 'No verified project_task delete was completed.'],
+                ], $error->getMessage());
+            }
+            header('Location: ./?tab=task-builder' . (preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey) ? '&selected_task_key=' . rawurlencode($taskBuilderSelectedTaskKey) : ''));
+            exit;
+        }
 
         if ($action === 'save_branch') {
             $branchKey = trim((string) ($_POST['branch_key'] ?? ''));
@@ -1355,7 +2241,12 @@ if ($requestMethod === 'POST') {
                     'branch_name' => $branchName,
                     'branch_status' => $branchStatus,
                 ], 'Administrator updated branch.');
-                bx_flash('Branch updated.', 'success');
+                $readBack = bx_db()->GetRow('SELECT branch_code, branch_name, branch_status FROM builder_branch WHERE branch_key = ?', [$branchKey]) ?: [];
+                bx_mutation_lifecycle_flash('Branch updated.', 'success', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'The branch update statement completed.'],
+                    ['label' => 'Read-back', 'status' => $readBack ? 'complete' : 'blocked', 'detail' => $readBack ? 'Saved branch read back as ' . (string) $readBack['branch_code'] . ' / ' . (string) $readBack['branch_status'] . '.' : 'The saved branch row was not found.'],
+                ]);
             } else {
                 $branchKey = bx_uuid();
                 bx_db()->Execute(
@@ -1367,7 +2258,12 @@ if ($requestMethod === 'POST') {
                     'branch_name' => $branchName,
                     'branch_status' => $branchStatus,
                 ], 'Administrator created branch.');
-                bx_flash('Branch created.', 'success');
+                $readBack = bx_db()->GetRow('SELECT branch_code, branch_name, branch_status FROM builder_branch WHERE branch_key = ?', [$branchKey]) ?: [];
+                bx_mutation_lifecycle_flash('Branch created.', 'success', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'The branch insert statement completed.'],
+                    ['label' => 'Read-back', 'status' => $readBack ? 'complete' : 'blocked', 'detail' => $readBack ? 'Saved branch read back as ' . (string) $readBack['branch_code'] . ' / ' . (string) $readBack['branch_status'] . '.' : 'The saved branch row was not found.'],
+                ]);
             }
 
             header('Location: ./?tab=branches');
@@ -1397,7 +2293,12 @@ if ($requestMethod === 'POST') {
                 'branch_code' => $existing['branch_code'],
                 'branch_status' => $branchStatus,
             ], 'Administrator changed branch status.');
-            bx_flash('Branch status updated.', 'success');
+            $readBack = bx_db()->GetRow('SELECT branch_code, branch_status FROM builder_branch WHERE branch_key = ?', [$branchKey]) ?: [];
+            bx_mutation_lifecycle_flash('Branch status updated.', 'success', [
+                ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                ['label' => 'Persistence', 'status' => 'complete', 'detail' => 'The branch status update completed.'],
+                ['label' => 'Read-back', 'status' => $readBack ? 'complete' : 'blocked', 'detail' => $readBack ? 'Saved branch read back as ' . (string) $readBack['branch_code'] . ' / ' . (string) $readBack['branch_status'] . '.' : 'The saved branch row was not found.'],
+            ]);
             header('Location: ./?tab=branches');
             exit;
         }
@@ -1474,6 +2375,7 @@ if ($requestMethod === 'POST') {
                     'INSERT INTO builder_project (project_key, branch_key, project_name, project_code, project_status, project_description) VALUES (?, ?, ?, ?, ?, ?)',
                     [$projectKey, $branchKey, $projectName, $projectCode, $projectStatus, $projectDescription]
                 );
+                bx_seed_android_project_settings();
                 bx_audit('CREATE', 'builder_project', $projectKey, [
                     'project_code' => $projectCode,
                     'project_name' => $projectName,
@@ -2022,21 +2924,209 @@ if ($requestMethod === 'POST') {
             bx_admin_redirect('forms');
         }
 
+        if ($action === 'save_user_position') {
+            $positionKey = trim((string) ($_POST['position_key'] ?? ''));
+            $projectKey = bx_admin_project_key((string) ($_POST['project_key'] ?? ''));
+            $positionCode = trim((string) ($_POST['position_code'] ?? ''));
+            $positionName = trim((string) ($_POST['position_name'] ?? ''));
+            $groupKey = trim((string) ($_POST['group_key'] ?? ''));
+            $positionDescription = trim((string) ($_POST['position_description'] ?? ''));
+            $positionStatus = trim((string) ($_POST['position_status'] ?? 'ACTIVE'));
+            $returnTab = in_array((string) ($_POST['return_tab'] ?? 'positions'), ['groups', 'positions'], true) ? (string) $_POST['return_tab'] : 'positions';
+            $allowedStatuses = ['ACTIVE', 'INACTIVE', 'DELETED'];
+
+            if ($projectKey === '' || $positionCode === '' || $positionName === '' || $groupKey === '') {
+                bx_flash('Position code, name, and group are required.', 'error');
+                bx_admin_redirect_position_return($returnTab, $groupKey);
+            }
+
+            if (strlen($positionCode) > 80) {
+                bx_flash('Position code must be 80 characters or less.', 'error');
+                bx_admin_redirect_position_return($returnTab, $groupKey);
+            }
+
+            if (strlen($positionName) > 160) {
+                bx_flash('Position name must be 160 characters or less.', 'error');
+                bx_admin_redirect_position_return($returnTab, $groupKey);
+            }
+
+            if (!in_array($positionStatus, $allowedStatuses, true)) {
+                bx_flash('Invalid position status.', 'error');
+                bx_admin_redirect_position_return($returnTab, $groupKey);
+            }
+
+            if ((int) bx_db()->GetOne("SELECT COUNT(*) FROM project_user_group WHERE project_key = ? AND group_key = ? AND group_status = 'ACTIVE'", [$projectKey, $groupKey]) === 0) {
+                bx_flash('Selected position group must be active.', 'error');
+                bx_admin_redirect_position_return($returnTab, $groupKey);
+            }
+
+            $duplicate = (int) bx_db()->GetOne(
+                'SELECT COUNT(*) FROM project_user_position WHERE project_key = ? AND (position_code = ? OR position_name = ?) AND position_key <> ?',
+                [$projectKey, $positionCode, $positionName, $positionKey ?: '__new__']
+            );
+            if ($duplicate > 0) {
+                bx_flash('Position code or name already exists.', 'error');
+                bx_admin_redirect_position_return($returnTab, $groupKey);
+            }
+
+            $wasCreatingPosition = $positionKey === '';
+            try {
+                bx_admin_access_transaction(function () use (&$positionKey, $projectKey, $positionCode, $positionName, $groupKey, $positionDescription, $positionStatus): void {
+                    if ($positionKey !== '') {
+                        $existing = bx_db()->GetRow('SELECT * FROM project_user_position WHERE position_key = ? AND project_key = ?', [$positionKey, $projectKey]);
+                        if (!$existing) {
+                            throw new RuntimeException('Position was not found.');
+                        }
+
+                        $saved = bx_db()->Execute(
+                            'UPDATE project_user_position SET position_code = ?, position_name = ?, group_key = ?, position_description = ?, position_status = ? WHERE position_key = ? AND project_key = ?',
+                            [$positionCode, $positionName, $groupKey, $positionDescription, $positionStatus, $positionKey, $projectKey]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Position update failed.');
+                        }
+                        bx_audit('UPDATE', 'project_user_position', $positionKey, [
+                            'project_key' => $projectKey,
+                            'position_code' => $positionCode,
+                            'position_name' => $positionName,
+                            'group_key' => $groupKey,
+                            'position_status' => $positionStatus,
+                        ], 'Administrator updated user position.');
+                    } else {
+                        $positionKey = bx_unique_firebase_document_key('project_user_position', 'position_key');
+                        $saved = bx_db()->Execute(
+                            'INSERT INTO project_user_position (position_key, project_key, position_code, position_name, group_key, position_description, position_status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                            [$positionKey, $projectKey, $positionCode, $positionName, $groupKey, $positionDescription, $positionStatus]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Position creation failed.');
+                        }
+                        bx_audit('CREATE', 'project_user_position', $positionKey, [
+                            'project_key' => $projectKey,
+                            'position_code' => $positionCode,
+                            'position_name' => $positionName,
+                            'group_key' => $groupKey,
+                            'position_status' => $positionStatus,
+                        ], 'Administrator created user position.');
+                    }
+
+                    bx_admin_assert_position_readback($positionKey, $positionCode, $positionName, $groupKey, $positionStatus);
+                });
+
+                bx_flash($wasCreatingPosition ? 'Position created and verified.' : 'Position saved and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
+
+            bx_admin_redirect_position_return($returnTab, $groupKey);
+        }
+
+        if ($action === 'set_user_position_status') {
+            $positionKey = trim((string) ($_POST['position_key'] ?? ''));
+            $positionStatus = trim((string) ($_POST['position_status'] ?? ''));
+            $returnTab = in_array((string) ($_POST['return_tab'] ?? 'positions'), ['groups', 'positions'], true) ? (string) $_POST['return_tab'] : 'positions';
+            $allowedStatuses = ['ACTIVE', 'INACTIVE', 'DELETED'];
+
+            if ($positionKey === '' || !in_array($positionStatus, $allowedStatuses, true)) {
+                bx_flash('Invalid position status request.', 'error');
+                bx_admin_redirect($returnTab);
+            }
+
+            $existing = bx_db()->GetRow('SELECT * FROM project_user_position WHERE position_key = ?', [$positionKey]);
+            if (!$existing) {
+                bx_flash('Position was not found.', 'error');
+                bx_admin_redirect($returnTab);
+            }
+            $returnGroupKey = (string) ($existing['group_key'] ?? '');
+            $currentPositionStatus = (string) ($existing['position_status'] ?? '');
+
+            if ($currentPositionStatus === 'ACTIVE' && $positionStatus === 'ACTIVE') {
+                bx_flash('Position is already active.', 'error');
+                bx_admin_redirect_position_return($returnTab, $returnGroupKey);
+            }
+
+            if ($currentPositionStatus === 'INACTIVE' && $positionStatus === 'INACTIVE') {
+                bx_flash('Position is already inactive.', 'error');
+                bx_admin_redirect_position_return($returnTab, $returnGroupKey);
+            }
+
+            if ($currentPositionStatus === 'DELETED' && $positionStatus === 'DELETED') {
+                bx_flash('Position is already deleted.', 'error');
+                bx_admin_redirect_position_return($returnTab, $returnGroupKey);
+            }
+
+            $positionGroupStatus = (string) (bx_db()->GetOne('SELECT g.group_status FROM project_user_group g JOIN project_user_position p ON p.group_key = g.group_key WHERE p.position_key = ? LIMIT 1', [$positionKey]) ?: '');
+            if ($positionGroupStatus === 'INACTIVE') {
+                bx_flash('Deactivated groups only allow restore or delete.', 'error');
+                bx_admin_redirect_position_return($returnTab, $returnGroupKey);
+            }
+
+            try {
+                bx_admin_access_transaction(function () use ($positionStatus, $positionKey, $existing): void {
+                    if ($positionStatus === 'DELETED') {
+                        $assignedUsers = (int) bx_db()->GetOne(
+                            "SELECT COUNT(*) FROM project_user WHERE position_key = ? AND user_status <> 'DELETED'",
+                            [$positionKey]
+                        );
+                        if ($assignedUsers > 0) {
+                            throw new RuntimeException('Cannot delete a position assigned to active user records.');
+                        }
+                    }
+
+                    $saved = bx_db()->Execute('UPDATE project_user_position SET position_status = ? WHERE position_key = ?', [$positionStatus, $positionKey]);
+                    if ($saved === false) {
+                        throw new RuntimeException('Position status update failed.');
+                    }
+                    $readBackStatus = (string) bx_db()->GetOne('SELECT position_status FROM project_user_position WHERE position_key = ? LIMIT 1', [$positionKey]);
+                    if ($readBackStatus !== $positionStatus) {
+                        throw new RuntimeException('Position status read-back verification failed.');
+                    }
+                    bx_audit($positionStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'project_user_position', $positionKey, [
+                        'position_code' => $existing['position_code'],
+                        'position_status' => $positionStatus,
+                    ], 'Administrator changed user position status.');
+                });
+                bx_flash('Position status updated and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
+            bx_admin_redirect_position_return($returnTab, $returnGroupKey);
+        }
+
         if ($action === 'save_user') {
             $userKey = trim((string) ($_POST['user_key'] ?? ''));
+            $projectKeys = bx_post_array('project_keys');
+            $projectKey = bx_admin_project_key($projectKeys[0] ?? (string) ($_POST['project_key'] ?? ''));
             $userLogin = trim((string) ($_POST['user_login'] ?? ''));
             $userName = trim((string) ($_POST['user_name'] ?? ''));
+            $userChatName = substr(trim((string) ($_POST['user_chat_name'] ?? '')), 0, 160);
+            $userMobileNumber = bx_admin_normalize_mobile_number((string) ($_POST['user_mobile_number'] ?? ''));
             $userEmail = trim((string) ($_POST['user_email'] ?? ''));
+            $positionKey = trim((string) ($_POST['position_key'] ?? ''));
             $userStatus = trim((string) ($_POST['user_status'] ?? 'ACTIVE'));
             $password = (string) ($_POST['password'] ?? '');
+            $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
             $roleKeys = bx_post_array('role_keys');
             $groupKeys = bx_post_array('group_keys');
+            $groupKey = bx_admin_unique_keys($groupKeys)[0] ?? '';
             $branchKeys = bx_post_array('branch_keys');
-            $projectKeys = bx_post_array('project_keys');
             $allowedStatuses = ['DRAFT', 'ACTIVE', 'INACTIVE', 'LOCKED', 'DELETED'];
+            $userAvatarFieldsSubmitted = array_key_exists('user_avatar_url', $_POST);
+            $userAvatarUrl = trim((string) ($_POST['user_avatar_url'] ?? ''));
+            $userAvatarOriginalName = substr(trim((string) ($_POST['user_avatar_original_name'] ?? '')), 0, 255);
+            $userAvatarMimeType = substr(trim((string) ($_POST['user_avatar_mime_type'] ?? '')), 0, 120);
+            $userAvatarByteSize = max(0, (int) ($_POST['user_avatar_byte_size'] ?? 0));
+            $userAvatarSha256 = trim((string) ($_POST['user_avatar_sha256'] ?? ''));
 
-            if ($userLogin === '' || $userName === '' || $userEmail === '') {
-                bx_flash('Username, full name, and email are required.', 'error');
+            if ($groupKey !== '') {
+                $groupProjectKey = (string) (bx_db()->GetOne('SELECT project_key FROM project_user_group WHERE group_key = ? LIMIT 1', [$groupKey]) ?: '');
+                if ($groupProjectKey !== '') {
+                    $projectKey = $groupProjectKey;
+                }
+            }
+
+            if ($projectKey === '' || $userLogin === '' || $userName === '' || $userMobileNumber === '') {
+                bx_flash('Username, full name, and mobile number are required.', 'error');
                 bx_admin_redirect('users');
             }
 
@@ -2045,8 +3135,13 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('users');
             }
 
-            if (!filter_var($userEmail, FILTER_VALIDATE_EMAIL)) {
+            if ($userEmail !== '' && !filter_var($userEmail, FILTER_VALIDATE_EMAIL)) {
                 bx_flash('Valid email is required.', 'error');
+                bx_admin_redirect('users');
+            }
+
+            if (!preg_match('/^\+[1-9][0-9]{7,14}$/', $userMobileNumber)) {
+                bx_flash('Mobile number must start with a country code, for example +639171234567.', 'error');
                 bx_admin_redirect('users');
             }
 
@@ -2055,77 +3150,168 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('users');
             }
 
-            if ($userKey === '' && strlen($password) < 10) {
-                bx_flash('New users require a password with at least 10 characters.', 'error');
+            if ($userKey === '' && strlen($password) < 8) {
+                bx_flash('New users require a password with at least 8 characters.', 'error');
                 bx_admin_redirect('users');
             }
 
-            if ($password !== '' && strlen($password) < 10) {
-                bx_flash('Password must use at least 10 characters.', 'error');
+            if ($password !== '' && strlen($password) < 8) {
+                bx_flash('Password must use at least 8 characters.', 'error');
                 bx_admin_redirect('users');
             }
 
-            if (!bx_validate_existing_keys('builder_role', 'role_key', $roleKeys, 'role_status')
-                || !bx_validate_existing_keys('builder_group', 'group_key', $groupKeys, 'group_status')
-                || !bx_validate_existing_keys('builder_branch', 'branch_key', $branchKeys, 'branch_status')
-                || !bx_validate_existing_keys('builder_project', 'project_key', $projectKeys, 'project_status')) {
-                bx_flash('One or more selected assignments are invalid or deleted.', 'error');
+            if ($password !== '' && $password !== $passwordConfirm) {
+                bx_flash('Password confirmation does not match.', 'error');
                 bx_admin_redirect('users');
             }
+
+            if ($userAvatarFieldsSubmitted && $userAvatarUrl !== '' && !filter_var($userAvatarUrl, FILTER_VALIDATE_URL)) {
+                bx_flash('User avatar source must be a full uploaded image URL.', 'error');
+                bx_admin_redirect('users');
+            }
+
+            if ($userAvatarFieldsSubmitted && $userAvatarSha256 !== '' && !preg_match('/^[a-f0-9]{64}$/i', $userAvatarSha256)) {
+                bx_flash('User avatar checksum is invalid.', 'error');
+                bx_admin_redirect('users');
+            }
+
+            if ($positionKey !== '' && (int) bx_db()->GetOne("SELECT COUNT(*) FROM project_user_position WHERE project_key = ? AND position_key = ? AND position_status <> 'DELETED'", [$projectKey, $positionKey]) === 0) {
+                bx_flash('Selected position is invalid or deleted.', 'error');
+                bx_admin_redirect('users');
+            }
+
+            if ($positionKey !== '') {
+                $positionGroupKey = (string) (bx_db()->GetOne('SELECT group_key FROM project_user_position WHERE project_key = ? AND position_key = ? AND position_status <> \'DELETED\' LIMIT 1', [$projectKey, $positionKey]) ?: '');
+                if ($positionGroupKey !== '' && $groupKey !== '' && $positionGroupKey !== $groupKey) {
+                    bx_flash('Selected user position must belong to the selected project group.', 'error');
+                    bx_admin_redirect('users');
+                }
+                if ($positionGroupKey !== '' && $groupKey === '') {
+                    $groupKey = $positionGroupKey;
+                    $groupKeys = [$groupKey];
+                }
+            }
+
+            if ($groupKey !== '' && (int) bx_db()->GetOne("SELECT COUNT(*) FROM project_user_group WHERE project_key = ? AND group_key = ? AND group_status = 'ACTIVE'", [$projectKey, $groupKey]) === 0) {
+                bx_flash('One or more selected assignments must use an active group.', 'error');
+                bx_admin_redirect('users');
+            }
+            unset($roleKeys, $branchKeys);
+            $projectKeys = [$projectKey];
 
             $duplicate = (int) bx_db()->GetOne(
-                'SELECT COUNT(*) FROM builder_user WHERE (user_login = ? OR user_email = ?) AND user_key <> ?',
-                [$userLogin, $userEmail, $userKey ?: '__new__']
+                'SELECT COUNT(*) FROM project_user WHERE project_key = ? AND (user_login = ? OR user_mobile_number = ?) AND user_key <> ?',
+                [$projectKey, $userLogin, $userMobileNumber, $userKey ?: '__new__']
             );
 
             if ($duplicate > 0) {
-                bx_flash('Username or email already exists.', 'error');
+                bx_flash('Username or mobile number already exists.', 'error');
                 bx_admin_redirect('users');
             }
 
-            if ($userKey !== '') {
-                $existing = bx_db()->GetRow('SELECT * FROM builder_user WHERE user_key = ?', [$userKey]);
-                if (!$existing) {
-                    bx_flash('User was not found.', 'error');
-                    bx_admin_redirect('users');
-                }
+            $wasCreatingUser = $userKey === '';
+            try {
+                bx_admin_access_transaction(function () use (&$userKey, $projectKey, $groupKey, $userLogin, $userName, $userChatName, $userMobileNumber, $userEmail, $positionKey, $userStatus, $password, $groupKeys, $projectKeys, $currentUser, $userAvatarFieldsSubmitted, $userAvatarUrl, $userAvatarOriginalName, $userAvatarMimeType, $userAvatarByteSize, $userAvatarSha256): void {
+                    $storedPositionKey = $positionKey === '' ? null : $positionKey;
+                    $storedGroupKey = $groupKey === '' ? null : $groupKey;
+                    $storedChatName = $userChatName === '' ? null : $userChatName;
+                    $storedEmail = $userEmail === '' ? null : $userEmail;
+                    $storedAvatarUrl = $userAvatarUrl === '' ? null : $userAvatarUrl;
+                    $storedAvatarOriginalName = $userAvatarOriginalName === '' ? null : $userAvatarOriginalName;
+                    $storedAvatarMimeType = $userAvatarMimeType === '' ? null : $userAvatarMimeType;
+                    $storedAvatarSha256 = $userAvatarSha256 === '' ? null : strtolower($userAvatarSha256);
+                    if ($userKey !== '') {
+                        $existing = bx_db()->GetRow('SELECT * FROM project_user WHERE user_key = ? AND project_key = ?', [$userKey, $projectKey]);
+                        if (!$existing) {
+                            throw new RuntimeException('User was not found.');
+                        }
 
-                if ($password !== '') {
-                    bx_db()->Execute(
-                        'UPDATE builder_user SET user_login = ?, user_name = ?, user_email = ?, user_status = ?, user_password_hash = ?, user_password_changed_at = NULL, user_updated_by_key = ? WHERE user_key = ?',
-                        [$userLogin, $userName, $userEmail, $userStatus, bx_password_hash($password), $currentUser['user_key'], $userKey]
-                    );
+                        if ($password !== '') {
+                            $saved = bx_db()->Execute(
+                                'UPDATE project_user SET user_login = ?, user_name = ?, user_chat_name = ?, user_email = ?, user_mobile_number = ?, group_key = ?, position_key = ?, user_status = ?, user_password_hash = ?, user_password_changed_at = NULL, user_updated_by_key = ? WHERE user_key = ? AND project_key = ?',
+                                [$userLogin, $userName, $storedChatName, $storedEmail, $userMobileNumber, $storedGroupKey, $storedPositionKey, $userStatus, bx_password_hash($password), $currentUser['user_key'], $userKey, $projectKey]
+                            );
+                        } else {
+                            $saved = bx_db()->Execute(
+                                'UPDATE project_user SET user_login = ?, user_name = ?, user_chat_name = ?, user_email = ?, user_mobile_number = ?, group_key = ?, position_key = ?, user_status = ?, user_updated_by_key = ? WHERE user_key = ? AND project_key = ?',
+                                [$userLogin, $userName, $storedChatName, $storedEmail, $userMobileNumber, $storedGroupKey, $storedPositionKey, $userStatus, $currentUser['user_key'], $userKey, $projectKey]
+                            );
+                        }
+
+                        if ($saved === false) {
+                            throw new RuntimeException('User update failed.');
+                        }
+
+                        if ($userAvatarFieldsSubmitted) {
+                            $avatarSaved = bx_db()->Execute(
+                                'UPDATE project_user SET user_avatar_path = ?, user_avatar_original_name = ?, user_avatar_mime_type = ?, user_avatar_byte_size = ?, user_avatar_sha256 = ?, user_avatar_uploaded_at = CASE WHEN ? IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END WHERE user_key = ? AND project_key = ?',
+                                [$storedAvatarUrl, $storedAvatarOriginalName, $storedAvatarMimeType, $userAvatarByteSize, $storedAvatarSha256, $storedAvatarUrl, $userKey, $projectKey]
+                            );
+                            if ($avatarSaved === false) {
+                                throw new RuntimeException('User avatar update failed.');
+                            }
+                            $readBackAvatarPath = (string) bx_db()->GetOne('SELECT COALESCE(user_avatar_path, \'\') FROM project_user WHERE user_key = ? AND project_key = ? LIMIT 1', [$userKey, $projectKey]);
+                            if ($readBackAvatarPath !== $userAvatarUrl) {
+                                throw new RuntimeException('User avatar read-back verification failed.');
+                            }
+                            bx_audit('UPLOAD', 'project_user', $userKey, [
+                                'project_key' => $projectKey,
+                                'user_login' => $userLogin,
+                                'user_avatar_path' => $userAvatarUrl,
+                                'user_avatar_mime_type' => $userAvatarMimeType,
+                                'user_avatar_byte_size' => $userAvatarByteSize,
+                            ], 'Administrator saved user avatar URL.');
+                        }
+
+                        bx_audit('UPDATE', 'project_user', $userKey, [
+                            'project_key' => $projectKey,
+                            'user_login' => $userLogin,
+                            'user_chat_name' => $userChatName,
+                            'user_mobile_number' => $userMobileNumber,
+                            'group_key' => $groupKey,
+                            'position_key' => $positionKey,
+                            'user_status' => $userStatus,
+                        ], 'Administrator updated user.');
+                    } else {
+                        $userKey = bx_unique_firebase_document_key('project_user', 'user_key');
+                        if (!preg_match('/^[A-Za-z0-9]{20}$/', $userKey)) {
+                            throw new RuntimeException('Generated user key is not a Firebase document id.');
+                        }
+                        $saved = bx_db()->Execute(
+                            'INSERT INTO project_user (user_key, project_key, group_key, user_login, user_password_hash, user_name, user_chat_name, user_email, user_mobile_number, user_avatar_path, user_avatar_original_name, user_avatar_mime_type, user_avatar_byte_size, user_avatar_sha256, user_avatar_uploaded_at, position_key, user_status, user_created_by_key, user_updated_by_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END, ?, ?, ?, ?)',
+                            [$userKey, $projectKey, $storedGroupKey, $userLogin, bx_password_hash($password), $userName, $storedChatName, $storedEmail, $userMobileNumber, $storedAvatarUrl, $storedAvatarOriginalName, $storedAvatarMimeType, $userAvatarByteSize, $storedAvatarSha256, $storedAvatarUrl, $storedPositionKey, $userStatus, $currentUser['user_key'], $currentUser['user_key']]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('User creation failed.');
+                        }
+                        if ($userAvatarFieldsSubmitted) {
+                            $readBackAvatarPath = (string) bx_db()->GetOne('SELECT COALESCE(user_avatar_path, \'\') FROM project_user WHERE user_key = ? AND project_key = ? LIMIT 1', [$userKey, $projectKey]);
+                            if ($readBackAvatarPath !== $userAvatarUrl) {
+                                throw new RuntimeException('User avatar read-back verification failed.');
+                            }
+                        }
+                        bx_audit('CREATE', 'project_user', $userKey, [
+                            'project_key' => $projectKey,
+                            'user_login' => $userLogin,
+                            'user_chat_name' => $userChatName,
+                            'user_mobile_number' => $userMobileNumber,
+                            'group_key' => $groupKey,
+                            'position_key' => $positionKey,
+                            'user_status' => $userStatus,
+                        ], 'Administrator created user.');
+                    }
+
+                    bx_admin_assert_user_readback($userKey, $userLogin, $userChatName, $userMobileNumber, $positionKey, $userStatus, [], $groupKeys, [], $projectKeys);
+                });
+
+                if ($wasCreatingUser) {
+                    bx_flash('User created and verified.', 'success');
                 } else {
-                    bx_db()->Execute(
-                        'UPDATE builder_user SET user_login = ?, user_name = ?, user_email = ?, user_status = ?, user_updated_by_key = ? WHERE user_key = ?',
-                        [$userLogin, $userName, $userEmail, $userStatus, $currentUser['user_key'], $userKey]
-                    );
+                    bx_flash('User saved and verified.', 'success');
                 }
-
-                bx_audit('UPDATE', 'builder_user', $userKey, [
-                    'user_login' => $userLogin,
-                    'user_email' => $userEmail,
-                    'user_status' => $userStatus,
-                ], 'Administrator updated user.');
-                bx_flash('User updated.', 'success');
-            } else {
-                $userKey = bx_uuid();
-                bx_db()->Execute(
-                    'INSERT INTO builder_user (user_key, user_login, user_password_hash, user_name, user_email, user_status, user_created_by_key, user_updated_by_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                    [$userKey, $userLogin, bx_password_hash($password), $userName, $userEmail, $userStatus, $currentUser['user_key'], $currentUser['user_key']]
-                );
-                bx_audit('CREATE', 'builder_user', $userKey, [
-                    'user_login' => $userLogin,
-                    'user_email' => $userEmail,
-                    'user_status' => $userStatus,
-                ], 'Administrator created user.');
-                bx_flash('User created.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
             }
-
-            bx_replace_user_links('builder_user_role', $userKey, 'role_key', $roleKeys);
-            bx_replace_user_links('builder_user_group', $userKey, 'group_key', $groupKeys);
-            bx_replace_user_links('builder_user_branch', $userKey, 'branch_key', $branchKeys);
-            bx_replace_user_links('builder_user_project', $userKey, 'project_key', $projectKeys);
 
             bx_admin_redirect('users');
         }
@@ -2140,29 +3326,44 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('users');
             }
 
-            $existing = bx_db()->GetRow('SELECT * FROM builder_user WHERE user_key = ?', [$targetUserKey]);
+            $existing = bx_db()->GetRow('SELECT * FROM project_user WHERE user_key = ?', [$targetUserKey]);
             if (!$existing) {
                 bx_flash('User was not found.', 'error');
                 bx_admin_redirect('users');
             }
 
-            if ($userStatus === 'DELETED') {
-                bx_db()->Execute(
-                    'UPDATE builder_user SET user_status = ?, user_deleted_at = CURRENT_TIMESTAMP, user_deleted_by_key = ?, user_updated_by_key = ? WHERE user_key = ?',
-                    [$userStatus, $currentUser['user_key'], $currentUser['user_key'], $targetUserKey]
-                );
-            } else {
-                bx_db()->Execute(
-                    'UPDATE builder_user SET user_status = ?, user_failed_login_count = 0, user_updated_by_key = ? WHERE user_key = ?',
-                    [$userStatus, $currentUser['user_key'], $targetUserKey]
-                );
-            }
+            try {
+                bx_admin_access_transaction(function () use ($targetUserKey, $userStatus, $currentUser, $existing): void {
+                    if ($userStatus === 'DELETED') {
+                        $saved = bx_db()->Execute(
+                            'UPDATE project_user SET user_status = ?, user_deleted_at = CURRENT_TIMESTAMP, user_deleted_by_key = ?, user_updated_by_key = ? WHERE user_key = ?',
+                            [$userStatus, $currentUser['user_key'], $currentUser['user_key'], $targetUserKey]
+                        );
+                    } else {
+                        $saved = bx_db()->Execute(
+                            'UPDATE project_user SET user_status = ?, user_failed_login_count = 0, user_updated_by_key = ? WHERE user_key = ?',
+                            [$userStatus, $currentUser['user_key'], $targetUserKey]
+                        );
+                    }
+                    if ($saved === false) {
+                        throw new RuntimeException('User status update failed.');
+                    }
+                    $readBackStatus = (string) bx_db()->GetOne('SELECT user_status FROM project_user WHERE user_key = ? LIMIT 1', [$targetUserKey]);
+                    if ($readBackStatus !== $userStatus) {
+                        throw new RuntimeException('User status read-back verification failed.');
+                    }
 
-            bx_audit($userStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'builder_user', $targetUserKey, [
-                'user_login' => $existing['user_login'],
-                'user_status' => $userStatus,
-            ], 'Administrator changed user status.');
-            bx_flash('User status updated.', 'success');
+                    bx_audit($userStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'project_user', $targetUserKey, [
+                        'project_key' => $existing['project_key'] ?? '',
+                        'user_login' => $existing['user_login'],
+                        'user_status' => $userStatus,
+                    ], 'Administrator changed user status.');
+                });
+
+                bx_flash('User status updated and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
             bx_admin_redirect('users');
         }
 
@@ -2175,33 +3376,60 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('users');
             }
 
-            $existing = bx_db()->GetRow('SELECT * FROM builder_user WHERE user_key = ?', [$targetUserKey]);
+            $existing = bx_db()->GetRow('SELECT * FROM project_user WHERE user_key = ?', [$targetUserKey]);
             if (!$existing) {
                 bx_flash('User was not found.', 'error');
                 bx_admin_redirect('users');
             }
 
-            bx_db()->Execute(
-                'UPDATE builder_user SET user_password_hash = ?, user_password_changed_at = NULL, user_failed_login_count = 0, user_updated_by_key = ? WHERE user_key = ?',
-                [bx_password_hash($password), $currentUser['user_key'], $targetUserKey]
-            );
-            bx_audit('PASSWORD_RESET', 'builder_user', $targetUserKey, [
-                'user_login' => $existing['user_login'],
-            ], 'Administrator reset user password.');
-            bx_flash('User password reset. Require the user to change it at next sign-in.', 'success');
+            try {
+                bx_admin_access_transaction(function () use ($password, $currentUser, $targetUserKey, $existing): void {
+                    $saved = bx_db()->Execute(
+                        'UPDATE project_user SET user_password_hash = ?, user_password_changed_at = NULL, user_failed_login_count = 0, user_updated_by_key = ? WHERE user_key = ?',
+                        [bx_password_hash($password), $currentUser['user_key'], $targetUserKey]
+                    );
+                    if ($saved === false) {
+                        throw new RuntimeException('User password reset failed.');
+                    }
+                    $readBack = bx_db()->GetRow('SELECT user_failed_login_count, user_password_changed_at FROM project_user WHERE user_key = ? LIMIT 1', [$targetUserKey]);
+                    if (!is_array($readBack) || (int) $readBack['user_failed_login_count'] !== 0 || $readBack['user_password_changed_at'] !== null) {
+                        throw new RuntimeException('Password reset read-back verification failed.');
+                    }
+                    bx_audit('PASSWORD_RESET', 'project_user', $targetUserKey, [
+                        'project_key' => $existing['project_key'] ?? '',
+                        'user_login' => $existing['user_login'],
+                    ], 'Administrator reset user password.');
+                });
+                bx_flash('User password reset and verified. Require the user to change it at next sign-in.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
             bx_admin_redirect('users');
         }
 
         if ($action === 'save_group') {
             $groupKey = trim((string) ($_POST['group_key'] ?? ''));
+            $groupSaveMode = trim((string) ($_POST['group_save_mode'] ?? ($groupKey === '' ? 'create' : 'edit')));
+            $projectKey = bx_admin_project_key((string) ($_POST['project_key'] ?? ''));
             $groupName = trim((string) ($_POST['group_name'] ?? ''));
             $groupDescription = trim((string) ($_POST['group_description'] ?? ''));
             $groupStatus = trim((string) ($_POST['group_status'] ?? 'ACTIVE'));
             $memberUserKeys = bx_post_array('member_user_keys');
             $allowedStatuses = ['ACTIVE', 'INACTIVE', 'DELETED'];
+            $groupImageFieldsSubmitted = array_key_exists('group_image_url', $_POST);
+            $groupImageUrl = trim((string) ($_POST['group_image_url'] ?? ''));
+            $groupImageOriginalName = substr(trim((string) ($_POST['group_image_original_name'] ?? '')), 0, 255);
+            $groupImageMimeType = substr(trim((string) ($_POST['group_image_mime_type'] ?? '')), 0, 120);
+            $groupImageByteSize = max(0, (int) ($_POST['group_image_byte_size'] ?? 0));
+            $groupImageSha256 = trim((string) ($_POST['group_image_sha256'] ?? ''));
 
-            if ($groupName === '') {
+            if ($projectKey === '' || $groupName === '') {
                 bx_flash('Group name is required.', 'error');
+                bx_admin_redirect('groups');
+            }
+
+            if ($groupSaveMode === 'edit' && $groupKey === '') {
+                bx_flash('Group edit could not be saved because the existing group key was missing. Reopen the group and try again.', 'error');
                 bx_admin_redirect('groups');
             }
 
@@ -2215,59 +3443,169 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('groups');
             }
 
-            if (!bx_validate_existing_keys('builder_user', 'user_key', $memberUserKeys, 'user_status')) {
+            if ($groupImageFieldsSubmitted) {
+                if ($groupImageUrl !== '' && !filter_var($groupImageUrl, FILTER_VALIDATE_URL)) {
+                    bx_flash('Group image source must be a full uploaded image URL.', 'error');
+                    bx_admin_redirect('groups');
+                }
+                if ($groupImageMimeType !== '' && !in_array($groupImageMimeType, ['image/png', 'image/jpeg', 'image/webp', 'image/gif'], true)) {
+                    bx_flash('Group image metadata must use a supported image MIME type.', 'error');
+                    bx_admin_redirect('groups');
+                }
+                if ($groupImageSha256 !== '' && !preg_match('/^[a-f0-9]{64}$/i', $groupImageSha256)) {
+                    bx_flash('Group image metadata hash is invalid.', 'error');
+                    bx_admin_redirect('groups');
+                }
+            }
+
+            foreach (bx_admin_unique_keys($memberUserKeys) as $memberUserKey) {
+                if ((int) bx_db()->GetOne("SELECT COUNT(*) FROM project_user WHERE project_key = ? AND user_key = ? AND user_status <> 'DELETED'", [$projectKey, $memberUserKey]) === 0) {
+                    bx_flash('One or more selected users are invalid or deleted.', 'error');
+                    bx_admin_redirect('groups');
+                }
+            }
+
+            if ($groupKey !== '' && (int) bx_db()->GetOne('SELECT COUNT(*) FROM project_user_group WHERE project_key = ? AND group_key = ?', [$projectKey, $groupKey]) === 0) {
+                bx_flash('Group was not found for this project.', 'error');
+                bx_admin_redirect('groups');
+            }
+
+            $existingGroupName = '';
+            $existingGroupDescription = '';
+            $existingGroupImageUrl = '';
+            if ($groupKey !== '') {
+                $existingGroup = bx_db()->GetRow('SELECT group_name, group_description, group_status, group_image_path FROM project_user_group WHERE project_key = ? AND group_key = ? LIMIT 1', [$projectKey, $groupKey]);
+                $existingGroupName = is_array($existingGroup) ? (string) ($existingGroup['group_name'] ?? '') : '';
+                $existingGroupDescription = is_array($existingGroup) ? (string) ($existingGroup['group_description'] ?? '') : '';
+                $existingGroupStatus = is_array($existingGroup) ? (string) ($existingGroup['group_status'] ?? '') : '';
+                $existingGroupImageUrl = is_array($existingGroup) ? (string) ($existingGroup['group_image_path'] ?? '') : '';
+                if ($existingGroupStatus === 'INACTIVE') {
+                    bx_flash('Deactivated groups only allow restore or delete.', 'error');
+                    bx_admin_redirect('groups');
+                }
+                if (bx_admin_is_original_administrators_group($groupKey)
+                    && (
+                        $existingGroupName !== $groupName
+                        || $existingGroupDescription !== $groupDescription
+                        || $existingGroupStatus !== $groupStatus
+                        || ($groupImageFieldsSubmitted && $groupImageUrl !== $existingGroupImageUrl)
+                    )
+                ) {
+                    bx_flash('Original Administrators group is protected and cannot be edited.', 'error');
+                    bx_admin_redirect('groups');
+                }
+            }
+
+            if ($groupKey === '' && count(bx_admin_unique_keys($memberUserKeys)) === 0) {
+                // no-op: groups can be created before members exist
+            }
+
+            if (!bx_validate_existing_keys('builder_project', 'project_key', [$projectKey], 'project_status')) {
                 bx_flash('One or more selected users are invalid or deleted.', 'error');
                 bx_admin_redirect('groups');
             }
 
-            $duplicate = (int) bx_db()->GetOne(
-                'SELECT COUNT(*) FROM builder_group WHERE group_name = ? AND group_key <> ?',
-                [$groupName, $groupKey ?: '__new__']
-            );
-            if ($duplicate > 0) {
-                bx_flash('Group name already exists.', 'error');
-                bx_admin_redirect('groups');
-            }
-
-            if ($groupKey !== '') {
-                $existing = bx_db()->GetRow('SELECT * FROM builder_group WHERE group_key = ?', [$groupKey]);
-                if (!$existing) {
-                    bx_flash('Group was not found.', 'error');
+            $groupNameChanged = $groupKey === '' || strtolower($existingGroupName) !== strtolower($groupName);
+            if ($groupNameChanged) {
+                $duplicate = (int) bx_db()->GetOne(
+                    "SELECT COUNT(*) FROM project_user_group WHERE project_key = ? AND group_name = ? AND group_status = 'ACTIVE' AND group_key <> ?",
+                    [$projectKey, $groupName, $groupKey ?: '__new__']
+                );
+                if ($duplicate > 0) {
+                    bx_flash('Group name already exists in enabled groups.', 'error');
                     bx_admin_redirect('groups');
                 }
-
-                bx_db()->Execute(
-                    'UPDATE builder_group SET group_name = ?, group_description = ?, group_status = ? WHERE group_key = ?',
-                    [$groupName, $groupDescription, $groupStatus, $groupKey]
-                );
-                bx_audit('UPDATE', 'builder_group', $groupKey, [
-                    'group_name' => $groupName,
-                    'group_status' => $groupStatus,
-                    'member_count' => count(array_unique($memberUserKeys)),
-                ], 'Administrator updated group.');
-                bx_flash('Group updated.', 'success');
-            } else {
-                $groupKey = bx_uuid();
-                bx_db()->Execute(
-                    'INSERT INTO builder_group (group_key, group_name, group_description, group_status) VALUES (?, ?, ?, ?)',
-                    [$groupKey, $groupName, $groupDescription, $groupStatus]
-                );
-                bx_audit('CREATE', 'builder_group', $groupKey, [
-                    'group_name' => $groupName,
-                    'group_status' => $groupStatus,
-                    'member_count' => count(array_unique($memberUserKeys)),
-                ], 'Administrator created group.');
-                bx_flash('Group created.', 'success');
             }
 
-            bx_db()->Execute('DELETE FROM builder_user_group WHERE group_key = ?', [$groupKey]);
-            foreach (array_unique($memberUserKeys) as $memberUserKey) {
-                if ($memberUserKey !== '') {
-                    bx_db()->Execute(
-                        'INSERT IGNORE INTO builder_user_group (user_key, group_key) VALUES (?, ?)',
-                        [$memberUserKey, $groupKey]
-                    );
-                }
+            $wasCreatingGroup = $groupKey === '';
+            if ($wasCreatingGroup) {
+                $groupKey = bx_unique_firebase_document_key('project_user_group', 'group_key');
+            }
+            try {
+                bx_admin_access_transaction(function () use ($wasCreatingGroup, $groupImageFieldsSubmitted, $groupImageUrl, $groupImageOriginalName, $groupImageMimeType, $groupImageByteSize, $groupImageSha256, $groupKey, $projectKey, $groupName, $groupDescription, $groupStatus, $memberUserKeys): void {
+                    if (!$wasCreatingGroup) {
+                        $existing = bx_db()->GetRow('SELECT * FROM project_user_group WHERE group_key = ? AND project_key = ?', [$groupKey, $projectKey]);
+                        if (!$existing) {
+                            throw new RuntimeException('Group was not found.');
+                        }
+
+                        $saved = bx_db()->Execute(
+                            'UPDATE project_user_group SET group_name = ?, group_description = ?, group_status = ? WHERE group_key = ? AND project_key = ?',
+                            [$groupName, $groupDescription, $groupStatus, $groupKey, $projectKey]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Group update failed.');
+                        }
+                        bx_audit('UPDATE', 'project_user_group', $groupKey, [
+                            'project_key' => $projectKey,
+                            'group_name' => $groupName,
+                            'group_status' => $groupStatus,
+                            'member_count' => count(bx_admin_unique_keys($memberUserKeys)),
+                        ], 'Administrator updated group.');
+                    } else {
+                        $saved = bx_db()->Execute(
+                            'INSERT INTO project_user_group (group_key, project_key, group_name, group_description, group_status) VALUES (?, ?, ?, ?, ?)',
+                            [$groupKey, $projectKey, $groupName, $groupDescription, $groupStatus]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Group creation failed.');
+                        }
+                        bx_audit('CREATE', 'project_user_group', $groupKey, [
+                            'project_key' => $projectKey,
+                            'group_name' => $groupName,
+                            'group_status' => $groupStatus,
+                            'member_count' => count(bx_admin_unique_keys($memberUserKeys)),
+                        ], 'Administrator created group.');
+                    }
+
+                    if ($groupImageFieldsSubmitted) {
+                        $savedImage = bx_db()->Execute(
+                            'UPDATE project_user_group SET group_image_path = ?, group_image_original_name = ?, group_image_mime_type = ?, group_image_byte_size = ?, group_image_sha256 = ?, group_image_uploaded_at = CURRENT_TIMESTAMP WHERE group_key = ? AND project_key = ?',
+                            [
+                                $groupImageUrl !== '' ? $groupImageUrl : null,
+                                $groupImageUrl !== '' ? $groupImageOriginalName : null,
+                                $groupImageUrl !== '' ? $groupImageMimeType : null,
+                                $groupImageUrl !== '' ? $groupImageByteSize : null,
+                                $groupImageUrl !== '' ? $groupImageSha256 : null,
+                                $groupKey,
+                                $projectKey,
+                            ]
+                        );
+                        if ($savedImage === false) {
+                            throw new RuntimeException('Group image metadata could not be saved.');
+                        }
+                        $readBackImagePath = (string) bx_db()->GetOne('SELECT group_image_path FROM project_user_group WHERE group_key = ? AND project_key = ? LIMIT 1', [$groupKey, $projectKey]);
+                        if ($readBackImagePath !== $groupImageUrl) {
+                            throw new RuntimeException('Group image read-back verification failed.');
+                        }
+                        bx_audit('UPLOAD', 'project_user_group', $groupKey, [
+                            'project_key' => $projectKey,
+                            'group_image_path' => $groupImageUrl,
+                            'group_image_mime_type' => $groupImageMimeType,
+                            'group_image_byte_size' => $groupImageByteSize,
+                        ], 'Administrator saved group image URL.');
+                    }
+
+                    $cleared = bx_db()->Execute('UPDATE project_user SET group_key = NULL WHERE project_key = ? AND group_key = ?', [$projectKey, $groupKey]);
+                    if ($cleared === false) {
+                        throw new RuntimeException('Existing group members could not be replaced.');
+                    }
+                    foreach (bx_admin_unique_keys($memberUserKeys) as $memberUserKey) {
+                        $saved = bx_db()->Execute(
+                            'UPDATE project_user SET group_key = ? WHERE project_key = ? AND user_key = ?',
+                            [$groupKey, $projectKey, $memberUserKey]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Group member assignment could not be saved.');
+                        }
+                    }
+
+                    bx_admin_assert_group_readback($groupKey, $groupName, $groupStatus, $memberUserKeys);
+                });
+
+                bx_flash($wasCreatingGroup ? 'Group created and verified.' : 'Group saved and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
             }
 
             bx_admin_redirect('groups');
@@ -2283,18 +3621,58 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('groups');
             }
 
-            $existing = bx_db()->GetRow('SELECT * FROM builder_group WHERE group_key = ?', [$groupKey]);
+            $existing = bx_db()->GetRow('SELECT * FROM project_user_group WHERE group_key = ?', [$groupKey]);
             if (!$existing) {
                 bx_flash('Group was not found.', 'error');
                 bx_admin_redirect('groups');
             }
 
-            bx_db()->Execute('UPDATE builder_group SET group_status = ? WHERE group_key = ?', [$groupStatus, $groupKey]);
-            bx_audit($groupStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'builder_group', $groupKey, [
-                'group_name' => $existing['group_name'],
-                'group_status' => $groupStatus,
-            ], 'Administrator changed group status.');
-            bx_flash('Group status updated.', 'success');
+            if (bx_admin_is_original_administrators_group($groupKey)) {
+                bx_flash('Original Administrators group status is protected.', 'error');
+                bx_admin_redirect('groups');
+            }
+
+            if ((string) ($existing['group_status'] ?? '') === 'INACTIVE' && !in_array($groupStatus, ['ACTIVE', 'DELETED'], true)) {
+                bx_flash('Deactivated groups only allow restore or delete.', 'error');
+                bx_admin_redirect('groups');
+            }
+
+            if ((string) ($existing['group_status'] ?? '') === 'ACTIVE' && $groupStatus === 'ACTIVE') {
+                bx_flash('Group is already active.', 'error');
+                bx_admin_redirect('groups');
+            }
+
+            if ($groupStatus === 'ACTIVE') {
+                $activeDuplicate = (int) bx_db()->GetOne(
+                    "SELECT COUNT(*) FROM project_user_group WHERE project_key = ? AND group_name = ? AND group_status = 'ACTIVE' AND group_key <> ?",
+                    [(string) ($existing['project_key'] ?? ''), (string) ($existing['group_name'] ?? ''), $groupKey]
+                );
+                if ($activeDuplicate > 0) {
+                    bx_flash('Group name already exists in enabled groups.', 'error');
+                    bx_admin_redirect('groups');
+                }
+            }
+
+            try {
+                bx_admin_access_transaction(function () use ($groupStatus, $groupKey, $existing): void {
+                    $saved = bx_db()->Execute('UPDATE project_user_group SET group_status = ? WHERE group_key = ?', [$groupStatus, $groupKey]);
+                    if ($saved === false) {
+                        throw new RuntimeException('Group status update failed.');
+                    }
+                    $readBackStatus = (string) bx_db()->GetOne('SELECT group_status FROM project_user_group WHERE group_key = ? LIMIT 1', [$groupKey]);
+                    if ($readBackStatus !== $groupStatus) {
+                        throw new RuntimeException('Group status read-back verification failed.');
+                    }
+                    bx_audit($groupStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'project_user_group', $groupKey, [
+                        'project_key' => $existing['project_key'] ?? '',
+                        'group_name' => $existing['group_name'],
+                        'group_status' => $groupStatus,
+                    ], 'Administrator changed group status.');
+                });
+                bx_flash('Group status updated and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
             bx_admin_redirect('groups');
         }
 
@@ -2335,45 +3713,64 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('roles');
             }
 
-            if ($roleKey !== '') {
-                $existing = bx_db()->GetRow('SELECT * FROM builder_role WHERE role_key = ?', [$roleKey]);
-                if (!$existing) {
-                    bx_flash('Role was not found.', 'error');
-                    bx_admin_redirect('roles');
-                }
+            $wasCreatingRole = $roleKey === '';
+            try {
+                bx_admin_assert_role_guardrails($roleKey, $roleName, $roleStatus, $permissionKeys);
+                bx_admin_access_transaction(function () use (&$roleKey, $roleName, $roleDescription, $roleStatus, $permissionKeys): void {
+                    if ($roleKey !== '') {
+                        $existing = bx_db()->GetRow('SELECT * FROM builder_role WHERE role_key = ?', [$roleKey]);
+                        if (!$existing) {
+                            throw new RuntimeException('Role was not found.');
+                        }
 
-                bx_db()->Execute(
-                    'UPDATE builder_role SET role_name = ?, role_description = ?, role_status = ? WHERE role_key = ?',
-                    [$roleName, $roleDescription, $roleStatus, $roleKey]
-                );
-                bx_audit('UPDATE', 'builder_role', $roleKey, [
-                    'role_name' => $roleName,
-                    'role_status' => $roleStatus,
-                    'permission_count' => count(array_unique($permissionKeys)),
-                ], 'Administrator updated role.');
-                bx_flash('Role updated.', 'success');
-            } else {
-                $roleKey = bx_uuid();
-                bx_db()->Execute(
-                    'INSERT INTO builder_role (role_key, role_name, role_description, role_status) VALUES (?, ?, ?, ?)',
-                    [$roleKey, $roleName, $roleDescription, $roleStatus]
-                );
-                bx_audit('CREATE', 'builder_role', $roleKey, [
-                    'role_name' => $roleName,
-                    'role_status' => $roleStatus,
-                    'permission_count' => count(array_unique($permissionKeys)),
-                ], 'Administrator created role.');
-                bx_flash('Role created.', 'success');
-            }
+                        $saved = bx_db()->Execute(
+                            'UPDATE builder_role SET role_name = ?, role_description = ?, role_status = ? WHERE role_key = ?',
+                            [$roleName, $roleDescription, $roleStatus, $roleKey]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Role update failed.');
+                        }
+                        bx_audit('UPDATE', 'builder_role', $roleKey, [
+                            'role_name' => $roleName,
+                            'role_status' => $roleStatus,
+                            'permission_count' => count(bx_admin_unique_keys($permissionKeys)),
+                        ], 'Administrator updated role.');
+                    } else {
+                        $roleKey = bx_uuid();
+                        $saved = bx_db()->Execute(
+                            'INSERT INTO builder_role (role_key, role_name, role_description, role_status) VALUES (?, ?, ?, ?)',
+                            [$roleKey, $roleName, $roleDescription, $roleStatus]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Role creation failed.');
+                        }
+                        bx_audit('CREATE', 'builder_role', $roleKey, [
+                            'role_name' => $roleName,
+                            'role_status' => $roleStatus,
+                            'permission_count' => count(bx_admin_unique_keys($permissionKeys)),
+                        ], 'Administrator created role.');
+                    }
 
-            bx_db()->Execute('DELETE FROM builder_role_permission WHERE role_key = ?', [$roleKey]);
-            foreach (array_unique($permissionKeys) as $permissionKey) {
-                if ($permissionKey !== '') {
-                    bx_db()->Execute(
-                        'INSERT IGNORE INTO builder_role_permission (role_key, permission_key) VALUES (?, ?)',
-                        [$roleKey, $permissionKey]
-                    );
-                }
+                    $deleted = bx_db()->Execute('DELETE FROM builder_role_permission WHERE role_key = ?', [$roleKey]);
+                    if ($deleted === false) {
+                        throw new RuntimeException('Existing role permissions could not be replaced.');
+                    }
+                    foreach (bx_admin_unique_keys($permissionKeys) as $permissionKey) {
+                        $saved = bx_db()->Execute(
+                            'INSERT IGNORE INTO builder_role_permission (role_key, permission_key) VALUES (?, ?)',
+                            [$roleKey, $permissionKey]
+                        );
+                        if ($saved === false) {
+                            throw new RuntimeException('Role permission assignment could not be saved.');
+                        }
+                    }
+
+                    bx_admin_assert_role_readback($roleKey, $roleName, $roleStatus, $permissionKeys);
+                });
+
+                bx_flash($wasCreatingRole ? 'Role created and verified.' : 'Role saved and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
             }
 
             bx_admin_redirect('roles');
@@ -2395,12 +3792,28 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('roles');
             }
 
-            bx_db()->Execute('UPDATE builder_role SET role_status = ? WHERE role_key = ?', [$roleStatus, $roleKey]);
-            bx_audit($roleStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'builder_role', $roleKey, [
-                'role_name' => $existing['role_name'],
-                'role_status' => $roleStatus,
-            ], 'Administrator changed role status.');
-            bx_flash('Role status updated.', 'success');
+            try {
+                if ((string) ($existing['role_name'] ?? '') === 'Administrator' && $roleStatus !== 'ACTIVE') {
+                    throw new RuntimeException('The built-in Administrator role must remain active.');
+                }
+                bx_admin_access_transaction(function () use ($roleStatus, $roleKey, $existing): void {
+                    $saved = bx_db()->Execute('UPDATE builder_role SET role_status = ? WHERE role_key = ?', [$roleStatus, $roleKey]);
+                    if ($saved === false) {
+                        throw new RuntimeException('Role status update failed.');
+                    }
+                    $readBackStatus = (string) bx_db()->GetOne('SELECT role_status FROM builder_role WHERE role_key = ? LIMIT 1', [$roleKey]);
+                    if ($readBackStatus !== $roleStatus) {
+                        throw new RuntimeException('Role status read-back verification failed.');
+                    }
+                    bx_audit($roleStatus === 'DELETED' ? 'DELETE' : 'STATUS', 'builder_role', $roleKey, [
+                        'role_name' => $existing['role_name'],
+                        'role_status' => $roleStatus,
+                    ], 'Administrator changed role status.');
+                });
+                bx_flash('Role status updated and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
             bx_admin_redirect('roles');
         }
 
@@ -2420,12 +3833,29 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('permissions');
             }
 
-            bx_db()->Execute('UPDATE builder_permission SET permission_status = ? WHERE permission_key = ?', [$permissionStatus, $permissionKey]);
-            bx_audit('STATUS', 'builder_permission', $permissionKey, [
-                'permission_code' => $existing['permission_code'],
-                'permission_status' => $permissionStatus,
-            ], 'Administrator changed permission status.');
-            bx_flash('Permission status updated.', 'success');
+            try {
+                $adminRoleKey = bx_admin_role_key_by_name('Administrator');
+                if ($permissionStatus !== 'ACTIVE' && $adminRoleKey !== '' && (int) bx_db()->GetOne('SELECT COUNT(*) FROM builder_role_permission WHERE role_key = ? AND permission_key = ?', [$adminRoleKey, $permissionKey]) > 0) {
+                    throw new RuntimeException('Permissions assigned to the Administrator role must remain active.');
+                }
+                bx_admin_access_transaction(function () use ($permissionStatus, $permissionKey, $existing): void {
+                    $saved = bx_db()->Execute('UPDATE builder_permission SET permission_status = ? WHERE permission_key = ?', [$permissionStatus, $permissionKey]);
+                    if ($saved === false) {
+                        throw new RuntimeException('Permission status update failed.');
+                    }
+                    $readBackStatus = (string) bx_db()->GetOne('SELECT permission_status FROM builder_permission WHERE permission_key = ? LIMIT 1', [$permissionKey]);
+                    if ($readBackStatus !== $permissionStatus) {
+                        throw new RuntimeException('Permission status read-back verification failed.');
+                    }
+                    bx_audit('STATUS', 'builder_permission', $permissionKey, [
+                        'permission_code' => $existing['permission_code'],
+                        'permission_status' => $permissionStatus,
+                    ], 'Administrator changed permission status.');
+                });
+                bx_flash('Permission status updated and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
             bx_admin_redirect('permissions');
         }
 
@@ -2444,43 +3874,66 @@ if ($requestMethod === 'POST') {
                 bx_admin_redirect('permissions');
             }
 
-            foreach (array_unique($roleKeys) as $roleKey) {
-                if ($roleKey === '') {
-                    continue;
-                }
+            try {
+                bx_admin_assert_permission_matrix_guardrails($roleKeys, $permissionKeys, $matrix);
+                bx_admin_access_transaction(function () use ($roleKeys, $permissionKeys, $matrix): void {
+                    foreach (bx_admin_unique_keys($roleKeys) as $roleKey) {
+                        $deleted = bx_db()->Execute('DELETE FROM builder_role_permission WHERE role_key = ?', [$roleKey]);
+                        if ($deleted === false) {
+                            throw new RuntimeException('Existing permission matrix rows could not be replaced.');
+                        }
+                        $selectedPermissions = $matrix[$roleKey] ?? [];
+                        if (!is_array($selectedPermissions)) {
+                            $selectedPermissions = [];
+                        }
 
-                bx_db()->Execute('DELETE FROM builder_role_permission WHERE role_key = ?', [$roleKey]);
-                $selectedPermissions = $matrix[$roleKey] ?? [];
-                if (!is_array($selectedPermissions)) {
-                    $selectedPermissions = [];
-                }
+                        foreach (bx_admin_unique_keys($selectedPermissions) as $permissionKey) {
+                            if ($permissionKey !== '' && in_array($permissionKey, $permissionKeys, true)) {
+                                $saved = bx_db()->Execute(
+                                    'INSERT IGNORE INTO builder_role_permission (role_key, permission_key) VALUES (?, ?)',
+                                    [$roleKey, $permissionKey]
+                                );
+                                if ($saved === false) {
+                                    throw new RuntimeException('Permission matrix assignment could not be saved.');
+                                }
+                            }
+                        }
 
-                foreach (array_unique(array_map(static fn ($item): string => trim((string) $item), $selectedPermissions)) as $permissionKey) {
-                    if ($permissionKey !== '' && in_array($permissionKey, $permissionKeys, true)) {
-                        bx_db()->Execute(
-                            'INSERT IGNORE INTO builder_role_permission (role_key, permission_key) VALUES (?, ?)',
-                            [$roleKey, $permissionKey]
-                        );
+                        $selectedCount = count(array_values(array_filter(bx_admin_unique_keys($selectedPermissions), static fn (string $permissionKey): bool => in_array($permissionKey, $permissionKeys, true))));
+                        $readBackCount = (int) bx_db()->GetOne('SELECT COUNT(*) FROM builder_role_permission WHERE role_key = ?', [$roleKey]);
+                        if ($readBackCount !== $selectedCount) {
+                            throw new RuntimeException('Permission matrix read-back verification failed.');
+                        }
                     }
-                }
-            }
 
-            bx_audit('UPDATE', 'builder_role_permission', 'permission-matrix', [
-                'role_count' => count(array_unique($roleKeys)),
-                'permission_count' => count(array_unique($permissionKeys)),
-            ], 'Administrator updated permission matrix.');
-            bx_flash('Permission matrix updated.', 'success');
+                    bx_audit('UPDATE', 'builder_role_permission', 'permission-matrix', [
+                        'role_count' => count(bx_admin_unique_keys($roleKeys)),
+                        'permission_count' => count(bx_admin_unique_keys($permissionKeys)),
+                    ], 'Administrator updated permission matrix.');
+                });
+                bx_flash('Permission matrix updated and verified.', 'success');
+            } catch (Throwable $exception) {
+                bx_flash($exception->getMessage(), 'error');
+            }
             bx_admin_redirect('permissions');
         }
 
         if ($action === 'save_system_settings') {
             $settingValues = $_POST['setting_values'] ?? [];
+            $settingsGroup = trim((string) ($_POST['settings_group'] ?? ''));
             if (!is_array($settingValues)) {
                 bx_flash('Invalid settings request.', 'error');
-                bx_admin_redirect('settings');
+                bx_admin_redirect_settings($settingsGroup);
             }
 
-            $settings = bx_db()->GetAll("SELECT setting_key, setting_name, setting_value, is_secret FROM builder_system_setting WHERE setting_status = 'ACTIVE'");
+            bx_seed_android_project_settings();
+
+            $settingsProjectKey = bx_admin_project_key((string) ($_POST['project_key'] ?? $_GET['project_key'] ?? ''));
+            $systemSettings = bx_db()->GetAll("SELECT setting_key, setting_name, setting_value, is_secret, setting_group, 'builder_system_setting' AS setting_source FROM builder_system_setting WHERE setting_status = 'ACTIVE' AND setting_group <> 'android'") ?: [];
+            $projectSettings = $settingsProjectKey !== ''
+                ? (bx_db()->GetAll("SELECT setting_key, setting_name, setting_value, is_secret, setting_group, 'project_setting' AS setting_source FROM project_setting WHERE project_key = ? AND setting_status = 'ACTIVE' AND setting_group = 'android'", [$settingsProjectKey]) ?: [])
+                : [];
+            $settings = array_merge($systemSettings, $projectSettings);
             $changed = 0;
 
             foreach ($settings as $setting) {
@@ -2500,70 +3953,190 @@ if ($requestMethod === 'POST') {
 
                 if (!preg_match('/^[A-Za-z0-9_]{2,120}$/', $settingName)) {
                     bx_flash('Invalid setting name found.', 'error');
-                    bx_admin_redirect('settings');
+                    bx_admin_redirect_settings($settingsGroup);
                 }
 
                 $newValue = trim((string) $settingValues[$settingKey]);
                 if (strlen($newValue) > 2000) {
                     bx_flash('Setting values must be 2000 characters or less.', 'error');
-                    bx_admin_redirect('settings');
+                    bx_admin_redirect_settings($settingsGroup);
                 }
 
                 if (in_array($settingName, ['session_timeout_minutes', 'password_min_length'], true)) {
                     if (!preg_match('/^[0-9]+$/', $newValue) || (int) $newValue < 1) {
                         bx_flash('Security numeric settings must be positive whole numbers.', 'error');
-                        bx_admin_redirect('settings');
+                        bx_admin_redirect_settings($settingsGroup);
                     }
                 }
 
                 if (in_array($settingName, ['password_expiration_days', 'password_history_count', 'password_reset_token_minutes'], true)) {
                     if (!preg_match('/^[0-9]+$/', $newValue) || (int) $newValue < 0) {
                         bx_flash('Numeric settings must be zero or positive whole numbers.', 'error');
-                        bx_admin_redirect('settings');
+                        bx_admin_redirect_settings($settingsGroup);
                     }
                 }
 
-                if (in_array($settingName, ['debug_enabled', 'debug_show_queries', 'debug_show_files', 'debug_show_phase_task', 'debug_log_traces'], true) && !in_array($newValue, ['0', '1'], true)) {
-                    bx_flash('Debug switches must be on or off.', 'error');
-                    bx_admin_redirect('settings');
+                if (in_array($settingName, ['debug_enabled', 'debug_show_queries', 'debug_show_files', 'debug_show_phase_task', 'debug_log_traces', 'sharingan_enabled', 'android_force_update_enabled', 'android_release_acknowledgement_required', 'android_geofence_required', 'android_offline_queue_enabled', 'android_media_upload_enabled'], true) && !in_array($newValue, ['0', '1'], true)) {
+                    bx_flash('Switch settings must be on or off.', 'error');
+                    bx_admin_redirect_settings($settingsGroup);
+                }
+
+                if (in_array($settingName, ['android_current_version_code', 'android_min_supported_version_code'], true)) {
+                    if (!preg_match('/^[0-9]+$/', $newValue) || (int) $newValue < 1) {
+                        bx_flash('Android version code settings must be positive whole numbers.', 'error');
+                        bx_admin_redirect_settings($settingsGroup);
+                    }
+                }
+
+                if (in_array($settingName, ['android_offline_retry_interval_seconds', 'android_dashboard_refresh_seconds'], true)) {
+                    if (!preg_match('/^[0-9]+$/', $newValue) || (int) $newValue < 5 || (int) $newValue > 86400) {
+                        bx_flash('Android timing settings must be between 5 and 86400 seconds.', 'error');
+                        bx_admin_redirect_settings($settingsGroup);
+                    }
+                }
+
+                if ($settingName === 'android_app_package_name' && !preg_match('/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/', $newValue)) {
+                    bx_flash('Android package name is invalid.', 'error');
+                    bx_admin_redirect_settings($settingsGroup);
+                }
+
+                if ($settingName === 'android_tenant_configuration_endpoint_url') {
+                    $androidUrlParts = parse_url($newValue);
+                    $androidEndpointScheme = is_array($androidUrlParts) ? strtolower((string) ($androidUrlParts['scheme'] ?? '')) : '';
+                    $androidEndpointHost = is_array($androidUrlParts) ? strtolower((string) ($androidUrlParts['host'] ?? '')) : '';
+                    $androidEndpointIsLocalHttp = $androidEndpointScheme === 'http' && in_array($androidEndpointHost, ['localhost', '127.0.0.1'], true);
+                    if ($newValue === '' || !filter_var($newValue, FILTER_VALIDATE_URL) || !is_array($androidUrlParts) || ($androidEndpointScheme !== 'https' && !$androidEndpointIsLocalHttp)) {
+                        bx_flash('Android tenant configuration endpoint must be a valid HTTPS URL, or localhost HTTP URL for development.', 'error');
+                        bx_admin_redirect_settings($settingsGroup);
+                    }
+                }
+
+                if ($settingName === 'android_update_apk_download_path') {
+                    $androidApkParts = parse_url($newValue);
+                    $androidApkPath = is_array($androidApkParts) ? (string) ($androidApkParts['path'] ?? '') : '';
+                    $androidApkScheme = is_array($androidApkParts) ? strtolower((string) ($androidApkParts['scheme'] ?? '')) : '';
+                    $androidApkHasUrl = $androidApkScheme !== '';
+                    $androidApkPathIsValid = $newValue !== ''
+                        && !str_contains($newValue, '..')
+                        && preg_match('/^\/[A-Za-z0-9._~\/%+-]+\.apk$/i', $newValue);
+                    $androidApkUrlIsValid = $androidApkHasUrl
+                        && in_array($androidApkScheme, ['http', 'https'], true)
+                        && filter_var($newValue, FILTER_VALIDATE_URL)
+                        && str_ends_with(strtolower($androidApkPath), '.apk');
+
+                    if (!$androidApkPathIsValid && !$androidApkUrlIsValid) {
+                        bx_flash('Android APK download path must be an HTTP(S) URL or root-relative .apk path.', 'error');
+                        bx_admin_redirect_settings($settingsGroup);
+                    }
+                }
+
+                if (in_array($settingName, ['android_splash_screen_image_url_1', 'android_splash_screen_image_url_2', 'android_splash_screen_image_url_3', 'android_splash_screen_image_url_4'], true) && $newValue !== '') {
+                    $androidSplashUrlParts = parse_url($newValue);
+                    if (!filter_var($newValue, FILTER_VALIDATE_URL) || !is_array($androidSplashUrlParts) || !in_array(strtolower((string) ($androidSplashUrlParts['scheme'] ?? '')), ['http', 'https'], true)) {
+                        bx_flash('Android splash image links must be valid HTTP(S) URLs.', 'error');
+                        bx_admin_redirect_settings($settingsGroup);
+                    }
                 }
 
                 if ($settingName === 'debug_trace_retention_days') {
                     if (!preg_match('/^[0-9]+$/', $newValue) || (int) $newValue < 0 || (int) $newValue > 365) {
                         bx_flash('Debug trace retention must be between 0 and 365 days.', 'error');
-                        bx_admin_redirect('settings');
+                        bx_admin_redirect_settings($settingsGroup);
                     }
                 }
 
                 if ($settingName === 'debug_allowed_roles' && !preg_match('/^[A-Za-z0-9_, -]+$/', $newValue)) {
                     bx_flash('Debug allowed roles may only contain letters, numbers, spaces, commas, hyphens, and underscores.', 'error');
-                    bx_admin_redirect('settings');
+                    bx_admin_redirect_settings($settingsGroup);
                 }
 
                 if ($settingName === 'contact_email' && $newValue !== '' && !filter_var($newValue, FILTER_VALIDATE_EMAIL)) {
                     bx_flash('Contact email must be valid.', 'error');
-                    bx_admin_redirect('settings');
+                    bx_admin_redirect_settings($settingsGroup);
                 }
 
-                if ($settingName === 'admin_default_tab' && !in_array($newValue, ['dashboard', 'users', 'groups', 'roles', 'permissions', 'branches', 'projects', 'settings', 'audit', 'forms', 'health', 'template'], true)) {
+                if (in_array($settingName, ['media_uploader_target_url', 'media_image_viewer_url'], true) && $newValue !== '' && !filter_var($newValue, FILTER_VALIDATE_URL)) {
+                    bx_flash('Media URLs must be valid full URLs.', 'error');
+                    bx_admin_redirect_settings($settingsGroup);
+                }
+
+                if ($settingName === 'admin_default_tab' && !in_array($newValue, ['dashboard', 'users', 'positions', 'groups', 'roles', 'permissions', 'branches', 'projects', 'settings', 'bed-management', 'bed-lookup', 'bed-treatment', 'bed-source', 'task-builder', 'audit', 'forms', 'health', 'template'], true)) {
                     bx_flash('Administrator default tab is invalid.', 'error');
-                    bx_admin_redirect('settings');
+                    bx_admin_redirect_settings($settingsGroup);
                 }
 
                 if ($newValue !== (string) $setting['setting_value']) {
-                    bx_db()->Execute(
-                        'UPDATE builder_system_setting SET setting_value = ? WHERE setting_key = ?',
-                        [$newValue, $settingKey]
-                    );
-                    bx_audit('UPDATE', 'builder_system_setting', $settingKey, [
+                    $settingSource = (string) ($setting['setting_source'] ?? 'builder_system_setting');
+                    if ($settingSource === 'project_setting') {
+                        bx_db()->Execute(
+                            'UPDATE project_setting SET setting_value = ? WHERE setting_key = ? AND project_key = ?',
+                            [$newValue, $settingKey, $settingsProjectKey]
+                        );
+                    } else {
+                        bx_db()->Execute(
+                            'UPDATE builder_system_setting SET setting_value = ? WHERE setting_key = ?',
+                            [$newValue, $settingKey]
+                        );
+                    }
+                    bx_audit('UPDATE', $settingSource === 'project_setting' ? 'project_setting' : 'builder_system_setting', $settingKey, [
                         'setting_name' => $settingName,
+                        'project_key' => $settingSource === 'project_setting' ? $settingsProjectKey : '',
                     ], 'Administrator updated system setting.');
                     $changed++;
                 }
             }
 
             bx_flash($changed > 0 ? 'System settings updated.' : 'No setting changes detected.', 'success');
-            bx_admin_redirect('settings');
+            bx_admin_redirect_settings($settingsGroup);
+        }
+
+        if ($action === 'resync_bed_master_list') {
+            try {
+                $summary = bx_resync_bed_master_list((string) ($currentUser['user_key'] ?? ''));
+                $firebaseStep = bx_admin_project_bed_firebase_step(is_array($summary['firebaseSync'] ?? null) ? $summary['firebaseSync'] : []);
+                $firebaseOk = $firebaseStep['status'] === 'complete';
+                bx_mutation_lifecycle_flash($firebaseOk ? 'Bed list refreshed.' : 'Bed list saved; update needs attention.', $firebaseOk ? 'success' : 'error', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Latest list', 'status' => 'complete', 'detail' => (string) $summary['sourceRows'] . ' bed(s) checked from the latest hospital list.'],
+                    ['label' => 'Saved beds', 'status' => 'complete', 'detail' => 'The bed list now has ' . (string) $summary['managedRows'] . ' saved bed(s).'],
+                    ['label' => 'History', 'status' => 'complete', 'detail' => 'Existing task links and history were kept.'],
+                    ['label' => 'Reports', 'status' => 'complete', 'detail' => 'Bed reports refreshed into ' . (string) ($summary['firebaseSync']['analytics_synced'] ?? 0) . ' group(s).'],
+                    $firebaseStep,
+                    ['label' => 'Review', 'status' => 'complete', 'detail' => (string) $summary['activeRows'] . ' active bed(s), ' . (string) $summary['inactiveRows'] . ' inactive bed(s).'],
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Bed list refresh failed.', 'error', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Latest list', 'status' => 'blocked', 'detail' => $error->getMessage()],
+                    ['label' => 'Saved beds', 'status' => 'not_started', 'detail' => 'No verified bed list update was completed.'],
+                ]);
+            }
+            bx_admin_redirect($bedReferenceReturnTab('bed-management'));
+        }
+
+        if ($action === 'resync_project_bed') {
+            $filters = bx_bed_lookup_filters_from_array($_POST);
+            $bedKey = trim((string) ($_POST['bed_key'] ?? ''));
+            try {
+                $bed = bx_resync_project_bed($bedKey, (string) ($currentUser['user_key'] ?? ''));
+                $firebaseStep = bx_admin_project_bed_firebase_step(is_array($bed['firebaseSync'] ?? null) ? $bed['firebaseSync'] : []);
+                $firebaseOk = $firebaseStep['status'] === 'complete';
+                bx_mutation_lifecycle_flash($firebaseOk ? 'Bed row refreshed.' : 'Bed row saved; update needs attention.', $firebaseOk ? 'success' : 'error', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Latest list', 'status' => ((bool) ($bed['sourceFound'] ?? false)) ? 'complete' : 'blocked', 'detail' => ((bool) ($bed['sourceFound'] ?? false)) ? 'Selected bed matched the latest hospital list.' : 'Selected bed was not found in the latest list and was marked inactive.'],
+                    ['label' => 'Saved bed', 'status' => 'complete', 'detail' => 'Selected bed was updated.'],
+                    ['label' => 'History', 'status' => 'complete', 'detail' => 'Existing task links and history were kept.'],
+                    ['label' => 'Reports', 'status' => 'complete', 'detail' => 'Bed reports refreshed into ' . (string) ($bed['firebaseSync']['analytics_synced'] ?? 0) . ' group(s).'],
+                    $firebaseStep,
+                ]);
+            } catch (Throwable $error) {
+                bx_mutation_lifecycle_flash('Bed row refresh failed.', 'error', [
+                    ['label' => 'Authorization', 'status' => 'complete', 'detail' => 'Administrator authorization and CSRF checks passed.'],
+                    ['label' => 'Latest list', 'status' => 'blocked', 'detail' => $error->getMessage()],
+                    ['label' => 'Saved bed', 'status' => 'not_started', 'detail' => 'No verified bed update was completed.'],
+                ]);
+            }
+            bx_admin_redirect_bed_lookup($filters);
         }
 
         if ($action === 'apply_runtime_project_config') {
@@ -2670,16 +4243,9 @@ $entry = $manifest['index.html'] ?? null;
 $assetsBase = '../frontend/dist/';
 $auditFilters = bx_audit_filters_from_request();
 $audits = $isAdmin ? bx_audit_rows($auditFilters, (string) ($_GET['audit_export'] ?? '') === 'csv' ? 1000 : 250) : [];
-$familyReportFilters = bx_family_report_filters_from_request();
-$familyReportAllowed = $isAdmin && (bx_user_has_permission($user, 'family_members.report') || bx_user_has_permission($user, 'reports.manage'));
-$familyReport = bx_family_report_data($user, $familyReportFilters, $familyReportAllowed);
 
 if ($isAdmin && (string) ($_GET['audit_export'] ?? '') === 'csv') {
     bx_audit_export_csv($audits);
-}
-
-if ($familyReportAllowed && (string) ($_GET['family_report_export'] ?? '') === 'csv') {
-    bx_family_report_csv($familyReport['rows']);
 }
 
 $adminState = $_SESSION['builderx_admin_state'] ?? [];
@@ -2693,7 +4259,15 @@ function bx_admin_payload_rows(mixed $rows): array
     return is_array($rows) ? $rows : [];
 }
 
-$settingsForPayload = $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("SELECT setting_key, setting_group, setting_name, setting_value, setting_status, is_secret FROM builder_system_setting WHERE setting_status = 'ACTIVE' AND setting_name NOT LIKE 'ui\\_%' AND setting_name <> 'template_presets' ORDER BY setting_group ASC, setting_name ASC")) : [];
+$settingsProjectKey = $isAdmin ? bx_admin_project_key((string) ($_GET['project_key'] ?? '')) : '';
+$settingsForPayload = [];
+if ($isAdmin) {
+    $systemSettingsForPayload = bx_admin_payload_rows(bx_db()->GetAll("SELECT setting_key, setting_group, setting_name, setting_value, setting_status, is_secret FROM builder_system_setting WHERE setting_status = 'ACTIVE' AND setting_group <> 'android' AND setting_name NOT LIKE 'ui\\_%' AND setting_name <> 'template_presets' ORDER BY setting_group ASC, setting_name ASC"));
+    $projectSettingsForPayload = $settingsProjectKey !== ''
+        ? bx_admin_payload_rows(bx_db()->GetAll("SELECT setting_key, setting_group, setting_name, setting_value, setting_status, is_secret FROM project_setting WHERE project_key = ? AND setting_status = 'ACTIVE' AND setting_group = 'android' ORDER BY setting_group ASC, setting_name ASC", [$settingsProjectKey]))
+        : [];
+    $settingsForPayload = array_merge($systemSettingsForPayload, $projectSettingsForPayload);
+}
 foreach ($settingsForPayload as &$settingForPayload) {
     $settingName = (string) ($settingForPayload['setting_name'] ?? '');
     if ((int) ($settingForPayload['is_secret'] ?? 0) === 1) {
@@ -2703,17 +4277,40 @@ foreach ($settingsForPayload as &$settingForPayload) {
 }
 unset($settingForPayload);
 
+$initialTab = (string) ($_GET['tab'] ?? 'overview');
+$removedReportTab = 'family' . '-reports';
+if ($initialTab === $removedReportTab) {
+    $initialTab = 'dashboard';
+}
+
+$bedLookupFilters = $isAdmin ? bx_bed_lookup_filters_from_request() : [];
+$taskBuilderSelectedTaskKey = trim((string) ($_GET['selected_task_key'] ?? ''));
+if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskBuilderSelectedTaskKey)) {
+    $taskBuilderSelectedTaskKey = '';
+}
+
 $payload = [
     'csrf' => bx_csrf_token(),
     'softwareName' => $softwareName,
     'projectBasePath' => bx_project_base_path(),
     'projectRoot' => $isAdmin ? dirname(__DIR__) : '',
+    'sharinganEnabled' => bx_setting('sharingan_enabled', '0') === '1',
     'templatePresets' => $isAdmin ? bx_template_presets() : [],
+    'bedMasterListSummary' => $isAdmin ? bx_bed_master_list_summary() : null,
+    'bedLookupFilters' => $bedLookupFilters,
+    'bedLookupOptions' => $isAdmin ? bx_project_bed_lookup_options($bedLookupFilters) : [],
+    'bedLookupRows' => $isAdmin ? bx_project_bed_lookup_rows($bedLookupFilters) : [],
+    'bedTreatments' => $isAdmin ? bx_project_bed_treatment_rows() : [],
+    'bedSources' => $isAdmin ? bx_project_bed_source_rows() : [],
+    'projectTasks' => $isAdmin ? bx_project_task_rows() : [],
+    'projectTaskStages' => $isAdmin ? bx_project_task_stage_rows() : [],
+    'projectTaskStageResponses' => $isAdmin ? bx_project_task_stage_response_rows() : [],
+    'taskBuilderSelectedTaskKey' => $isAdmin ? $taskBuilderSelectedTaskKey : '',
     'flash' => $flash,
     'hasUsers' => $hasUsers,
     'isSignedIn' => (bool) $user,
     'isAdmin' => $isAdmin,
-    'initialTab' => (string) ($_GET['tab'] ?? 'overview'),
+    'initialTab' => $initialTab,
     'initialState' => $adminState,
     'user' => $user ? [
         'key' => $user['user_key'],
@@ -2722,7 +4319,8 @@ $payload = [
         'email' => $user['user_email'],
     ] : null,
     'metrics' => $isAdmin ? [
-        'Users' => bx_count('builder_user', "user_status <> 'DELETED'"),
+        'Users' => bx_count('project_user', "user_status <> 'DELETED'"),
+        'Positions' => bx_count('project_user_position', "position_status <> 'DELETED'"),
         'Branches' => bx_count('builder_branch', "branch_status <> 'DELETED'"),
         'Projects' => bx_count('builder_project', "project_status <> 'DELETED'"),
         'Forms' => bx_count('builder_form', "form_status <> 'DELETED'"),
@@ -2730,25 +4328,73 @@ $payload = [
         'Permissions' => bx_count('builder_permission', "permission_status <> 'DELETED'"),
         'Audit Logs' => bx_count('builder_audit_log'),
     ] : [],
+    'managementReadiness' => $isAdmin ? [
+        ['key' => 'users', 'label' => 'Project Accounts', 'route' => 'users', 'active_records' => bx_count('project_user', "user_status <> 'DELETED'"), 'confirmation' => 'status_change'],
+        ['key' => 'positions', 'label' => 'Project Positions', 'route' => 'positions', 'active_records' => bx_count('project_user_position', "position_status <> 'DELETED'"), 'confirmation' => 'soft_delete'],
+        ['key' => 'groups', 'label' => 'Project Groups', 'route' => 'groups', 'active_records' => bx_count('project_user_group', "group_status <> 'DELETED'"), 'confirmation' => 'soft_delete'],
+        ['key' => 'roles', 'label' => 'Roles', 'route' => 'roles', 'active_records' => bx_count('builder_role', "role_status <> 'DELETED'"), 'confirmation' => 'soft_delete'],
+        ['key' => 'permissions', 'label' => 'Permissions', 'route' => 'permissions', 'active_records' => bx_count('builder_permission', "permission_status <> 'DELETED'"), 'confirmation' => 'soft_delete'],
+        ['key' => 'branches', 'label' => 'Branches', 'route' => 'branches', 'active_records' => bx_count('builder_branch', "branch_status <> 'DELETED'"), 'confirmation' => 'soft_delete'],
+        ['key' => 'projects', 'label' => 'Projects', 'route' => 'projects', 'active_records' => bx_count('builder_project', "project_status <> 'DELETED'"), 'confirmation' => 'soft_delete'],
+        ['key' => 'settings', 'label' => 'Configuration', 'route' => 'settings', 'active_records' => bx_count('builder_system_setting', "setting_status <> 'DELETED'"), 'confirmation' => 'save_confirmation'],
+        ['key' => 'audit', 'label' => 'Audit', 'route' => 'audit', 'active_records' => bx_count('builder_audit_log'), 'confirmation' => 'read_only'],
+    ] : [],
     'users' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             u.user_key,
+            u.project_key,
             u.user_login,
             u.user_name,
+            COALESCE(u.user_chat_name, '') AS user_chat_name,
             u.user_email,
+            COALESCE(u.user_mobile_number, '') AS user_mobile_number,
+            COALESCE(u.user_avatar_path, '') AS user_avatar_path,
+            COALESCE(u.user_avatar_original_name, '') AS user_avatar_original_name,
+            COALESCE(u.user_avatar_mime_type, '') AS user_avatar_mime_type,
+            COALESCE(u.user_avatar_byte_size, 0) AS user_avatar_byte_size,
+            COALESCE(u.user_avatar_sha256, '') AS user_avatar_sha256,
+            COALESCE(DATE_FORMAT(u.user_avatar_uploaded_at, '%Y-%m-%d %H:%i:%s'), '') AS user_avatar_uploaded_at,
+            COALESCE(u.group_key, '') AS group_key,
+            COALESCE(u.position_key, '') AS position_key,
+            COALESCE(pos.position_code, '') AS position_code,
+            COALESCE(pos.position_name, '') AS position_name,
+            COALESCE(pos.group_key, '') AS position_group_key,
+            COALESCE(pos_group.group_name, '') AS position_group_name,
             u.user_status,
             u.user_failed_login_count,
             u.user_last_login_at,
-            COALESCE((SELECT GROUP_CONCAT(role_key ORDER BY role_key SEPARATOR ',') FROM builder_user_role WHERE user_key = u.user_key), '') AS role_keys,
-            COALESCE((SELECT GROUP_CONCAT(group_key ORDER BY group_key SEPARATOR ',') FROM builder_user_group WHERE user_key = u.user_key), '') AS group_keys,
-            COALESCE((SELECT GROUP_CONCAT(branch_key ORDER BY branch_key SEPARATOR ',') FROM builder_user_branch WHERE user_key = u.user_key), '') AS branch_keys,
-            COALESCE((SELECT GROUP_CONCAT(project_key ORDER BY project_key SEPARATOR ',') FROM builder_user_project WHERE user_key = u.user_key), '') AS project_keys,
-            COALESCE((SELECT GROUP_CONCAT(r.role_name ORDER BY r.role_name SEPARATOR ', ') FROM builder_user_role ur JOIN builder_role r ON r.role_key = ur.role_key WHERE ur.user_key = u.user_key), '') AS role_names,
-            COALESCE((SELECT GROUP_CONCAT(g.group_name ORDER BY g.group_name SEPARATOR ', ') FROM builder_user_group ug JOIN builder_group g ON g.group_key = ug.group_key WHERE ug.user_key = u.user_key), '') AS group_names,
-            COALESCE((SELECT GROUP_CONCAT(b.branch_code ORDER BY b.branch_code SEPARATOR ', ') FROM builder_user_branch ub JOIN builder_branch b ON b.branch_key = ub.branch_key WHERE ub.user_key = u.user_key), '') AS branch_codes,
-            COALESCE((SELECT GROUP_CONCAT(p.project_code ORDER BY p.project_code SEPARATOR ', ') FROM builder_user_project up JOIN builder_project p ON p.project_key = up.project_key WHERE up.user_key = u.user_key), '') AS project_codes
-        FROM builder_user u
-        ORDER BY u.user_name ASC
+            '' AS role_keys,
+            COALESCE(u.group_key, '') AS group_keys,
+            '' AS branch_keys,
+            u.project_key AS project_keys,
+            '' AS role_names,
+            COALESCE(g.group_name, '') AS group_names,
+            '' AS branch_codes,
+            COALESCE(p.project_code, '') AS project_codes
+        FROM project_user u
+        LEFT JOIN project_user_position pos ON pos.position_key = u.position_key
+        LEFT JOIN project_user_group pos_group ON pos_group.group_key = pos.group_key
+        LEFT JOIN project_user_group g ON g.group_key = u.group_key
+        LEFT JOIN builder_project p ON p.project_key = u.project_key
+        ORDER BY p.project_code ASC, u.user_name ASC
+    ")) : [],
+    'positions' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
+        SELECT
+            pos.position_key,
+            pos.project_key,
+            COALESCE(pos.group_key, '') AS group_key,
+            pos.position_code,
+            pos.position_name,
+            pos.position_description,
+            pos.position_status,
+            COALESCE(g.group_name, '') AS group_name,
+            COALESCE(g.group_status, '') AS group_status,
+            COALESCE(p.project_code, '') AS project_code,
+            COALESCE(p.project_name, '') AS project_name
+        FROM project_user_position pos
+        LEFT JOIN project_user_group g ON g.group_key = pos.group_key
+        LEFT JOIN builder_project p ON p.project_key = pos.project_key
+        ORDER BY p.project_code ASC, g.group_name ASC, pos.position_name ASC
     ")) : [],
     'branches' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll('SELECT branch_key, branch_code, branch_name, branch_status, branch_address, branch_contact FROM builder_branch ORDER BY branch_name ASC')) : [],
     'projects' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll('SELECT p.project_key, p.branch_key, p.project_code, p.project_name, p.project_status, p.project_description, b.branch_code, b.branch_name FROM builder_project p LEFT JOIN builder_branch b ON b.branch_key = p.branch_key ORDER BY b.branch_name ASC, p.project_name ASC')) : [],
@@ -2832,14 +4478,26 @@ $payload = [
     'groups' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
             g.group_key,
+            g.project_key,
             g.group_name,
             g.group_description,
+            COALESCE(g.group_image_path, '') AS group_image_path,
+            COALESCE(g.group_image_original_name, '') AS group_image_original_name,
+            COALESCE(g.group_image_mime_type, '') AS group_image_mime_type,
+            COALESCE(g.group_image_byte_size, 0) AS group_image_byte_size,
+            COALESCE(g.group_image_sha256, '') AS group_image_sha256,
+            COALESCE(DATE_FORMAT(g.group_image_uploaded_at, '%Y-%m-%d %H:%i:%s'), '') AS group_image_uploaded_at,
             g.group_status,
-            COALESCE((SELECT GROUP_CONCAT(user_key ORDER BY user_key SEPARATOR ',') FROM builder_user_group WHERE group_key = g.group_key), '') AS member_user_keys,
-            COALESCE((SELECT GROUP_CONCAT(u.user_name ORDER BY u.user_name SEPARATOR ', ') FROM builder_user_group ug JOIN builder_user u ON u.user_key = ug.user_key WHERE ug.group_key = g.group_key), '') AS member_names,
-            (SELECT COUNT(*) FROM builder_user_group ug WHERE ug.group_key = g.group_key) AS member_count
-        FROM builder_group g
-        ORDER BY g.group_name ASC
+            COALESCE(p.project_code, '') AS project_code,
+            COALESCE(p.project_name, '') AS project_name,
+            COALESCE((SELECT GROUP_CONCAT(user_key ORDER BY user_key SEPARATOR ',') FROM project_user WHERE group_key = g.group_key AND user_status <> 'DELETED'), '') AS member_user_keys,
+            COALESCE((SELECT GROUP_CONCAT(u.user_name ORDER BY u.user_name SEPARATOR ', ') FROM project_user u WHERE u.group_key = g.group_key AND u.user_status <> 'DELETED'), '') AS member_names,
+            (SELECT COUNT(*) FROM project_user u WHERE u.group_key = g.group_key AND u.user_status <> 'DELETED') AS member_count,
+            COALESCE((SELECT GROUP_CONCAT(pos.position_name ORDER BY pos.position_name SEPARATOR ', ') FROM project_user_position pos WHERE pos.group_key = g.group_key AND pos.position_status <> 'DELETED'), '') AS position_names,
+            (SELECT COUNT(*) FROM project_user_position pos WHERE pos.group_key = g.group_key AND pos.position_status <> 'DELETED') AS position_count
+        FROM project_user_group g
+        LEFT JOIN builder_project p ON p.project_key = g.project_key
+        ORDER BY p.project_code ASC, g.group_name ASC
     ")) : [],
     'roles' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll("
         SELECT
@@ -2870,7 +4528,6 @@ $payload = [
     'auditFilters' => $auditFilters,
     'audits' => $audits,
     'loginHistory' => $isAdmin ? bx_admin_payload_rows(bx_db()->GetAll('SELECT login_key, user_key, user_login, login_status, ip_address, failure_reason, created_at FROM builder_user_login_history ORDER BY x_id DESC LIMIT 80')) : [],
-    'familyReport' => $familyReport,
     'runtimeHealth' => $isAdmin ? bx_runtime_health_snapshot() : null,
 ];
 ?>

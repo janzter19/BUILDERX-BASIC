@@ -72,6 +72,17 @@ function bx_sharingan_require_csrf(array $source): void
     }
 }
 
+function bx_sharingan_require_surface_enabled(array $surface): void
+{
+    if (($surface['surface_key'] ?? '') !== 'user_portal') {
+        return;
+    }
+
+    if (bx_setting('sharingan_enabled', '0') !== '1') {
+        bx_sharingan_json(['ok' => false, 'message' => 'Sharingan is disabled for the User Portal by Administrator policy.'], 403);
+    }
+}
+
 /** @param array<string, mixed> $file @return array<string, mixed> */
 function bx_sharingan_save_image(array $file, string $directory, string $baseName, string $projectRoot): array
 {
@@ -168,6 +179,7 @@ $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 if ($method === 'GET') {
     $surface = bx_sharingan_authorized_surface($_GET, $authorization);
+    bx_sharingan_require_surface_enabled($surface);
     $action = strtolower(trim((string) ($_GET['action'] ?? '')));
     try {
         $adapter = new BuilderXAiBridgeAdapter($projectRoot, null, $projectWorkspaceRoot);
@@ -223,6 +235,7 @@ if ($method !== 'POST') {
 
 bx_sharingan_require_csrf($_POST);
 $surface = bx_sharingan_authorized_surface($_POST, $authorization);
+bx_sharingan_require_surface_enabled($surface);
 $action = strtolower(trim((string) ($_POST['action'] ?? '')));
 $store = new PhaseAiRunStore((string) ($user['user_key'] ?? ''));
 

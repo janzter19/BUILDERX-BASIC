@@ -496,6 +496,9 @@ final class PhaseAiWorkflowContract
                 $result[$key] = [$result[$key]];
             }
         }
+        if (is_array($result['recoveryCheckpoints'] ?? null) && !array_is_list($result['recoveryCheckpoints'])) {
+            $result['recoveryCheckpoints'] = array_values($result['recoveryCheckpoints']);
+        }
         if (is_array($result['recoveryCheckpoints'] ?? null) && array_is_list($result['recoveryCheckpoints'])) {
             $expectedServerEvidence = is_array($serverCheckpoint) && !array_is_list($serverCheckpoint)
                 ? PhaseAiSourceCheckpoint::modelEvidence($serverCheckpoint)
