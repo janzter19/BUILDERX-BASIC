@@ -1,0 +1,22 @@
+[Unit]
+Description=RBMSv4 Firebase Messenger sync queue worker
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/html/rbmsv4
+EnvironmentFile=/var/www/html/rbmsv4/.env
+ExecStart=/usr/local/bin/node /var/www/html/rbmsv4/scripts/firebase-messenger-stream.mjs
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/www/html/rbmsv4/storage
+
+[Install]
+WantedBy=multi-user.target

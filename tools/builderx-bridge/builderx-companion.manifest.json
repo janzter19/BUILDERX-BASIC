@@ -1,0 +1,8 @@
+{
+    "schemaVersion": "builderx.bridge-package.v1",
+    "version": "2.0.5",
+    "file": "builderx-companion-2.0.5.vsix",
+    "sha256": "157abe3b25de4e0f17938de721856939212130f0537333c47964bd3707b0bb3f",
+    "bytes": 6607,
+    "extensionSourceSha256": "3e180b0b296d735e75f2d190466cd7bf0095ae808405b0c1b15574251fb184bf"
+}

@@ -1,0 +1,680 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasProject(projectKey) {
+      return signedIn()
+        && request.auth.token.projects is list
+        && projectKey in request.auth.token.projects;
+    }
+
+    function hasGroup(groupKey) {
+      return signedIn()
+        && request.auth.token.groups is list
+        && groupKey in request.auth.token.groups;
+    }
+
+    function canReadPortalProjectUser(resourceData, userKey) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.auth.token.tenant_key is string
+        && resourceData.user_key == userKey
+        && resourceData.firebase_uid == request.auth.uid
+        && resourceData.project_key is string
+        && hasProject(resourceData.project_key)
+        && resourceData.user_status == 'ACTIVE'
+        && resourceData.user_password_change_required is bool
+        && resourceData.firebase_created_at is timestamp
+        && resourceData.firebase_updated_at is timestamp
+        && (resourceData.firebase_deleted_at == null || resourceData.firebase_deleted_at is timestamp)
+        && resourceData.firebase_collection == 'project_user'
+        && !resourceData.keys().hasAny([
+          'group_key', 'position_key', 'user_password_hash', 'password', 'user_password'
+        ]);
+    }
+
+    function canReadPortalProjectGroup(resourceData, groupKey, collectionName) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.auth.token.tenant_key is string
+        && resourceData.group_key == groupKey
+        && resourceData.project_key is string
+        && hasProject(resourceData.project_key)
+        && hasGroup(resourceData.group_key)
+        && resourceData.group_status == 'ACTIVE'
+        && resourceData.firebase_collection == collectionName;
+    }
+
+    function canReadPortalProjectAssignment(resourceData, assignmentKey) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.auth.token.tenant_key is string
+        && resourceData.assignment_key == assignmentKey
+        && resourceData.project_key is string
+        && hasProject(resourceData.project_key)
+        && resourceData.group_key is string
+        && hasGroup(resourceData.group_key)
+        && resourceData.user_key is string
+        && resourceData.position_key is string
+        && resourceData.assignment_status == 'ACTIVE'
+        && resourceData.firebase_collection == 'project_user_group';
+    }
+
+    function canReadPortalProjectPosition(resourceData, positionKey) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.auth.token.tenant_key is string
+        && resourceData.position_key == positionKey
+        && resourceData.project_key is string
+        && hasProject(resourceData.project_key)
+        && resourceData.group_key is string
+        && hasGroup(resourceData.group_key)
+        && resourceData.position_status == 'ACTIVE'
+        && resourceData.firebase_collection == 'project_position';
+    }
+
+    function canReadBedTaskData(taskData) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && taskData.tenant_key == request.auth.token.tenant_key
+        && hasProject(taskData.project_key)
+        && request.auth.token.groups is list
+        && taskData.task_group_keys.hasAny(request.auth.token.groups);
+    }
+
+    function canCreateBedTask(taskKey) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'tenant_key', 'project_key', 'bed_task_key', 'bed_key', 'bed_source_key',
+          'source_pk_psbeds', 'bed_no', 'branch_key', 'branch_name', 'building_key',
+          'building_name', 'floor_key', 'floor_name', 'nurse_station_key',
+          'nurse_station_name', 'room_key', 'room_class_key', 'room_class',
+          'source_bed_status_key', 'source_bed_status', 'task_key', 'task_code',
+          'task_title', 'task_type', 'task_color_hex', 'task_sort_order',
+          'task_group_keys', 'task_status', 'current_task_stage_key',
+          'current_stage_label', 'current_stage_color_hex', 'task_stage_key',
+          'stage_label', 'stage_color_hex', 'task_stage_response_key',
+          'response_label', 'response_description', 'response_color_hex',
+          'bed_status_at_request', 'bed_class', 'bed_treatment_key',
+          'bed_treatment_name', 'bed_source_option_key', 'bed_source_option_name',
+          'remarks', 'requester_user_key', 'requester_fullname',
+          'firebase_collection', 'mysql_sync_status', 'mysql_created_at',
+          'mysql_updated_at', 'mysql_synced_at', 'mysql_deleted_at', 'created_at',
+          'updated_at'
+        ])
+        && request.resource.data.bed_task_key == taskKey
+        && request.resource.data.tenant_key == request.auth.token.tenant_key
+        && request.resource.data.project_key is string
+        && hasProject(request.resource.data.project_key)
+        && request.resource.data.task_group_keys is list
+        && request.resource.data.task_group_keys.hasAny(request.auth.token.groups)
+        && request.resource.data.bed_key is string
+        && request.resource.data.task_key is string
+        && request.resource.data.task_type in ['PRIMARY', 'SECONDARY']
+        && request.resource.data.task_status == 'PENDING'
+        && request.resource.data.requester_user_key == request.auth.uid
+        && request.resource.data.firebase_collection == 'project_bed_task'
+        && request.resource.data.mysql_sync_status == 'PENDING'
+        && request.resource.data.mysql_created_at is string
+        && request.resource.data.mysql_updated_at is string
+        && request.resource.data.mysql_synced_at == null
+        && request.resource.data.mysql_deleted_at == null
+        && request.resource.data.created_at is string
+        && request.resource.data.updated_at is string;
+    }
+
+    function canCreateBedTaskCreatedLog(logKey) {
+      let taskPath = /databases/$(database)/documents/project_bed_task/$(request.resource.data.bed_task_key);
+      let task = getAfter(taskPath).data;
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'tenant_key', 'project_key', 'bed_task_log_key', 'bed_task_key', 'bed_key',
+          'bed_source_key', 'source_pk_psbeds', 'bed_no', 'branch_key', 'branch_name',
+          'building_key', 'building_name', 'floor_key', 'floor_name',
+          'nurse_station_key', 'nurse_station_name', 'room_key', 'room_class_key',
+          'room_class', 'source_bed_status_key', 'source_bed_status', 'task_key',
+          'task_code', 'task_title', 'task_type', 'task_color_hex', 'task_sort_order',
+          'task_group_keys', 'task_status', 'current_task_stage_key',
+          'current_stage_label', 'current_stage_color_hex', 'task_stage_key',
+          'stage_label', 'stage_color_hex', 'task_stage_response_key',
+          'response_label', 'response_description', 'response_color_hex',
+          'event_type', 'status_from', 'status_to', 'bed_status_at_request',
+          'bed_class', 'bed_treatment_key', 'bed_treatment_name',
+          'bed_source_option_key', 'bed_source_option_name', 'remarks',
+          'requester_user_key', 'requester_fullname', 'actor_user_key',
+          'actor_fullname', 'firebase_collection', 'mysql_sync_status',
+          'mysql_created_at', 'mysql_updated_at', 'mysql_synced_at',
+          'mysql_deleted_at', 'created_at', 'updated_at'
+        ])
+        && request.resource.data.bed_task_log_key == logKey
+        && request.resource.data.event_type == 'CREATED'
+        && request.resource.data.actor_user_key == request.auth.uid
+        && request.resource.data.requester_user_key == request.auth.uid
+        && request.resource.data.firebase_collection == 'project_bed_task_log'
+        && request.resource.data.mysql_sync_status == 'PENDING'
+        && request.resource.data.mysql_created_at is string
+        && request.resource.data.mysql_updated_at is string
+        && request.resource.data.mysql_synced_at == null
+        && request.resource.data.mysql_deleted_at == null
+        && request.resource.data.created_at is string
+        && task.tenant_key == request.resource.data.tenant_key
+        && task.project_key == request.resource.data.project_key
+        && task.bed_task_key == request.resource.data.bed_task_key
+        && task.bed_key == request.resource.data.bed_key
+        && task.task_key == request.resource.data.task_key
+        && task.task_group_keys == request.resource.data.task_group_keys
+        && canReadBedTaskData(task);
+    }
+
+    function canAdvanceBedTask() {
+      return canReadBedTaskData(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'current_task_stage_key',
+          'current_stage_label',
+          'current_stage_color_hex',
+          'task_stage_key',
+          'stage_label',
+          'stage_color_hex'
+        ])
+        && request.resource.data.current_task_stage_key is string
+        && request.resource.data.current_stage_label is string
+        && request.resource.data.current_stage_color_hex is string
+        && request.resource.data.task_stage_key is string
+        && request.resource.data.stage_label is string
+        && request.resource.data.stage_color_hex is string
+        && request.resource.data.current_task_stage_key == request.resource.data.task_stage_key
+        && request.resource.data.current_stage_label == request.resource.data.stage_label
+        && request.resource.data.current_stage_color_hex == request.resource.data.stage_color_hex
+        && request.resource.data.current_task_stage_key != resource.data.current_task_stage_key;
+    }
+
+    function canCreateBedTaskStageLog(logKey) {
+      let taskPath = /databases/$(database)/documents/project_bed_task/$(request.resource.data.bed_task_key);
+      let beforeTask = get(taskPath);
+      let afterTask = getAfter(taskPath);
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && request.resource.data.bed_task_log_key == logKey
+        && request.resource.data.bed_task_key is string
+        && request.resource.data.event_type == 'UPDATED'
+        && request.resource.data.actor_user_key == request.auth.uid
+        && request.resource.data.firebase_collection == 'project_bed_task_log'
+        && request.resource.data.current_task_stage_key == afterTask.data.current_task_stage_key
+        && request.resource.data.current_stage_label == afterTask.data.current_stage_label
+        && request.resource.data.current_stage_color_hex == afterTask.data.current_stage_color_hex
+        && request.resource.data.task_stage_key == afterTask.data.task_stage_key
+        && request.resource.data.stage_label == afterTask.data.stage_label
+        && request.resource.data.stage_color_hex == afterTask.data.stage_color_hex
+        && beforeTask.data.current_task_stage_key != afterTask.data.current_task_stage_key
+        && request.resource.data.bed_task_key == afterTask.data.bed_task_key
+        && request.resource.data.bed_key == afterTask.data.bed_key
+        && request.resource.data.task_key == afterTask.data.task_key
+        && request.resource.data.status_to == afterTask.data.task_status
+        && canReadBedTaskData(afterTask.data)
+        && request.resource.data.created_at is timestamp
+        && request.resource.data.server_synced_at is timestamp
+        && request.resource.data.keys().hasOnly([
+          'bed_task_log_key',
+          'bed_task_key',
+          'bed_key',
+          'bed_source_key',
+          'source_pk_psbeds',
+          'bed_no',
+          'branch_key',
+          'branch_name',
+          'building_key',
+          'building_name',
+          'floor_key',
+          'floor_name',
+          'nurse_station_key',
+          'nurse_station_name',
+          'room_key',
+          'room_class_key',
+          'room_class',
+          'source_bed_status_key',
+          'source_bed_status',
+          'task_key',
+          'task_code',
+          'task_title',
+          'task_type',
+          'event_type',
+          'status_from',
+          'status_to',
+          'current_task_stage_key',
+          'current_stage_label',
+          'current_stage_color_hex',
+          'task_stage_key',
+          'stage_label',
+          'stage_color_hex',
+          'task_stage_response_key',
+          'response_label',
+          'response_description',
+          'bed_status_at_request',
+          'bed_class',
+          'bed_treatment_key',
+          'bed_treatment_name',
+          'bed_source_option_key',
+          'bed_source_option_name',
+          'remarks',
+          'requester_user_key',
+          'requester_fullname',
+          'actor_user_key',
+          'actor_fullname',
+          'firebase_collection',
+          'mysql_created_at',
+          'created_at',
+          'server_synced_at'
+        ]);
+    }
+
+    function canReadBedTaskStageLog() {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && resource.data.bed_task_key is string
+        && canReadBedTaskData(
+          get(/databases/$(database)/documents/project_bed_task/$(resource.data.bed_task_key)).data
+        );
+    }
+
+    function hasMessengerIdentity(resourceData) {
+      return signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && resourceData.project_key is string
+        && resourceData.group_key is string
+        && hasProject(resourceData.project_key)
+        && hasGroup(resourceData.group_key);
+    }
+
+    function canReadMessenger(resourceData) {
+      return hasMessengerIdentity(resourceData)
+        && resourceData.conversation_type is string
+        && (
+          (resourceData.conversation_type == 'group' && resourceData.direct_recipient_user_key == '')
+          || (resourceData.conversation_type == 'direct'
+            && (resourceData.sender_user_key == request.auth.uid
+              || resourceData.direct_recipient_user_key == request.auth.uid))
+        );
+    }
+
+    function hasOnlyMessengerChatFields() {
+      return request.resource.data.keys().hasOnly([
+        'chat_key',
+        'project_key',
+        'group_key',
+        'conversation_type',
+        'direct_recipient_user_key',
+        'reply_to_chat_key',
+        'sender_user_key',
+        'sender_name',
+        'message_text',
+        'message_type',
+        'message_status',
+        'removed_at',
+        'removed_by_user_key',
+        'firebase_collection',
+        'mysql_created_at',
+        'mysql_updated_at',
+        'mysql_sync_status',
+        'mysql_synced_at',
+        'mysql_deleted_at',
+        'created_at',
+        'updated_at'
+      ]);
+    }
+
+    function hasOnlyMessengerAttachmentFields() {
+      return request.resource.data.keys().hasOnly([
+        'attachment_key',
+        'chat_key',
+        'project_key',
+        'group_key',
+        'uploaded_image_url',
+        'image_original_name',
+        'image_mime_type',
+        'image_byte_size',
+        'image_sha256',
+        'sort_order',
+        'attachment_status',
+        'firebase_collection',
+        'mysql_created_at',
+        'mysql_sync_status',
+        'mysql_synced_at',
+        'mysql_updated_at',
+        'mysql_deleted_at',
+        'created_at',
+        'updated_at'
+      ]);
+    }
+
+    function canCreateMessenger(resourceData) {
+      return hasMessengerIdentity(resourceData)
+        && resourceData.conversation_type in ['group', 'direct']
+        && resourceData.direct_recipient_user_key is string
+        && (
+          (resourceData.conversation_type == 'group' && resourceData.direct_recipient_user_key == '')
+          || (resourceData.conversation_type == 'direct'
+            && resourceData.direct_recipient_user_key != ''
+            && resourceData.direct_recipient_user_key != request.auth.uid)
+        )
+        && resourceData.message_status == 'ACTIVE'
+        && resourceData.sender_user_key == request.auth.uid
+        && resourceData.chat_key is string
+        && resourceData.sender_name is string
+        && resourceData.message_text is string
+        && resourceData.message_type in ['text', 'image', 'mixed']
+        && (resourceData.message_text != '' || resourceData.message_type == 'image')
+        && resourceData.reply_to_chat_key is string
+        && (resourceData.reply_to_chat_key == ''
+          || (
+            get(/databases/$(database)/documents/project_messenger_chat/$(resourceData.reply_to_chat_key)).data.project_key == resourceData.project_key
+            && get(/databases/$(database)/documents/project_messenger_chat/$(resourceData.reply_to_chat_key)).data.group_key == resourceData.group_key
+            && canReadMessenger(get(/databases/$(database)/documents/project_messenger_chat/$(resourceData.reply_to_chat_key)).data)
+          ))
+        && resourceData.firebase_collection == 'project_messenger_chat'
+        && resourceData.mysql_sync_status == 'PENDING'
+        && resourceData.mysql_created_at is string
+        && resourceData.mysql_updated_at is string
+        && resourceData.mysql_synced_at == null
+        && resourceData.mysql_deleted_at == null
+        && resourceData.removed_at == null
+        && resourceData.removed_by_user_key == ''
+        && resourceData.created_at is string
+        && resourceData.updated_at is string;
+    }
+
+    function canEditMessenger(resourceData) {
+      return canReadMessenger(resourceData)
+        && resourceData.sender_user_key == request.auth.uid
+        && resourceData.message_status == 'ACTIVE'
+        && request.resource.data.keys().hasOnly([
+          'chat_key', 'project_key', 'group_key', 'conversation_type',
+          'direct_recipient_user_key', 'reply_to_chat_key', 'sender_user_key',
+          'sender_name', 'message_text', 'message_type', 'message_status',
+          'removed_at', 'removed_by_user_key', 'firebase_collection',
+          'mysql_created_at', 'mysql_updated_at', 'mysql_sync_status',
+          'mysql_synced_at', 'mysql_deleted_at', 'created_at', 'updated_at'
+        ])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'message_text', 'message_type', 'mysql_updated_at',
+          'mysql_sync_status', 'updated_at'
+        ])
+        && request.resource.data.message_text is string
+        && request.resource.data.message_text != ''
+        && request.resource.data.message_type in ['text', 'image', 'mixed']
+        && request.resource.data.message_status == 'ACTIVE'
+        && request.resource.data.mysql_sync_status == 'PENDING'
+        && request.resource.data.mysql_updated_at is string;
+    }
+
+    function canRemoveMessenger(resourceData) {
+      return canReadMessenger(resourceData)
+        && resourceData.sender_user_key == request.auth.uid
+        && resourceData.message_status == 'ACTIVE'
+        && request.resource.data.keys().hasOnly([
+          'chat_key', 'project_key', 'group_key', 'conversation_type',
+          'direct_recipient_user_key', 'reply_to_chat_key', 'sender_user_key',
+          'sender_name', 'message_text', 'message_type', 'message_status',
+          'removed_at', 'removed_by_user_key', 'firebase_collection',
+          'mysql_created_at', 'mysql_updated_at', 'mysql_sync_status',
+          'mysql_synced_at', 'mysql_deleted_at', 'created_at', 'updated_at'
+        ])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'message_text', 'message_status', 'removed_at', 'removed_by_user_key',
+          'mysql_updated_at', 'mysql_deleted_at', 'mysql_sync_status', 'updated_at'
+        ])
+        && request.resource.data.message_text == ''
+        && request.resource.data.message_status == 'REMOVED'
+        && request.resource.data.removed_at is string
+        && request.resource.data.removed_by_user_key == request.auth.uid
+        && request.resource.data.mysql_sync_status == 'PENDING'
+        && request.resource.data.mysql_updated_at is string
+        && request.resource.data.mysql_deleted_at is string;
+    }
+
+    function canUseActiveMessengerMessage(messageData) {
+      return canReadMessenger(messageData)
+        && messageData.message_status == 'ACTIVE';
+    }
+
+    function canReadMessengerAttachment(attachmentData) {
+      return attachmentData.chat_key is string
+        && canReadMessenger(
+          get(/databases/$(database)/documents/project_messenger_chat/$(attachmentData.chat_key)).data
+        );
+    }
+
+    function canCreateMessengerAttachment(attachmentData) {
+      let messageData = getAfter(/databases/$(database)/documents/project_messenger_chat/$(attachmentData.chat_key)).data;
+      return canUseActiveMessengerMessage(messageData)
+        && messageData.sender_user_key == request.auth.uid
+        && attachmentData.attachment_status == 'ACTIVE'
+        && attachmentData.firebase_collection == 'project_messenger_chat_attachment'
+        && attachmentData.attachment_key is string
+        && attachmentData.chat_key == messageData.chat_key
+        && attachmentData.project_key == messageData.project_key
+        && attachmentData.group_key == messageData.group_key
+        && attachmentData.uploaded_image_url is string
+        && attachmentData.uploaded_image_url != ''
+        && attachmentData.mysql_sync_status == 'PENDING'
+        && attachmentData.mysql_created_at is string
+        && attachmentData.mysql_updated_at is string
+        && attachmentData.mysql_synced_at == null
+        && attachmentData.mysql_deleted_at == null
+        && attachmentData.created_at is string
+        && attachmentData.updated_at is string;
+    }
+
+    function canRemoveMessengerAttachment(attachmentData) {
+      return canReadMessengerAttachment(attachmentData)
+        && resource.data.attachment_status == 'ACTIVE'
+        && request.resource.data.attachment_status == 'REMOVED'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'attachment_status', 'mysql_updated_at', 'mysql_deleted_at',
+          'mysql_sync_status', 'updated_at'
+        ])
+        && request.resource.data.mysql_sync_status == 'PENDING'
+        && request.resource.data.mysql_updated_at is string
+        && request.resource.data.mysql_deleted_at is string;
+    }
+
+    function hasOnlyMessengerReactionFields() {
+      return request.resource.data.keys().hasOnly([
+        'reaction_key', 'chat_key', 'project_key', 'group_key', 'user_key',
+        'reaction_value', 'reaction_status', 'firebase_collection',
+        'mysql_created_at', 'mysql_updated_at', 'mysql_synced_at',
+        'mysql_deleted_at', 'mysql_sync_status', 'created_at', 'updated_at'
+      ]);
+    }
+
+    function canCreateMessengerReaction(reactionKey, reactionData) {
+      return canReadMessenger(
+          get(/databases/$(database)/documents/project_messenger_chat/$(reactionData.chat_key)).data
+        )
+        && get(/databases/$(database)/documents/project_messenger_chat/$(reactionData.chat_key)).data.message_status == 'ACTIVE'
+        && reactionData.reaction_key == reactionKey
+        && reactionData.user_key == request.auth.uid
+        && reactionData.reaction_status in ['ACTIVE', 'REMOVED']
+        && reactionData.reaction_value is string
+        && reactionData.reaction_value in ['👍', '❤️', '😂', '😮', '😢', '🙏']
+        && reactionData.firebase_collection == 'project_messenger_chat_reaction'
+        && reactionData.mysql_sync_status == 'PENDING'
+        && reactionData.mysql_created_at is string
+        && reactionData.mysql_updated_at is string
+        && (reactionData.mysql_synced_at == null || reactionData.mysql_synced_at is timestamp || reactionData.mysql_synced_at is string)
+        && (reactionData.mysql_deleted_at == null || reactionData.mysql_deleted_at is string)
+        && reactionData.created_at is string
+        && reactionData.updated_at is string;
+    }
+
+    function canUpdateMessengerReaction(reactionKey, reactionData) {
+      return canCreateMessengerReaction(reactionKey, reactionData)
+        && resource.data.user_key == request.auth.uid
+        && resource.data.chat_key == reactionData.chat_key
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'reaction_value', 'reaction_status', 'mysql_updated_at',
+          'mysql_deleted_at', 'mysql_sync_status', 'updated_at'
+        ]);
+    }
+
+    function hasOnlyLoginIndexFields() {
+      return resource.data.keys().hasOnly([
+        'project_key',
+        'username',
+        'auth_email',
+        'status',
+        'locked',
+        'deleted'
+      ])
+        && resource.data.project_key is string
+        && resource.data.username is string
+        && resource.data.auth_email is string
+        && resource.data.status is string
+        && resource.data.locked is bool
+        && resource.data.deleted is bool;
+    }
+
+    match /project_login_index/{loginIndexKey} {
+      // The client knows the exact document id. Listing or writing this collection is never allowed.
+      allow get: if hasOnlyLoginIndexFields()
+        && loginIndexKey == resource.data.project_key + '_' + resource.data.username;
+      allow list, create, update, delete: if false;
+    }
+
+    match /project_user_device/{deviceKey} {
+      allow create, update: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'user_key',
+          'project_key',
+          'group_key',
+          'token',
+          'platform',
+          'active',
+          'updated_at'
+        ])
+        && request.resource.data.user_key == request.auth.uid
+        && request.resource.data.project_key is string
+        && hasProject(request.resource.data.project_key)
+        && request.resource.data.group_key is string
+        && request.resource.data.group_key != ''
+        && request.resource.data.token is string
+        && request.resource.data.token != ''
+        && request.resource.data.platform == 'ANDROID'
+        && request.resource.data.active == true;
+      allow delete: if signedIn()
+        && resource.data.user_key == request.auth.uid;
+      allow get, list: if false;
+    }
+
+    match /project_task/{taskKey} {
+      allow get: if signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && resource.data.task_key == taskKey
+        && resource.data.task_group_keys is list
+        && request.auth.token.groups is list
+        && resource.data.task_group_keys.hasAny(request.auth.token.groups);
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    match /project_bed_task_summary/{summaryKey} {
+      allow get, list: if signedIn()
+        && request.auth.token.user_key == request.auth.uid
+        && hasGroup(resource.data.group_key);
+      allow create, update, delete: if false;
+    }
+
+    match /project_bed_task/{bedTaskKey} {
+      allow get: if !exists(/databases/$(database)/documents/project_bed_task/$(bedTaskKey))
+        || canReadBedTaskData(resource.data);
+      allow list: if canReadBedTaskData(resource.data);
+      allow create: if canCreateBedTask(bedTaskKey);
+      allow delete: if false;
+      allow update: if canAdvanceBedTask();
+    }
+
+    match /project_bed_task_log/{logKey} {
+      allow create: if canCreateBedTaskCreatedLog(logKey) || canCreateBedTaskStageLog(logKey);
+      allow get, list: if canReadBedTaskStageLog();
+      allow update, delete: if false;
+    }
+
+    match /project_user/{userKey} {
+      allow get: if canReadPortalProjectUser(resource.data, userKey);
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    match /project_user_group/{assignmentKey} {
+      allow get, list: if canReadPortalProjectAssignment(resource.data, assignmentKey);
+      allow create, update, delete: if false;
+    }
+
+    match /project_group/{groupKey} {
+      allow get, list: if canReadPortalProjectGroup(resource.data, groupKey, 'project_group');
+      allow create, update, delete: if false;
+    }
+
+    match /project_position/{positionKey} {
+      allow get, list: if canReadPortalProjectPosition(resource.data, positionKey);
+      allow create, update, delete: if false;
+    }
+
+    match /project_bed_floor/{floorGroupKey} {
+      // This Firebase project is tenant-bound by the mobile configuration. Floor projections
+      // are read-only and available to authenticated users of that tenant.
+      allow get, list: if signedIn()
+        && request.auth.token.user_key == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /project_building_floor/{buildingFloorKey} {
+      // Building-floor ordering is maintained by the Administrator and read by mobile clients.
+      allow get, list: if signedIn()
+        && request.auth.token.user_key == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /project_messenger_chat/{chatKey} {
+      allow read: if canReadMessenger(resource.data);
+      allow create: if signedIn()
+        && hasOnlyMessengerChatFields()
+        && request.resource.data.chat_key == chatKey
+        && canCreateMessenger(request.resource.data);
+      allow update: if canEditMessenger(resource.data) || canRemoveMessenger(resource.data);
+      allow delete: if false;
+    }
+
+    match /project_messenger_chat_attachment/{attachmentKey} {
+      allow read: if canReadMessengerAttachment(resource.data);
+      allow create: if signedIn()
+        && hasOnlyMessengerAttachmentFields()
+        && request.resource.data.attachment_key == attachmentKey
+        && canCreateMessengerAttachment(request.resource.data);
+      allow update: if canRemoveMessengerAttachment(resource.data);
+      allow delete: if false;
+    }
+
+    match /project_messenger_chat_reaction/{reactionKey} {
+      allow read: if canReadMessenger(
+        get(/databases/$(database)/documents/project_messenger_chat/$(resource.data.chat_key)).data
+      );
+      allow create: if signedIn()
+        && hasOnlyMessengerReactionFields()
+        && canCreateMessengerReaction(reactionKey, request.resource.data);
+      allow update: if signedIn()
+        && hasOnlyMessengerReactionFields()
+        && canUpdateMessengerReaction(reactionKey, request.resource.data);
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "project_messenger_chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "group_key", "order": "ASCENDING" },
+        { "fieldPath": "mysql_created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "project_messenger_chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "project_key", "order": "ASCENDING" },
+        { "fieldPath": "group_key", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "project_messenger_chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "group_key", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "project_messenger_chat_reaction",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "chat_key", "order": "ASCENDING" },
+        { "fieldPath": "user_key", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "project_bed_task",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "tenant_key", "order": "ASCENDING" },
+        { "fieldPath": "project_key", "order": "ASCENDING" },
+        { "fieldPath": "task_group_keys", "arrayConfig": "CONTAINS" }
+      ]
+    },
+    {
+      "collectionGroup": "project_bed_task",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "tenant_key", "order": "ASCENDING" },
+        { "fieldPath": "project_key", "order": "ASCENDING" },
+        { "fieldPath": "bed_key", "order": "ASCENDING" },
+        { "fieldPath": "task_key", "order": "ASCENDING" },
+        { "fieldPath": "task_group_keys", "arrayConfig": "CONTAINS" }
+      ]
+    },
+    {
+      "collectionGroup": "project_bed_task",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "project_key", "order": "ASCENDING" },
+        { "fieldPath": "task_group_keys", "arrayConfig": "CONTAINS" }
+      ]
+    },
+    {
+      "collectionGroup": "project_bed_task",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "project_key", "order": "ASCENDING" },
+        { "fieldPath": "bed_key", "order": "ASCENDING" },
+        { "fieldPath": "task_key", "order": "ASCENDING" },
+        { "fieldPath": "task_group_keys", "arrayConfig": "CONTAINS" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

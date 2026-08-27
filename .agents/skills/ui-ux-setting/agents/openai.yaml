@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI/UX Setting"
+  short_description: "Administrator settings flow, fields, tables, and Firebase sync rules"
+  default_prompt: "Use $ui-ux-setting to review this settings UI or settings persistence workflow."

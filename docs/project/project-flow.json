@@ -1,0 +1,17 @@
+{
+    "project": "rbmsv4",
+    "version": "1.0",
+    "updatedAt": "2026-08-23",
+    "entrypoints": [
+        {
+            "route": "/",
+            "label": "User Portal",
+            "owner": "User Portal"
+        },
+        {
+            "route": "/administrator/",
+            "label": "Administrator",
+            "owner": "Administrator"
+        }
+    ]
+}
