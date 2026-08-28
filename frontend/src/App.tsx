@@ -13026,16 +13026,16 @@ function TraverseView() {
         </div>
       </div>
       <Dialog open={registryForm !== null} onOpenChange={(open) => !open && setRegistryForm(null)}>
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
-          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-14"><DialogTitle>{registryForm?.mode === 'edit' ? 'Edit TRAVERSE collection' : 'Add TRAVERSE collection'}</DialogTitle><DialogDescription className="max-w-prose">Register the exact Firebase collection for TRAVERSE. This form reads and writes MySQL only.</DialogDescription></DialogHeader>
-          {registryForm && <form method="post" onSubmit={(event) => { if (!window.confirm(`${registryForm.mode === 'edit' ? 'Update' : 'Add'} this TRAVERSE registry entry? Restart TRAVERSE afterward.`)) event.preventDefault() }}>
-            <div className="grid gap-4 px-6 py-5">
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] min-h-0 w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="relative shrink-0 border-b bg-popover px-6 py-4 pr-14"><DialogTitle>{registryForm?.mode === 'edit' ? 'Edit TRAVERSE collection' : 'Add TRAVERSE collection'}</DialogTitle><DialogDescription className="max-w-prose">Register the exact Firebase collection for TRAVERSE. This form reads and writes MySQL only.</DialogDescription><DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-3 top-3" aria-label="Close TRAVERSE collection dialog" title="Close"><X /></Button>} /></DialogHeader>
+          {registryForm && <form method="post" className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={(event) => { if (!window.confirm(`${registryForm.mode === 'edit' ? 'Update' : 'Add'} this TRAVERSE registry entry? Restart TRAVERSE afterward.`)) event.preventDefault() }}>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <input type="hidden" name="csrf" value={data.csrf} /><input type="hidden" name="action" value={registryForm.mode === 'edit' ? 'update_traverse_document' : 'create_traverse_document'} />
               {registryForm.mode === 'edit' && <input type="hidden" name="xId" value={String(registryForm.id)} />}
               <div className="grid gap-2"><Label htmlFor="traverse_firebase_collection">Firebase collection</Label><Input id="traverse_firebase_collection" name="firebase_collection" defaultValue={String(registryForm.collection || '')} placeholder="project_group" pattern="[A-Za-z][A-Za-z0-9_]{0,79}" maxLength={80} required /></div>
               <div className="grid gap-2"><Label htmlFor="traverse_status">TRAVERSE status</Label><select id="traverse_status" name="traverse_status" defaultValue={String(registryForm.status || 'ACTIVE')} className="h-9 rounded-md border bg-background px-3 text-sm"><option value="ACTIVE">ACTIVE</option><option value="INACTIVE">INACTIVE</option></select></div>
             </div>
-            <DialogFooter className="m-0 flex w-full flex-wrap items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-3 sm:flex-nowrap"><span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">Restart TRAVERSE to load this registry change.</span><Button type="submit" className="shrink-0"><Save data-icon="inline-start" />{registryForm.mode === 'edit' ? 'Save changes' : 'Add document'}</Button></DialogFooter>
+            <DialogFooter className="m-0 flex w-full shrink-0 flex-wrap items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-3 sm:flex-nowrap"><span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">Restart TRAVERSE to load this registry change.</span><Button type="submit" className="shrink-0"><Save data-icon="inline-start" />{registryForm.mode === 'edit' ? 'Save changes' : 'Add document'}</Button></DialogFooter>
           </form>}
         </DialogContent>
       </Dialog>
