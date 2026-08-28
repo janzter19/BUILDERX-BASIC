@@ -1,5 +1,11 @@
 # TRAVERSE: Firebase-to-MySQL Sync Master
 
+Future AI work on the TRAVERSE UI, registry, queue, or operational workflow
+must use the reusable project skill at
+`.agents/skills/ui-ux-traverse/SKILL.md`. The skill is part of the documented
+TRAVERSE contract and reinforces the Firebase-first, explicit-registry, and
+low-Firebase-read rules below.
+
 ## Implemented scope
 
 This inbound service treats Firestore as the mutation source and MySQL as a read projection. It supports exactly these allowlisted mappings:
@@ -33,9 +39,47 @@ The four Portal contracts are definition/profile projections: groups are not mem
 
 ## Data flow and recovery
 
-Each allowlisted collection has its own low-latency `PENDING` listener and its own recurring paginated `PENDING` scanner. Existing pending documents are scanned at startup; there is no baseline skip. Listener and scanner failures are isolated by collection. Discovery validates the document, preserves Firestore `updateTime` as `seconds:nanoseconds` with all nine nanosecond digits, fingerprints the lossless payload representation, and inserts a revision-deduplicated queue row.
+Each allowlisted collection has its own low-latency `PENDING` listener. The listener's initial snapshot is the normal startup backlog discovery; there is no recurring full-collection scanner. If a listener cannot be created, only that failed collection receives a one-time startup recovery scan. The listener is restricted to `mysql_sync_status == PENDING`, so it does not attach a whole-collection snapshot or perform metadata-healing writes. A manual reload/restart is required after changing the active collection registry, and a recovery scan is an explicit operator action. Listener and startup-scan failures are isolated by collection. Discovery validates the document, preserves Firestore `updateTime` as `seconds:nanoseconds` with all nine nanosecond digits, fingerprints the lossless payload representation, and inserts a revision-deduplicated queue row.
 
-Workers poll independently from the 30-second default full scan interval. Global concurrency is bounded by `FIREBASE_MYSQL_SYNC_WORKER_CONCURRENCY`; only one revision per collection/table is active at a time. A long repair or poison row therefore does not stop ingestion or processing for another table. Leases recover abandoned claims after process failure.
+The active collection registry is loaded from MySQL once per process start. An
+empty registry means no Firebase listeners are attached; TRAVERSE never
+auto-enables every compiled mapping. This is the read-cost guardrail: there is
+no 30-second Firebase rescan or polling loop. Firebase reads still occur for
+the initial filtered PENDING snapshot at listener startup/reconnect and for
+the exact current-document read used to fence each claimed queue revision.
+Recovery uses a bounded paged scan only for a failed listener or an explicit
+operator recovery action. The Administrator TRAVERSE report and Refresh action
+are MySQL-only. `firebase_reads_observed` helps diagnose delivery volume but is
+not a billing meter; Firebase Usage/Billing is authoritative.
+
+Recorded issue/fix: the old empty-registry fallback inserted every compiled
+collection, and the old control-table DDL expected an obsolete
+`firebase_document_id` registry field. Both could cause unintended listener
+coverage or hide the real collection-only registry rows. The current DDL is
+`xId`, `firebase_collection`, and `traverse_status` with a unique collection
+key, and startup uses only explicitly active rows. Focused regression tests
+protect these rules.
+
+TRAVERSE emits `firebase_reads_observed` telemetry per listener delivery or recovery-scan page and includes the cumulative `firebase_reads_observed` value in the `started` and `stopped` events. This is the service's observed document-delivery count, useful for comparing scan strategies; Firebase Usage/Billing remains authoritative for billed reads, especially after reconnects or SDK retries.
+
+### Viewing current pending work
+
+TRAVERSE exposes the read-only `loadPendingQueue(pool, options)` helper in
+`scripts/firebase-mysql-sync/queue-store.mjs`. It returns only queue rows in
+`QUEUED`, `CLAIMED`, `RETRY_WAIT`, or `ACK_PENDING`; terminal rows (`ACKED`,
+`SUPERSEDED`, and `DEAD_LETTER`) are excluded. The collection filter and
+bounded limit are safe, so this helper does not scan Firestore or return
+document payloads.
+
+Administrators can view the same current queue at Administrator → Runtime
+Health → TRAVERSE Pending Queue. That panel reads only
+`firebase_mysql_sync_queue` in MySQL and shows the collection, Firebase
+document ID, queue state, attempt count, next attempt time, and safe error
+code. Its Refresh button is an explicit page refresh; it does not trigger a
+Firebase scan. A zero count means there is no non-terminal queue work at the
+time of the MySQL read.
+
+Workers poll the MySQL queue independently from Firebase listeners. Global concurrency is bounded by `FIREBASE_MYSQL_SYNC_WORKER_CONCURRENCY`; only one revision per collection/table is active at a time. A long repair or poison row therefore does not stop ingestion or processing for another table. Leases recover abandoned claims after process failure.
 
 The durable MySQL control tables are:
 
@@ -92,9 +136,9 @@ A same-minute backup may be reused only after two fresh comparisons: the current
 
 ## Security and deployment topology
 
-Dynamic SQL identifiers come only from the nine compiled mappings or the validated persisted field registry. Values are parameterized. Telemetry contains collection/document identifiers, state, and normalized error codes, never full document payloads or secrets.
+Dynamic SQL identifiers come only from compiled mappings or the validated persisted field registry. Values are parameterized. Telemetry contains collection/document identifiers, state, and normalized error codes, never full document payloads or secrets.
 
-Use a dedicated service account and a dedicated MySQL user. The Firebase identity needs read access to the nine collections plus transaction permission to update only synchronization metadata on those documents. The MySQL identity needs session/transaction access, SELECT/INSERT/UPDATE on the six control tables and nine target tables, CREATE/ALTER for approved target repairs and backup tables, `information_schema` visibility, `CHECKSUM TABLE`, and `GET_LOCK`/`RELEASE_LOCK`. It must not receive DROP, TRUNCATE, unrelated-schema, or administrative privileges.
+Use a dedicated service account and a dedicated MySQL user. The Firebase identity needs read access to the explicitly active configured collections plus transaction permission to update only synchronization metadata on those documents. The MySQL identity needs session/transaction access, SELECT/INSERT/UPDATE on the six control tables and configured target tables, CREATE/ALTER for approved target repairs and backup tables, `information_schema` visibility, `CHECKSUM TABLE`, and `GET_LOCK`/`RELEASE_LOCK`. It must not receive DROP, TRUNCATE, unrelated-schema, or administrative privileges.
 
 ### Verified current host state (2026-08-26)
 
@@ -149,3 +193,13 @@ performs the MySQL projection plus exact read-back. Delete actions are
 soft-deletes in Firebase and retain the lifecycle values for projection.
 Legacy MySQL helper implementations remain in source temporarily for
 controlled cleanup, but are not the active Task Builder action path.
+# TRAVERSE operational reporting
+
+The Administrator route `Settings -> Traverse` is a MySQL-only operational view. It reads `project_traverse_runtime`, `project_traverse_log`, and the existing `firebase_mysql_sync_queue`; it does not query Firestore and its Refresh action does not restart or rescan TRAVERSE.
+
+TRAVERSE creates and maintains two control tables at startup:
+
+- `project_traverse_runtime` stores the current service state, PID, heartbeat, observed Firebase read counter, queue counters, and the latest safe error code.
+- `project_traverse_log` is append-only operational history for service start/stop, listener setup, Firebase read observations, and worker failures. Error details are bounded and sanitized; credentials, tokens, passwords, and payloads are excluded.
+
+The report intentionally distinguishes observed Firebase reads from provider billing totals. The Firebase usage console remains authoritative for billing. Queue state remains in `firebase_mysql_sync_queue`; the report does not copy or recreate queue rows.

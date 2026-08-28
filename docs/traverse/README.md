@@ -1,5 +1,9 @@
 # TRAVERSE
 
+The reusable project skill for future TRAVERSE UI and workflow changes is
+`.agents/skills/ui-ux-traverse/SKILL.md`. AI agents must read and follow it
+before changing the TRAVERSE page, registry, pending queue, or sync controls.
+
 TRAVERSE is the server-side Firebase-to-MySQL projection service for RBMSv4.
 Firestore is authoritative for application mutations. MySQL is a read
 projection. TRAVERSE never receives browser credentials and never writes
@@ -74,6 +78,32 @@ The durable control tables are `firebase_mysql_sync_queue`,
 `firebase_mysql_sync_field_registry`,
 `firebase_mysql_sync_collection_registry`, and
 `firebase_mysql_sync_migration_history`.
+
+## Firebase read-cost guardrails
+
+TRAVERSE reads the active collection registry from MySQL once at startup. It
+then attaches one Firestore listener per explicitly active collection, filtered
+to `mysql_sync_status = PENDING`. There is no automatic full Firebase rescan
+and no 30-second Firebase polling loop. An empty registry monitors zero
+collections; TRAVERSE does not auto-enable every compiled collection.
+
+The normal read costs are the initial PENDING snapshot for each listener at
+startup or reconnect, plus one exact document read for each claimed queue
+revision used for revision fencing before projection. A one-time paged recovery
+scan is used only for a listener setup failure or an explicit recovery action.
+The Administrator report and its Refresh button read MySQL only and do not
+consume Firebase reads. `firebase_reads_observed` is an operational delivery
+counter, not a billing total; Firebase Usage/Billing remains authoritative.
+
+### Recorded issue and fix: unnecessary reads
+
+The previous startup path could seed every compiled collection when
+`project_traverse_document` was empty. That defeated the collection registry
+and could create unnecessary listener snapshots. The registry DDL also carried
+an obsolete `firebase_document_id` column even though the approved registry is
+collection-only. TRAVERSE now preserves only explicitly active registry rows,
+uses `xId`, `firebase_collection`, and `traverse_status`, and rejects no-row
+auto-seeding. Focused tests cover both protections.
 
 ## Schema rule
 
