@@ -2,8 +2,9 @@
 
 ## Image Uploaders
 
-- Every image uploader must read `media_uploader_target_url` and `media_image_viewer_url` from `builder_system_setting`.
-- Local development seeds `media_uploader_target_url` as `http://localhost/rbms.com/upload-image.php` and `media_image_viewer_url` as the base PHP viewer URL `http://localhost/rbms.com/view.php`.
+- Every image uploader must read `media_uploader_target_url` and `media_image_viewer_url` from project-scoped `project_setting_media` rows.
+- Local development must configure `media_uploader_target_url` and `media_image_viewer_url` in `project_setting_media`; runtime code must not seed or fall back to a hardcoded host, LAN address, `_Media` URL, or viewer URL.
+- Media endpoint settings must not be saved with `localhost`, `127.0.0.1`, or another loopback host; use the configured project media host so persisted image URLs are usable outside the local browser.
 - If `media_uploader_target_url` is empty, disable upload controls and show a setup-required message.
 - When a user selects, drops, or pastes an image, inspect its natural dimensions in the browser before upload.
 - If the image width and height are both `1024px` or smaller, upload the original file unchanged.
@@ -20,7 +21,7 @@
 - The PHP viewer must return actual image bytes for a single requested size token so it can be used directly as an `img` source. Multi-size requests may render an HTML gallery.
 - If `media_image_viewer_url` is empty, display the uploaded image URL directly.
 - The image viewer `d` parameter accepts size tokens separated by commas, dots, pipes, or spaces. Standard preview targets are `XS = 96 x 96px`, `S = 160 x 160px`, `M = 320 x 320px`, `L = 640 x 640px`, and `XL = 1024 x 1024px`.
-- When multiple viewer tokens are supplied, for example `d=XS,S,M,L.XL`, render each requested preview size separately without changing the original uploaded image. A single-size thumbnail should look like `http://localhost/rbms.com/view.php?d=XS&url=http%3A%2F%2Flocalhost%2Frbms.com%2F_Media%2Fproject_group%2F2026%2F08%2F24%2F20260824164121-2ade1610.png`.
+- When multiple viewer tokens are supplied, for example `d=XS,S,M,L.XL`, render each requested preview size separately without changing the original uploaded image. A single-size thumbnail must be produced from the configured viewer URL with `d=XS` and the URL-encoded uploaded image source in the `url` parameter.
 
 ## Local Resize Examples
 

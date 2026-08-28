@@ -13,6 +13,7 @@
 - Use [ui-ux-modal](../../.agents/skills/ui-ux-modal/SKILL.md) for accessible shadcn/ui dialogs and modals, including responsive sizing, scrollable bodies, sticky actions, validation states, and form modal footers without Cancel buttons.
 - Use [ui-ux-tabs](../../.agents/skills/ui-ux-tabs/SKILL.md) for shadcn/ui tab menus and panels, including fit-content triggers, icons, sticky card headers, and independently scrollable content.
 - Use [ui-ux-form](../../.agents/skills/ui-ux-form/SKILL.md) for all form layout and submission behavior; every valid form submit must open a confirmation modal before continuing, complete both upsert paths, rehydrate from saved server values, show a success toast after a committed result, and show an informational failure modal with optional `View more` technical details when submission fails.
+- Use [ui-ux-setting](../../.agents/skills/ui-ux-setting/SKILL.md) for Administrator settings tabs, field ownership, settings tables, Android and Media settings, and settings-to-Firebase sync.
 - Use [brainstorming](../../.agents/skills/brainstorming/SKILL.md) when a request needs product, UI, database, or phase options before implementation; compare practical alternatives, tradeoffs, risks, and one recommended next action without changing source or data.
 
 ## Main page shell

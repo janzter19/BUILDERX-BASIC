@@ -1,5 +1,48 @@
 # Development UI/UX Rules
 
+## Firebase document identity
+
+- For every Firebase-backed record, let Firestore allocate the real document ID with `doc(collection(...))`; do not generate a UUID, hash, database sequence, or reconstructed business key for the document path.
+- The record's corresponding `*_key` field must equal that Firestore document ID exactly. When the record is later copied to MySQL, the MySQL primary/key value must preserve the same Firestore document ID.
+- Insert, edit, and soft-delete Firebase writes must keep the required `mysql_*` lifecycle fields and set `mysql_sync_status = PENDING`; synchronization is a later service concern and must not replace the authoritative Firestore identity.
+
+## Project-user timestamp contract
+
+For `project_user`, do not emit plain `created_at` or `updated_at`. Firebase lifecycle
+dates use native Firestore `Timestamp` values created by the server with
+`FieldValue.serverTimestamp()`:
+
+```text
+firebase_created_at: Timestamp(2026-08-26T14:13:47.040Z)
+firebase_updated_at: Timestamp(2026-08-26T14:13:47.040Z)
+firebase_deleted_at: null
+```
+
+The same instant in JSON/debug output is `"2026-08-26T14:13:47.040Z"`; the Firestore
+console may display it as `26 August 2026 at 22:13:47 UTC+8`.
+
+The sync-only MySQL lifecycle fields remain strings in Firebase and use MySQL
+`DATETIME(6)` format:
+
+```text
+mysql_created_at: "2026-08-26 14:13:47.040000"
+mysql_updated_at: "2026-08-26 14:13:47.040000"
+mysql_deleted_at: null
+mysql_synced_at: null
+mysql_sync_status: "PENDING"
+```
+
+After exact MySQL projection/read-back, only the sync service changes the final metadata:
+
+```text
+mysql_synced_at: "2026-08-26 14:13:48.123456"
+mysql_sync_status: "SYNCED"
+```
+
+On edit, `firebase_updated_at` is always a new server timestamp. On soft-delete,
+`firebase_deleted_at` and `mysql_deleted_at` receive their corresponding server/SQL
+timestamps. A non-deleted record keeps both deleted fields as `null`.
+
 ## AI runtime boundary
 
 - Phase Builder and Phase Manager must use the shared BuilderX AI Bridge with the active Codex AI Chat as their only approved AI transport.
