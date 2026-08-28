@@ -258,20 +258,20 @@ setting_values[<setting_key>]
 Server flow:
 
 1. Validate CSRF and administrator authorization before handling the action.
-2. Seed Android and Media project settings so every active project has rows.
-3. Load active global settings from `builder_system_setting`, excluding `android` and `media`.
-4. Load active Android settings from `project_setting` for the active `project_key`.
-5. Load active Media settings from `project_setting_media` for the active `project_key`.
-6. Ignore unknown, secret, and `ui_` settings.
-7. Validate the new value by setting name.
-8. Update the owning table with parameterized ADODB SQL.
-9. Audit every changed setting using the owning table name.
-10. Build a public settings payload and sync to Firebase.
-11. Redirect back to the same settings tab.
+2. Read active setting metadata and current values from `builder_system_setting`, `project_setting`, and `project_setting_media`; this read does not seed or update MySQL.
+3. Load active global settings, Android project settings, and media project settings within their defined scope.
+4. Ignore unknown, secret, and `ui_` settings.
+5. Validate each submitted value by setting name.
+6. Apply validated changes to an in-memory Firebase payload.
+7. Write `project_setting/{project_key}` through the Firebase Admin SDK and verify the document read-back.
+8. Leave MySQL unchanged in the web request. TRAVERSE consumes the acknowledged Firebase document and projects it to the MySQL tables.
+9. Redirect back to the same settings tab with Firebase/PENDING status.
 
-The settings form uses one explicit confirmation only: `Save & Sync` confirms the database update and Firebase sync together. The form opts out of the global generic submit confirmation so the request is submitted once and the shell loading indicator clears on the redirect.
+The settings form uses one explicit confirmation only: `Save & Sync` confirms the Firebase write. The form opts out of the global generic submit confirmation so the request is submitted once and the shell loading indicator clears on the redirect.
 
-The current save path updates each changed row directly; future work that broadens the settings write path should wrap the related writes in an ADODB transaction and add direct read-back before commit.
+The web save path must not update the settings tables directly. MySQL becomes current after TRAVERSE projection and exact read-back; a failed Firebase acknowledgement must not be reported as saved.
+
+Current compatibility gate: the existing Firebase writer stores one aggregate document at `project_setting/{project_key}`, while the MySQL settings tables are row-oriented (`builder_system_setting`, `project_setting`, and `project_setting_media`). TRAVERSE must receive an explicitly reviewed unpacking contract before settings can be declared fully projected back to MySQL. Do not add `project_setting` to the generic TRAVERSE registry as a row-level mapping without that contract; doing so would create incorrect columns or lose setting rows.
 
 ## Firebase Sync
 
@@ -292,11 +292,14 @@ The synced document includes:
 - `document_key`
 - `firebase_collection`
 - `server_synced_at`
+- Firebase read-back is required before the request is reported successful.
 - `project`
 - `system`
 - `project_settings`
 - `project_media`
 - `summary`
+
+The Firebase write performs a document read-back before returning success. The current web path does not perform a direct MySQL settings mutation.
 
 `system`, `project_settings`, and `project_media` each include:
 

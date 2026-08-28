@@ -15,16 +15,29 @@ This inbound service treats Firestore as the mutation source and MySQL as a read
 | `project_position` | `project_position` | `position_key` |
 | `project_user_group` | `project_user_group` | `assignment_key` |
 | `project_user` | `project_user` | `user_key` (Firebase Auth UID) |
+| `project_bed_source` | `project_bed_source` | `bed_source_key` |
 
 The Firestore document ID must equal the matching key field and fit the `VARCHAR(255)` identity contract. A mismatch or longer identity is dead-lettered before MySQL projection. `project_bed_task_summary`, MySQL-first projection collections, PHP/browser MySQL writes, general MySQL-to-Firebase synchronization, BuilderX, and phase-management code are excluded. The only Firebase write made by this service is the conditional synchronization acknowledgement described below.
+
+`project_bed_source/{bed_source_key}` is Firebase-first. Bed Source create,
+edit, status/soft-delete/restore, and reorder write Firestore first. New
+records use Firestore's generated document ID and copy it to `bed_source_key`;
+no UUID or MySQL-generated key is accepted. The document contains the source
+business fields, `firebase_collection`, `firebase_created_at`,
+`firebase_updated_at`, `firebase_deleted_at`, and the five `mysql_*` lifecycle
+fields. Every mutation starts with `mysql_sync_status = PENDING`; TRAVERSE
+changes it to `SYNCED` only after exact MySQL read-back. Browser Bed Source
+actions no longer write the MySQL business table directly.
 
 The four Portal contracts are definition/profile projections: groups are not members arrays, positions require an explicit `group_key`, and `project_user_group` is one assignment per document. `project_user` is profile-only and excludes relationship fields and all password/hash fields; Firebase Auth UID is authoritative and must equal both the Firestore document ID and `user_key`. The service never creates or changes Auth credentials, passwords, or claims. Disabled/deleted users and identity mismatches are terminal dead letters. The legacy `user_password_hash` column is nullable for projection compatibility but remains outside the Firebase payload; obsolete audit-owner columns are not part of the active `project_user` contract. Existing deployments whose `project_user_group` table is the legacy aggregate group-definition schema must remediate that schema/writer contract before assignment rows can project; the service fails closed and does not invent credentials or remap assignments.
 
 ## Data flow and recovery
 
-Each allowlisted collection has its own low-latency `PENDING` listener and its own recurring paginated `PENDING` scanner. Existing pending documents are scanned at startup; there is no baseline skip. Listener and scanner failures are isolated by collection. Discovery validates the document, preserves Firestore `updateTime` as `seconds:nanoseconds` with all nine nanosecond digits, fingerprints the lossless payload representation, and inserts a revision-deduplicated queue row.
+Each allowlisted collection has its own low-latency `PENDING` listener. The listener's initial snapshot is the normal startup backlog discovery; there is no recurring full-collection scanner. If a listener cannot be created, only that failed collection receives a one-time startup recovery scan. The listener is restricted to `mysql_sync_status == PENDING`, so it does not attach a whole-collection snapshot or perform metadata-healing writes. A manual reload/restart is required after changing the active collection registry, and a recovery scan is an explicit operator action. Listener and startup-scan failures are isolated by collection. Discovery validates the document, preserves Firestore `updateTime` as `seconds:nanoseconds` with all nine nanosecond digits, fingerprints the lossless payload representation, and inserts a revision-deduplicated queue row.
 
-Workers poll independently from the 30-second default full scan interval. Global concurrency is bounded by `FIREBASE_MYSQL_SYNC_WORKER_CONCURRENCY`; only one revision per collection/table is active at a time. A long repair or poison row therefore does not stop ingestion or processing for another table. Leases recover abandoned claims after process failure.
+TRAVERSE emits `firebase_reads_observed` telemetry per listener delivery or recovery-scan page and includes the cumulative `firebase_reads_observed` value in the `started` and `stopped` events. This is the service's observed document-delivery count, useful for comparing scan strategies; Firebase Usage/Billing remains authoritative for billed reads, especially after reconnects or SDK retries.
+
+Workers poll the MySQL queue independently from Firebase listeners. Global concurrency is bounded by `FIREBASE_MYSQL_SYNC_WORKER_CONCURRENCY`; only one revision per collection/table is active at a time. A long repair or poison row therefore does not stop ingestion or processing for another table. Leases recover abandoned claims after process failure.
 
 The durable MySQL control tables are:
 
@@ -119,3 +132,22 @@ those fields to the legacy table would leave existing required group-definition
 columns and uniqueness rules in conflict, so the assignment mapping remains
 blocked until a separately approved backup/rename-and-cutover migration is
 prepared. No legacy row is transformed or discarded by bootstrap.
+
+## Task Builder Firebase-first contract
+
+Administrator Task Builder mutations use these allowlisted mappings:
+
+| Firestore collection | MySQL projection | authoritative key |
+| --- | --- | --- |
+| `project_task` | `project_task` | `task_key` |
+| `project_task_stage` | `project_task_stage` | `task_stage_key` |
+| `project_task_stage_response` | `project_task_stage_response` | `task_stage_response_key` |
+
+Task, stage, response, connection, canvas, and ordering actions write the
+corresponding Firebase document first, use the real Firestore document ID as
+the `*_key`, set `mysql_sync_status = PENDING`, and return before the legacy
+MySQL CRUD branch can execute. TRAVERSE discovers the pending document and
+performs the MySQL projection plus exact read-back. Delete actions are
+soft-deletes in Firebase and retain the lifecycle values for projection.
+Legacy MySQL helper implementations remain in source temporarily for
+controlled cleanup, but are not the active Task Builder action path.

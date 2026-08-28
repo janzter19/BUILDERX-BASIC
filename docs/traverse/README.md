@@ -111,6 +111,23 @@ MySQL projection, `SYNCED` metadata, exact field read-back, retry/dead-letter
 handling, and tenant/project isolation. A service being `active` alone is not
 proof that a document synchronized.
 
+## Task Builder healing
+
+When an Administrator opens a selected `project_task`, Portal checks Firebase
+for an initial stage whose `task_key` matches the task and whose
+`stage_label` is `NEW`. If none exists, Portal creates exactly one
+`project_task_stage` document with a Firestore-generated document ID copied to
+`task_stage_key`. If a matching `NEW` document is soft-deleted, it is restored
+with `stage_status = ACTIVE`. Both paths set Firebase server timestamps and
+`mysql_sync_status = PENDING`; TRAVERSE then discovers the document and creates
+or projects `project_task_stage` in MySQL.
+
+The operation is idempotent: reopening the task finds the existing `NEW`
+document and does not create another one. This healing belongs to Portal's
+Firebase writer and does not modify the standalone TRAVERSE service. Live
+proof requires Firebase read-back, TRAVERSE acknowledgement, and exact MySQL
+read-back showing the same `task_stage_key`.
+
 ## Backup and rollback
 
 TRAVERSE records backup metadata in
@@ -145,7 +162,34 @@ loads the active rows and attaches listeners/scanners only to those
 collections. It then monitors the documents in those collections whose
 `mysql_sync_status` is `PENDING` and projects them to MySQL.
 
+Enable Bed Source with one collection configuration row, then restart TRAVERSE:
+
+```sql
+INSERT INTO project_traverse_document
+  (firebase_collection, traverse_status)
+VALUES ('project_bed_source', 'ACTIVE');
+```
+
+The contract is compiled in `scripts/firebase-mysql-sync/registry.mjs` and
+maps each Firestore document ID to `bed_source_key`. This table stores
+collection configuration only; it never stores Firebase document IDs.
+
 There is no automatic discovery or duplicate registration of Firebase
 documents. Collection names must have a compiled schema contract in
 `scripts/firebase-mysql-sync/registry.mjs`; an unknown name is rejected at
 startup so TRAVERSE cannot create an unsafe table from an unvalidated shape.
+
+## Troubleshooting reference: projection succeeds but the UI is empty
+
+If TRAVERSE reports `projection_processed` and `acknowledgement=acknowledged`
+but an Administrator list is empty, inspect the consumer query before
+restarting TRAVERSE or changing live data. Compare the query's selected and
+ordered columns with `information_schema.COLUMNS` for the repaired table.
+
+For Firebase-backed tables, do not assume legacy unprefixed timestamps or
+`x_id` still exist. Use the contract fields (`firebase_created_at` and
+`firebase_updated_at`) and the authoritative Firebase key for stable ordering.
+The UI may receive formatted aliases for compatibility, but those aliases
+must not be persisted as extra legacy columns. Record the root cause, exact
+query fix, lifecycle evidence, and verification commands in the project's
+issue documentation.

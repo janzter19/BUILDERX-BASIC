@@ -14,7 +14,9 @@ New task documents retain the existing MySQL metadata shape (`mysql_created_at`,
 
 Task reads require the mandatory `tenant_key` and `project_key` fields; legacy documents missing either field are intentionally unreadable.
 
-The Firebase listener and reload hydration both read task documents and their logs, so a Firebase-only task remains visible after refresh. Messenger synchronization and the managed-bed projection remain separate concerns.
+The Firebase listener and reload hydration both read task documents and their logs, so a Firebase-only task remains visible after the user performs the normal page refresh/load. The User Portal does not refresh Bed Lookup merely because the browser receives focus or changes visibility; refresh is explicit or caused by a task-change notification. Messenger synchronization and the managed-bed projection remain separate concerns.
+
+Administrator Bed Lookup has a separate boundary. Its per-bed `resync_project_bed` action reads the external `RBMS_BedMasterlist`, updates the MySQL `project_bed` projection in a transaction, verifies the MySQL read-back, and returns. It does not rebuild analytics or write bed, task, or analytics documents to Firebase. The external bed-masterlist refresh is intentionally preserved; this boundary must not be confused with TRAVERSE or the Firebase-first application writes.
 
 ## Focused verification
 
