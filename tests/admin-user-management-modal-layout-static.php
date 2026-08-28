@@ -21,7 +21,6 @@ $userCrudSource = substr($frontendSource, $userCrudStart, $userCrudEnd - $userCr
 $requiredMarkers = [
     'open={userDialogMode !== null}',
     'open={Boolean(assignmentUser)}',
-    'open={Boolean(resetUser)}',
     'Use modal actions for project user records',
     'action={',
     "headers={['User', 'Status', 'Assignments', 'Actions']}",
@@ -30,6 +29,10 @@ $requiredMarkers = [
     'xl:col-span-4',
     'Project Assignment',
     'Reset Password',
+    "title: 'Confirm password reset'",
+    'data-skip-submit-confirmation="true"',
+    'name="action" value="reset_user_password"',
+    'Reset ${user.user_login} to the automatic default password and clear failed login attempts?',
     'History',
     'justify-end gap-1.5',
     'Manage Access',
@@ -38,13 +41,11 @@ $requiredMarkers = [
     '<Label htmlFor="user_chat_name">Chat Name</Label>',
     'name="user_chat_name"',
     'user_mobile_number',
-    'password_confirm',
+    'Manage group and position assignments separately through Manage Access.',
     'normalizeProjectMobileNumberInput',
     'setUserFormMobileNumber',
     'placeholder="+639171234567"',
     'pattern="\\+[1-9][0-9]{7,14}"',
-    'visibleUserFormPositions',
-    'Select group first',
     'bg-blue-500/10',
     'bg-emerald-500/10',
     'bg-amber-500/10',
@@ -79,6 +80,13 @@ $requiredMarkers = [
     'grid gap-4 sm:grid-cols-2 xl:grid-cols-3',
     '<Separator />',
     'encType="multipart/form-data"',
+    'async function refreshUserPayload()',
+    "url.searchParams.set('format', 'json')",
+    "headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }",
+    'async function submitModalForm(event: React.FormEvent<HTMLFormElement>)',
+    'onSubmit={(event) => void submitModalForm(event)}',
+    "setModalSaveState('saving')",
+    'Saving and reading back the user...',
 ];
 
 foreach ([
@@ -95,6 +103,7 @@ foreach ([
 
 foreach ([
     'User avatar source must be a full uploaded image URL.',
+    'bx_project_media_uploaded_url($projectKey, $userAvatarUrl)',
     'UPDATE project_user SET user_avatar_path = ?',
     'User avatar read-back verification failed.',
     'Administrator saved user avatar URL.',
@@ -108,10 +117,12 @@ foreach ([
 
 foreach ([
     'function UserAvatarUploadField',
+    'function imageFileFromClipboardData',
+    'imageFileFromClipboardData(event.clipboardData, \'user-avatar\')',
+    '<div className="grid gap-3" onPaste={handlePaste}>',
     "body.append('source_table', 'project_user')",
     "body.append('source_field', 'user_avatar')",
     'Upload Avatar',
-    'Paste Avatar',
     'View Avatar',
     'name="user_avatar_url"',
     'Images larger than 1024px are resized locally before upload.',
@@ -167,8 +178,24 @@ foreach ($requiredMarkers as $marker) {
     }
 }
 
-if (substr_count($userCrudSource, '<Separator />') < 2) {
-    throw new RuntimeException('User form must keep separators after password and before assignment fields.');
+if (str_contains($frontendSource, 'Close form after save') || str_contains($frontendSource, 'closeFormAfterConfirm')) {
+    throw new RuntimeException('Obsolete close-form-after-save checkbox artifact remains.');
+}
+
+if (substr_count($userCrudSource, '<Separator />') < 1) {
+    throw new RuntimeException('User form must keep a separator before assignment fields.');
+}
+
+$userProfileDialogStart = strpos($userCrudSource, 'open={userDialogMode !== null}');
+$assignmentDialogStart = strpos($userCrudSource, '<Dialog open={Boolean(assignmentUser)}', $userProfileDialogStart === false ? 0 : $userProfileDialogStart);
+if ($userProfileDialogStart === false || $assignmentDialogStart === false) {
+    throw new RuntimeException('User profile and assignment dialog boundaries could not be located.');
+}
+$userProfileDialogSource = substr($userCrudSource, $userProfileDialogStart, $assignmentDialogStart - $userProfileDialogStart);
+foreach (['<Label htmlFor="group_keys">', '<Label htmlFor="position_key">', 'name="group_keys[]"', 'name="position_key"'] as $removedAssignmentField) {
+    if (str_contains($userProfileDialogSource, $removedAssignmentField)) {
+        throw new RuntimeException('Group or position field remains in the user profile dialog: ' . $removedAssignmentField);
+    }
 }
 
 $forbiddenMarkers = [
@@ -189,6 +216,8 @@ $forbiddenMarkers = [
     "{user.user_last_login_at || 'Never'}",
     '<Label htmlFor="user_email">Email</Label>',
     '<Label htmlFor="project_keys">Project</Label>',
+    '<Label htmlFor="reset_password">New Password</Label>',
+    'id="reset_password"',
     'AssignmentCheckboxGrid name="project_keys[]"',
     '<DialogClose render={<Button type="button" variant="ghost" />}>Cancel</DialogClose>',
 ];
@@ -203,5 +232,5 @@ echo json_encode([
     'user_crud_forms_modal_only' => true,
     'user_body_table_first' => true,
     'user_access_modal_present' => true,
-    'user_reset_modal_present' => true,
+    'user_reset_confirmation_modal_present' => true,
 ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;

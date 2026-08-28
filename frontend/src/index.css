@@ -5,6 +5,18 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@keyframes builderx-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(170%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
@@ -173,5 +185,11 @@
     min-height: 0;
     overflow-y: auto;
     padding: 1.5rem;
+  }
+
+  @media (hover: hover) {
+    .portal-bed-lookup-card:hover {
+      filter: drop-shadow(0 0 18px rgb(148 163 184 / 28%)) !important;
+    }
   }
 }

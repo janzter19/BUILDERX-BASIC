@@ -30,8 +30,6 @@ $foundationMarkers = [
     'RENAME TABLE bed_master_list TO project_bed',
     "'firebaseDocumentIdFormat' => 'bed_key'",
     "TRIM(bed_key) REGEXP '^[A-Za-z0-9]{20}$'",
-    'RBMS_BedMasterlist',
-    'function bx_resync_bed_master_list',
     'function bx_project_bed_firebase_rows',
     'function bx_project_bed_floor_group_key',
     'function bx_project_bed_floor_documents',
@@ -45,19 +43,11 @@ $foundationMarkers = [
     'function bx_project_bed_lookup_options',
     'function bx_project_bed_lookup_where',
     'function bx_resync_project_bed',
-    'function bx_sync_project_bed_reference_to_firebase',
-    'function bx_sync_project_bed_reference_rows_to_firebase',
     'function bx_bed_master_list_group_counts',
     'function bx_update_project_bed_reference_sort_order',
     "'groupCounts' => bx_bed_master_list_group_counts()",
     "'analyticsRows' =>",
-    "'analytics_rows' => \$analyticsRows",
-    "'floor_rows' => \$floorRows",
-    "'floor_replace_all' => \$replaceFloorRows",
-    "'documents' => bx_project_bed_analytics_documents",
-    "\$summary['floorGroups'] = count(\$floorDocuments)",
     'bx_project_bed_floor_documents(null, $floorKeys',
-    'bx_project_bed_floor_documents($batchKey)',
     "bx_project_bed_analytics_key('GROUP_DOCUMENT'",
     "'row_count' => count(\$groupRows)",
     "'availableRows' =>",
@@ -67,9 +57,6 @@ $foundationMarkers = [
     "'room_key', 'label' => 'Room'",
     "'source_bed_status', 'label' => 'Bed status'",
     'ON DUPLICATE KEY UPDATE',
-    "managed.managed_status = 'INACTIVE'",
-    'Bed master list read-back mismatch after sync.',
-    "bx_audit('SYNC', 'project_bed'",
     "bx_audit('SYNC', 'project_bed_analytics'",
 ];
 foreach ($foundationMarkers as $marker) {
@@ -104,14 +91,9 @@ foreach ([
     }
 }
 
-foreach ([
-    'administrator/index.php' => $administrator,
-    'phases/index.php' => $phases,
-] as $label => $source) {
-    foreach (['resync_bed_master_list', 'bx_resync_bed_master_list', 'Bed list refreshed.'] as $marker) {
-        if (!str_contains($source, $marker)) {
-            throw new RuntimeException($label . ' is missing re-sync marker: ' . $marker);
-        }
+foreach (['resync_bed_master_list', 'bx_resync_bed_master_list', 'Bed list refreshed.'] as $marker) {
+    if (str_contains($administrator, $marker) || str_contains($frontend, $marker)) {
+        throw new RuntimeException('Obsolete Bed Summary refresh marker remains: ' . $marker);
     }
 }
 
@@ -123,21 +105,53 @@ foreach (['resync_project_bed', 'bx_resync_project_bed', 'Bed row refreshed.'] a
 
 foreach ([
     'bx_admin_bed_reference_firebase_step',
+] as $marker) {
+    if (!str_contains($administrator, $marker)) {
+        throw new RuntimeException('Administrator bed reference Firebase marker is missing: ' . $marker);
+    }
+}
+
+$adminResyncStart = strpos($administrator, "if (\$action === 'resync_project_bed')");
+$adminResyncEnd = strpos($administrator, "if (\$action === 'apply_runtime_project_config')", $adminResyncStart === false ? 0 : $adminResyncStart);
+if ($adminResyncStart === false || $adminResyncEnd === false) {
+    throw new RuntimeException('Unable to isolate the Administrator Bed Lookup resync action.');
+}
+$adminResyncSource = substr($administrator, $adminResyncStart, $adminResyncEnd - $adminResyncStart);
+foreach ([
     'bx_admin_project_bed_firebase_step',
     'Bed reports refreshed',
     'report group',
     'floor group',
     'Bed list update was not completed. Please check the service status and try again.',
     "'firebaseSync'",
-    'sync_bed_reference_firebase',
-    "bx_sync_project_bed_reference_to_firebase('treatment'",
-    "bx_sync_project_bed_reference_to_firebase('source'",
-    'bx_sync_project_bed_reference_rows_to_firebase($referenceType, $rows)',
     "'firebase_sync' => \$firebaseSync",
 ] as $marker) {
-    if (!str_contains($administrator, $marker)) {
-        throw new RuntimeException('Administrator bed reference Firebase marker is missing: ' . $marker);
+    if (str_contains($adminResyncSource, $marker)) {
+        throw new RuntimeException('Administrator Bed Lookup must not retain downstream Firebase refresh marker: ' . $marker);
     }
+}
+
+$resyncStart = strpos($foundation, 'function bx_resync_project_bed');
+$resyncEnd = strpos($foundation, 'function bx_setting', $resyncStart === false ? 0 : $resyncStart);
+if ($resyncStart === false || $resyncEnd === false) {
+    throw new RuntimeException('Unable to isolate bx_resync_project_bed for the downstream sync guard.');
+}
+$resyncSource = substr($foundation, $resyncStart, $resyncEnd - $resyncStart);
+foreach ([
+    'bx_sync_project_bed_rows_to_firebase',
+    'bx_refresh_project_bed_analytics',
+    'bx_project_bed_firebase_rows',
+    'bx_project_bed_analytics_documents',
+] as $marker) {
+    if (str_contains($resyncSource, $marker)) {
+        throw new RuntimeException('bx_resync_project_bed must not trigger downstream Firebase/task/analytics work: ' . $marker);
+    }
+}
+if (!str_contains($resyncSource, 'bx_project_bed_source_row') || !str_contains($foundation, 'FROM `RBMS_BedMasterlist`')) {
+    throw new RuntimeException('bx_resync_project_bed must retain the external RBMS_BedMasterlist source helper.');
+}
+if (!str_contains($resyncSource, 'UPDATE project_bed')) {
+    throw new RuntimeException('bx_resync_project_bed must retain the MySQL project_bed update.');
 }
 
 foreach ([
@@ -179,7 +193,6 @@ foreach ([
 }
 
 foreach ([
-    "bx_admin_redirect(\$bedReferenceReturnTab('bed-management'));",
     "'bed-management', 'bed-lookup', 'bed-treatment', 'bed-source', 'task-builder'",
     "\$params = ['tab' => 'bed-lookup'];",
     'update_bed_reference_sort_order',
@@ -215,25 +228,41 @@ $frontendMarkers = [
     'project_bed',
     'resync_project_bed',
     'Latest hospital bed list',
-    'Refresh Beds',
-    'masterSyncFormRef',
-    'showMasterSyncAction',
-    'h-6 w-px bg-border',
     'border-sky-500/30 bg-sky-500/10 text-sky-700',
-    "className={cn('rounded-full', toneClasses.sync)}",
-    'sync_bed_reference_firebase',
-    'name="reference_type" value={config.referenceType}',
-    'Update the shared ${config.entityLabel.toLowerCase()} list for all connected users?',
-    'Sync {config.entityLabel}',
     'Usage',
-    'Treatment Options',
-    'Admission Source Options',
     'name="return_tab" value={returnTab}',
-    'Beds that are no longer available will be marked inactive, not deleted.',
 ];
 foreach ($frontendMarkers as $marker) {
     if (!str_contains($frontend, $marker)) {
         throw new RuntimeException('Frontend managed bed marker is missing: ' . $marker);
+    }
+}
+
+$bedCardStart = strpos($frontend, 'function BedLookupResultCard');
+$bedCardEnd = strpos($frontend, 'const bedLookupDropdownFields', $bedCardStart === false ? 0 : $bedCardStart);
+if ($bedCardStart === false || $bedCardEnd === false) {
+    throw new RuntimeException('Unable to isolate the Bed Lookup result card.');
+}
+$bedCardSource = substr($frontend, $bedCardStart, $bedCardEnd - $bedCardStart);
+if (!str_contains($bedCardSource, 'onClick={() => formRef.current?.requestSubmit()}')) {
+    throw new RuntimeException('Bed Lookup refresh must submit through the single global confirmation flow.');
+}
+if (!str_contains($bedCardSource, 'data-skip-shell-loading="true"')) {
+    throw new RuntimeException('Bed Lookup refresh must not hold the global shell loading lock during its redirect.');
+}
+if (!str_contains($frontend, 'adminNetworkLoading && activeView !== \'bed-lookup\'')) {
+    throw new RuntimeException('Bed Lookup must hide the global shell loading indicators.');
+}
+$filterFormStart = strpos($frontend, '<form method="get" action={projectUrl(\'administrator/\')}');
+if ($filterFormStart === false || !str_contains(substr($frontend, $filterFormStart, 240), 'data-skip-submit-confirmation="true"')) {
+    throw new RuntimeException('Bed Lookup search filters must submit without confirmation.');
+}
+foreach ([
+    "title: 'Refresh this bed'",
+    'setConfirmation',
+] as $marker) {
+    if (str_contains($bedCardSource, $marker)) {
+        throw new RuntimeException('Bed Lookup refresh must not define a second confirmation flow: ' . $marker);
     }
 }
 
@@ -252,4 +281,5 @@ echo json_encode([
     'firebase_bed_analytics_sync' => true,
     'firebase_bed_analytics_documents' => 8,
     'firebase_bed_floor_groups' => true,
+    'downstream_bed_firebase_refresh' => false,
 ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;

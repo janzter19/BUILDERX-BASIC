@@ -1,5 +1,5 @@
 [Unit]
-Description=RBMSv4 Firebase Messenger stream worker
+Description=RBMSv4 Firebase Messenger sync queue worker
 After=network-online.target mysql.service
 Wants=network-online.target
 

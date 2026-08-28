@@ -4,8 +4,17 @@ declare(strict_types=1);
 if ((!defined('BUILDERX_SKIP_SESSION_START') || BUILDERX_SKIP_SESSION_START !== true)
     && session_status() !== PHP_SESSION_ACTIVE) {
     $isSecure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    $portalSession = defined('BUILDERX_PORTAL_SESSION') && BUILDERX_PORTAL_SESSION === true;
+    // Keep Portal and Administrator authentication in separate browser
+    // cookies. They may share Firebase Auth as an identity authority, but
+    // neither surface may inherit the other surface's PHP session.
+    session_name($portalSession ? 'RBMS_PORTAL_SESSION' : 'RBMS_ADMIN_SESSION');
+    $sessionLifetime = $portalSession ? 315360000 : 0;
+    // Keep shared PHP session files longer than any database session policy;
+    // builder_user_session remains the authority for administrator expiry.
+    ini_set('session.gc_maxlifetime', '315360000');
     session_set_cookie_params([
-        'lifetime' => 0,
+        'lifetime' => $sessionLifetime,
         'path' => '/',
         'secure' => $isSecure,
         'httponly' => true,
@@ -247,6 +256,26 @@ function bx_unique_firebase_document_key(string $table, string $column, int $len
     throw new RuntimeException('Firebase document key generation failed.');
 }
 
+function bx_project_user_auth_username(): string
+{
+    $alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    $alphabetMax = strlen($alphabet) - 1;
+
+    for ($attempt = 0; $attempt < 40; $attempt++) {
+        $suffix = '';
+        for ($index = 0; $index < 5; $index++) {
+            $suffix .= $alphabet[random_int(0, $alphabetMax)];
+        }
+        $candidate = 'user_' . $suffix;
+        $exists = (int) bx_db()->GetOne('SELECT COUNT(*) FROM project_user WHERE user_auth_username = ?', [$candidate]);
+        if ($exists === 0) {
+            return $candidate;
+        }
+    }
+
+    throw new RuntimeException('Project user auth username generation failed.');
+}
+
 function bx_messenger_sender_key(?array $user): string
 {
     if (is_array($user) && trim((string) ($user['user_key'] ?? '')) !== '') {
@@ -297,7 +326,7 @@ function bx_messenger_sender_name(?array $user, string $projectKey = ''): string
                     WHEN bg.group_name IS NOT NULL AND bg.group_name <> '' AND pug.group_name = bg.group_name THEN 3
                     ELSE 9
                 END,
-                pu.x_id ASC
+                pu.xId ASC
             LIMIT 1",
             [$userKey, $userKey, $projectKey, $userKey, $userKey]
         );
@@ -339,6 +368,11 @@ function bx_ensure_project_messenger_schema(): void
             firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_messenger_chat',
             firebase_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             firebase_synced_at TIMESTAMP NULL,
+            mysql_created_at DATETIME NULL,
+            mysql_updated_at DATETIME NULL,
+            mysql_synced_at DATETIME NULL,
+            mysql_deleted_at DATETIME NULL,
+            mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_project_messenger_chat_group (group_key, x_id),
@@ -354,6 +388,11 @@ function bx_ensure_project_messenger_schema(): void
     }
     bx_add_column_if_missing('project_messenger_chat', 'conversation_type', "ENUM('group','direct') NOT NULL DEFAULT 'group' AFTER group_key");
     bx_add_column_if_missing('project_messenger_chat', 'direct_recipient_user_key', 'VARCHAR(80) NULL AFTER conversation_type');
+    bx_add_column_if_missing('project_messenger_chat', 'mysql_created_at', 'DATETIME NULL AFTER firebase_synced_at');
+    bx_add_column_if_missing('project_messenger_chat', 'mysql_updated_at', 'DATETIME NULL AFTER mysql_created_at');
+    bx_add_column_if_missing('project_messenger_chat', 'mysql_synced_at', 'DATETIME NULL AFTER mysql_updated_at');
+    bx_add_column_if_missing('project_messenger_chat', 'mysql_deleted_at', 'DATETIME NULL AFTER mysql_synced_at');
+    bx_add_column_if_missing('project_messenger_chat', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_deleted_at");
     bx_add_index_if_missing('project_messenger_chat', 'idx_project_messenger_chat_direct', 'INDEX idx_project_messenger_chat_direct (group_key, conversation_type, direct_recipient_user_key, sender_user_key, x_id)');
 
     $saved = $db->Execute("
@@ -373,6 +412,11 @@ function bx_ensure_project_messenger_schema(): void
             firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_messenger_chat_attachment',
             firebase_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             firebase_synced_at TIMESTAMP NULL,
+            mysql_created_at DATETIME NULL,
+            mysql_updated_at DATETIME NULL,
+            mysql_synced_at DATETIME NULL,
+            mysql_deleted_at DATETIME NULL,
+            mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_project_messenger_attachment_chat (chat_key, sort_order),
@@ -383,6 +427,11 @@ function bx_ensure_project_messenger_schema(): void
     if ($saved === false) {
         throw new RuntimeException('Messenger attachment schema setup failed: ' . trim((string) $db->ErrorMsg()));
     }
+    bx_add_column_if_missing('project_messenger_chat_attachment', 'mysql_created_at', 'DATETIME NULL AFTER firebase_synced_at');
+    bx_add_column_if_missing('project_messenger_chat_attachment', 'mysql_updated_at', 'DATETIME NULL AFTER mysql_created_at');
+    bx_add_column_if_missing('project_messenger_chat_attachment', 'mysql_synced_at', 'DATETIME NULL AFTER mysql_updated_at');
+    bx_add_column_if_missing('project_messenger_chat_attachment', 'mysql_deleted_at', 'DATETIME NULL AFTER mysql_synced_at');
+    bx_add_column_if_missing('project_messenger_chat_attachment', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_deleted_at");
 
     $saved = $db->Execute("
         CREATE TABLE IF NOT EXISTS project_messenger_chat_read (
@@ -396,6 +445,11 @@ function bx_ensure_project_messenger_schema(): void
             firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_messenger_chat_read',
             firebase_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             firebase_synced_at TIMESTAMP NULL,
+            mysql_created_at DATETIME NULL,
+            mysql_updated_at DATETIME NULL,
+            mysql_synced_at DATETIME NULL,
+            mysql_deleted_at DATETIME NULL,
+            mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             UNIQUE KEY uq_project_messenger_read_user (chat_key, user_key),
             INDEX idx_project_messenger_read_group (group_key, user_key)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -403,6 +457,11 @@ function bx_ensure_project_messenger_schema(): void
     if ($saved === false) {
         throw new RuntimeException('Messenger read schema setup failed: ' . trim((string) $db->ErrorMsg()));
     }
+    bx_add_column_if_missing('project_messenger_chat_read', 'mysql_created_at', 'DATETIME NULL AFTER firebase_synced_at');
+    bx_add_column_if_missing('project_messenger_chat_read', 'mysql_updated_at', 'DATETIME NULL AFTER mysql_created_at');
+    bx_add_column_if_missing('project_messenger_chat_read', 'mysql_synced_at', 'DATETIME NULL AFTER mysql_updated_at');
+    bx_add_column_if_missing('project_messenger_chat_read', 'mysql_deleted_at', 'DATETIME NULL AFTER mysql_synced_at');
+    bx_add_column_if_missing('project_messenger_chat_read', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_deleted_at");
 
     $saved = $db->Execute("
         CREATE TABLE IF NOT EXISTS project_messenger_chat_reaction (
@@ -417,6 +476,11 @@ function bx_ensure_project_messenger_schema(): void
             firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_messenger_chat_reaction',
             firebase_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             firebase_synced_at TIMESTAMP NULL,
+            mysql_created_at DATETIME NULL,
+            mysql_updated_at DATETIME NULL,
+            mysql_synced_at DATETIME NULL,
+            mysql_deleted_at DATETIME NULL,
+            mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uq_project_messenger_reaction_user (chat_key, user_key, reaction_value),
@@ -426,6 +490,180 @@ function bx_ensure_project_messenger_schema(): void
     if ($saved === false) {
         throw new RuntimeException('Messenger reaction schema setup failed: ' . trim((string) $db->ErrorMsg()));
     }
+    bx_add_column_if_missing('project_messenger_chat_reaction', 'mysql_created_at', 'DATETIME NULL AFTER firebase_synced_at');
+    bx_add_column_if_missing('project_messenger_chat_reaction', 'mysql_updated_at', 'DATETIME NULL AFTER mysql_created_at');
+    bx_add_column_if_missing('project_messenger_chat_reaction', 'mysql_synced_at', 'DATETIME NULL AFTER mysql_updated_at');
+    bx_add_column_if_missing('project_messenger_chat_reaction', 'mysql_deleted_at', 'DATETIME NULL AFTER mysql_synced_at');
+    bx_add_column_if_missing('project_messenger_chat_reaction', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_deleted_at");
+
+    $saved = $db->Execute("
+        CREATE TABLE IF NOT EXISTS project_messenger_sync_event (
+            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            event_key VARCHAR(40) NOT NULL UNIQUE,
+            source VARCHAR(24) NOT NULL DEFAULT 'web',
+            target VARCHAR(24) NOT NULL DEFAULT 'firebase',
+            event_type VARCHAR(40) NOT NULL,
+            project_key VARCHAR(80) NOT NULL,
+            group_key VARCHAR(40) NOT NULL,
+            chat_key VARCHAR(40) NULL,
+            payload_json LONGTEXT NOT NULL,
+            status ENUM('PENDING','PROCESSING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
+            attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+            claim_key VARCHAR(80) NULL,
+            available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_error VARCHAR(1000) NULL,
+            processed_at DATETIME NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_project_messenger_sync_event_ready (target, status, available_at, x_id),
+            INDEX idx_project_messenger_sync_event_chat (chat_key, target, status),
+            INDEX idx_project_messenger_sync_event_claim (claim_key, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    if ($saved === false) {
+        throw new RuntimeException('Messenger sync event schema setup failed: ' . trim((string) $db->ErrorMsg()));
+    }
+
+    $saved = $db->Execute("
+        CREATE TABLE IF NOT EXISTS project_messenger_chat_log (
+            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            log_key VARCHAR(40) NOT NULL UNIQUE,
+            chat_key VARCHAR(40) NOT NULL,
+            project_key VARCHAR(80) NOT NULL,
+            group_key VARCHAR(40) NOT NULL,
+            conversation_type ENUM('group','direct') NOT NULL DEFAULT 'group',
+            direct_recipient_user_key VARCHAR(80) NULL,
+            reply_to_chat_key VARCHAR(40) NULL,
+            sender_user_key VARCHAR(80) NOT NULL,
+            sender_name VARCHAR(160) NOT NULL,
+            message_text TEXT NULL,
+            message_type ENUM('text','image','mixed') NOT NULL DEFAULT 'text',
+            message_status ENUM('ACTIVE','REMOVED') NOT NULL DEFAULT 'ACTIVE',
+            removed_at TIMESTAMP NULL,
+            removed_by_user_key VARCHAR(80) NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_project_messenger_chat_log_chat (chat_key),
+            INDEX idx_project_messenger_chat_log_conversation (group_key, conversation_type, direct_recipient_user_key, sender_user_key, x_id),
+            INDEX idx_project_messenger_chat_log_created (group_key, created_at, x_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    if ($saved === false) {
+        throw new RuntimeException('Messenger chat log schema setup failed: ' . trim((string) $db->ErrorMsg()));
+    }
+}
+
+/**
+ * Create an outbound Firebase event inside the caller's transaction.
+ * The payload is deliberately self-contained so the worker never has to scan chat history.
+ */
+function bx_messenger_queue_firebase_event(
+    string $eventType,
+    string $projectKey,
+    string $groupKey,
+    ?string $chatKey,
+    array $payload
+): string {
+    $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    $eventKey = bx_unique_firebase_document_key('project_messenger_sync_event', 'event_key');
+    $saved = bx_db()->Execute(
+        "INSERT INTO project_messenger_sync_event (
+            event_key, source, target, event_type, project_key, group_key, chat_key, payload_json, status
+        ) VALUES (?, 'web', 'firebase', ?, ?, ?, ?, ?, 'PENDING')",
+        [$eventKey, substr(trim($eventType), 0, 40), substr(trim($projectKey), 0, 80), substr(trim($groupKey), 0, 40), $chatKey !== null ? substr(trim($chatKey), 0, 40) : null, $encoded]
+    );
+    if ($saved === false) {
+        throw new RuntimeException('Messenger Firebase event save failed: ' . trim((string) bx_db()->ErrorMsg()));
+    }
+
+    return $eventKey;
+}
+
+function bx_messenger_sync_payload_for_chat(string $chatKey): array
+{
+    $row = bx_db()->GetRow(
+        "SELECT chat_key, project_key, group_key, conversation_type, direct_recipient_user_key,
+            reply_to_chat_key, sender_user_key, sender_name, message_text, message_type, message_status,
+            DATE_FORMAT(removed_at, '%Y-%m-%d %H:%i:%s') AS removed_at,
+            removed_by_user_key, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+        FROM project_messenger_chat WHERE chat_key = ? LIMIT 1",
+        [$chatKey]
+    );
+    if (!is_array($row) || trim((string) ($row['chat_key'] ?? '')) === '') {
+        throw new RuntimeException('Messenger sync payload message was not found.');
+    }
+
+    $attachments = bx_db()->GetAll(
+        "SELECT attachment_key, chat_key, project_key, group_key, uploaded_image_url, image_original_name,
+            image_mime_type, image_byte_size, image_sha256, sort_order, attachment_status,
+            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+        FROM project_messenger_chat_attachment WHERE chat_key = ? ORDER BY sort_order ASC, x_id ASC",
+        [$chatKey]
+    ) ?: [];
+
+    return [
+        'message' => [
+            'chat_key' => (string) $row['chat_key'],
+            'project_key' => (string) $row['project_key'],
+            'group_key' => (string) $row['group_key'],
+            'conversation_type' => (string) ($row['conversation_type'] ?? 'group'),
+            'direct_recipient_user_key' => (string) ($row['direct_recipient_user_key'] ?? ''),
+            'reply_to_chat_key' => (string) ($row['reply_to_chat_key'] ?? ''),
+            'sender_user_key' => (string) $row['sender_user_key'],
+            'sender_name' => (string) $row['sender_name'],
+            'message_text' => (string) ($row['message_status'] ?? '') === 'REMOVED' ? '' : (string) ($row['message_text'] ?? ''),
+            'message_type' => (string) ($row['message_type'] ?? 'text'),
+            'message_status' => (string) ($row['message_status'] ?? 'ACTIVE'),
+            'removed_at' => (string) ($row['removed_at'] ?? ''),
+            'removed_by_user_key' => (string) ($row['removed_by_user_key'] ?? ''),
+            'created_at' => (string) ($row['created_at'] ?? ''),
+            'updated_at' => (string) ($row['updated_at'] ?? ''),
+        ],
+        'attachments' => array_map(static fn (array $attachment): array => [
+            'attachment_key' => (string) ($attachment['attachment_key'] ?? ''),
+            'chat_key' => (string) ($attachment['chat_key'] ?? ''),
+            'project_key' => (string) ($attachment['project_key'] ?? ''),
+            'group_key' => (string) ($attachment['group_key'] ?? ''),
+            'uploaded_image_url' => (string) ($attachment['uploaded_image_url'] ?? ''),
+            'image_original_name' => (string) ($attachment['image_original_name'] ?? ''),
+            'image_mime_type' => (string) ($attachment['image_mime_type'] ?? ''),
+            'image_byte_size' => (int) ($attachment['image_byte_size'] ?? 0),
+            'image_sha256' => (string) ($attachment['image_sha256'] ?? ''),
+            'sort_order' => (int) ($attachment['sort_order'] ?? 0),
+            'attachment_status' => (string) ($attachment['attachment_status'] ?? 'ACTIVE'),
+            'created_at' => (string) ($attachment['created_at'] ?? ''),
+        ], $attachments),
+    ];
+}
+
+function bx_messenger_queue_status_for_chat(string $chatKey): array
+{
+    $row = bx_db()->GetRow(
+        "SELECT event_key, event_type, status, attempt_count, last_error,
+            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+            DATE_FORMAT(processed_at, '%Y-%m-%d %H:%i:%s') AS processed_at
+        FROM project_messenger_sync_event
+        WHERE target = 'firebase' AND chat_key = ?
+        ORDER BY x_id DESC LIMIT 1",
+        [$chatKey]
+    );
+    if (!is_array($row) || trim((string) ($row['event_key'] ?? '')) === '') {
+        return ['ok' => false, 'queued' => false, 'message' => 'Firebase sync event is not queued.'];
+    }
+
+    $status = (string) ($row['status'] ?? 'PENDING');
+    return [
+        'ok' => in_array($status, ['PENDING', 'PROCESSING', 'SYNCED'], true),
+        'queued' => in_array($status, ['PENDING', 'PROCESSING'], true),
+        'status' => $status,
+        'event_key' => (string) ($row['event_key'] ?? ''),
+        'event_type' => (string) ($row['event_type'] ?? ''),
+        'attempt_count' => (int) ($row['attempt_count'] ?? 0),
+        'processed_at' => (string) ($row['processed_at'] ?? ''),
+        'message' => $status === 'SYNCED' ? 'Firebase sync completed.' : ($status === 'FAILED' ? 'Firebase sync will retry.' : 'Firebase sync queued.'),
+    ];
 }
 
 function bx_messenger_firebase_sync_enabled(): bool
@@ -461,9 +699,25 @@ function bx_messenger_firebase_service_account_path(): string
     return '';
 }
 
+function bx_admin_firebase_project_id(): string
+{
+    $env = getenv('FIREBASE_ADMIN_PROJECT_ID');
+    return is_string($env) && trim($env) !== '' ? trim($env) : bx_messenger_firebase_project_id();
+}
+
+function bx_admin_firebase_service_account_path(): string
+{
+    $env = getenv('FIREBASE_ADMIN_SERVICE_ACCOUNT_PATH');
+    if (is_string($env) && trim($env) !== '') {
+        return trim($env);
+    }
+
+    return bx_messenger_firebase_service_account_path();
+}
+
 function bx_messenger_stream_service_status(): array
 {
-    $unitName = 'rbmsv4-firebase-messenger-stream.service';
+    $unitName = 'rbmsv4-firebase-sync.service';
     $serviceAccountPath = bx_messenger_firebase_service_account_path();
     $configured = bx_messenger_firebase_sync_enabled()
         && bx_messenger_firebase_project_id() !== ''
@@ -499,8 +753,8 @@ function bx_messenger_stream_service_status(): array
             return [
                 'running' => true,
                 'status' => 'running',
-                'label' => 'Firebase stream running',
-                'detail' => 'The Firebase-to-MySQL stream service is active.',
+                'label' => 'Firebase sync worker running',
+                'detail' => 'The Firebase sync queue worker is active.',
                 'service' => $unitName,
                 'configured' => $configured,
                 'unit_installed' => $unitInstalled,
@@ -513,16 +767,16 @@ function bx_messenger_stream_service_status(): array
             $statusText = $unitInstalled ? 'inactive' : 'not installed';
         }
 
-        $process = $runCommand("pgrep -f 'firebase-messenger-stream\\.mjs' 2>/dev/null | head -1");
+        $process = $runCommand("pgrep -f 'firebase-sync\\.mjs' 2>/dev/null | head -1");
         $processRunning = ($process['exit_code'] ?? 1) === 0 && trim((string) ($process['output'] ?? '')) !== '';
         if ($processRunning) {
             return [
                 'running' => true,
                 'status' => 'running',
-                'label' => 'Firebase stream running',
+                'label' => 'Firebase sync worker running',
                 'detail' => $unitInstalled
-                    ? 'A Firebase-to-MySQL stream process is running.'
-                    : 'A Firebase-to-MySQL stream process is running outside systemd.',
+                    ? 'A Firebase sync queue worker is running.'
+                    : 'A Firebase sync queue worker is running outside systemd.',
                 'service' => $unitName,
                 'configured' => $configured,
                 'unit_installed' => $unitInstalled,
@@ -533,9 +787,9 @@ function bx_messenger_stream_service_status(): array
         return [
             'running' => false,
             'status' => $unitInstalled ? $statusText : 'not_installed',
-            'label' => $unitInstalled ? 'Firebase stream stopped' : 'Firebase stream not installed',
+            'label' => $unitInstalled ? 'Firebase sync worker stopped' : 'Firebase sync worker not installed',
             'detail' => $configured
-                ? ($unitInstalled ? 'The Firebase-to-MySQL stream service is not active.' : 'Install and start the systemd service to receive Firebase-origin messages.')
+                ? ($unitInstalled ? 'The Firebase sync queue worker is not active.' : 'Install and start the systemd service to process Firebase sync events.')
                 : 'Firebase server sync is not fully configured.',
             'service' => $unitName,
             'configured' => $configured,
@@ -544,16 +798,16 @@ function bx_messenger_stream_service_status(): array
         ];
     }
 
-    $process = $runCommand("pgrep -f 'firebase-messenger-stream\\.mjs' 2>/dev/null | head -1");
+    $process = $runCommand("pgrep -f 'firebase-sync\\.mjs' 2>/dev/null | head -1");
     $running = ($process['exit_code'] ?? 1) === 0 && trim((string) ($process['output'] ?? '')) !== '';
 
     return [
         'running' => $running,
         'status' => $running ? 'running' : 'stopped',
-        'label' => $running ? 'Firebase stream running' : 'Firebase stream stopped',
+        'label' => $running ? 'Firebase sync worker running' : 'Firebase sync worker stopped',
         'detail' => $running
-            ? 'A Firebase-to-MySQL stream process is running.'
-            : ($configured ? 'No Firebase-to-MySQL stream process was detected.' : 'Firebase server sync is not fully configured.'),
+            ? 'A Firebase sync queue worker is running.'
+            : ($configured ? 'No Firebase sync queue worker was detected.' : 'Firebase server sync is not fully configured.'),
         'service' => $unitName,
         'configured' => $configured,
         'unit_installed' => $unitInstalled,
@@ -570,80 +824,37 @@ function bx_messenger_sync_message_to_firebase(array $message): array
     if (!bx_messenger_firebase_sync_enabled()) {
         return ['ok' => false, 'skipped' => true, 'message' => 'Firebase server sync is disabled.'];
     }
-
-    $projectId = bx_messenger_firebase_project_id();
-    $serviceAccountPath = bx_messenger_firebase_service_account_path();
-    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
-        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
-    }
-
-    $scriptPath = dirname(__DIR__) . '/scripts/firebase-messenger-sync.mjs';
-    if (!is_readable($scriptPath)) {
-        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase Messenger sync script is missing.'];
-    }
-
-    $payload = json_encode([
-        'project_id' => $projectId,
-        'service_account_path' => $serviceAccountPath,
-        'message' => $message,
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if (!is_string($payload)) {
-        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase sync payload could not be encoded.'];
-    }
-
-    $command = 'node ' . escapeshellarg($scriptPath);
-    $descriptorSpec = [
-        0 => ['pipe', 'r'],
-        1 => ['pipe', 'w'],
-        2 => ['pipe', 'w'],
-    ];
-    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
-    if (!is_resource($process)) {
-        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase sync process could not start.'];
-    }
-
-    fwrite($pipes[0], $payload);
-    fclose($pipes[0]);
-    $stdout = stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
-    fclose($pipes[2]);
-    $exitCode = proc_close($process);
-    $result = json_decode((string) $stdout, true);
-    if (!is_array($result)) {
-        $result = [
-            'ok' => false,
-            'message' => trim((string) $stderr) !== '' ? trim((string) $stderr) : 'Firebase sync returned an invalid response.',
-        ];
-    }
-
     $chatKey = (string) ($message['chat_key'] ?? '');
-    if ($chatKey !== '') {
-        if ($exitCode === 0 && ($result['ok'] ?? false) === true) {
-            bx_db()->Execute(
-                "UPDATE project_messenger_chat SET firebase_sync_status = 'SYNCED', firebase_synced_at = CURRENT_TIMESTAMP WHERE chat_key = ?",
-                [$chatKey]
-            );
-            bx_db()->Execute(
-                "UPDATE project_messenger_chat_attachment SET firebase_sync_status = 'SYNCED', firebase_synced_at = CURRENT_TIMESTAMP WHERE chat_key = ? AND attachment_status = 'ACTIVE'",
-                [$chatKey]
-            );
-        } else {
-            bx_db()->Execute(
-                "UPDATE project_messenger_chat SET firebase_sync_status = 'FAILED' WHERE chat_key = ?",
-                [$chatKey]
-            );
-            bx_db()->Execute(
-                "UPDATE project_messenger_chat_attachment SET firebase_sync_status = 'FAILED' WHERE chat_key = ? AND attachment_status = 'ACTIVE'",
-                [$chatKey]
-            );
-        }
+    if ($chatKey === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase sync message key is missing.'];
     }
 
-    return $result + [
-        'exit_code' => $exitCode,
-        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
-    ];
+    $status = bx_messenger_queue_status_for_chat($chatKey);
+    if (($status['queued'] ?? false) === true || ($status['status'] ?? '') === 'SYNCED') {
+        return $status;
+    }
+
+    try {
+        $payload = bx_messenger_sync_payload_for_chat($chatKey);
+        $messageStatus = (string) ($payload['message']['message_status'] ?? 'ACTIVE');
+        $eventType = $messageStatus === 'REMOVED' ? 'MESSAGE_REMOVED' : 'MESSAGE_CREATED';
+        $eventKey = bx_messenger_queue_firebase_event(
+            $eventType,
+            (string) ($payload['message']['project_key'] ?? ''),
+            (string) ($payload['message']['group_key'] ?? ''),
+            $chatKey,
+            $payload
+        );
+        return [
+            'ok' => true,
+            'queued' => true,
+            'status' => 'PENDING',
+            'event_key' => $eventKey,
+            'message' => 'Firebase sync queued.',
+        ];
+    } catch (Throwable $error) {
+        return ['ok' => false, 'skipped' => false, 'message' => $error->getMessage()];
+    }
 }
 
 function bx_sync_project_bed_reference_rows_to_firebase(string $type, array $rows): array
@@ -717,6 +928,195 @@ function bx_sync_project_bed_reference_rows_to_firebase(string $type, array $row
 function bx_sync_project_bed_reference_to_firebase(string $type, array $row): array
 {
     return bx_sync_project_bed_reference_rows_to_firebase($type, [$row]);
+}
+
+function bx_firebase_setting_value(string $settingName, string $settingValue): string|int|bool
+{
+    if (in_array($settingName, [
+        'debug_enabled',
+        'debug_show_queries',
+        'debug_show_files',
+        'debug_show_phase_task',
+        'debug_log_traces',
+        'sharingan_enabled',
+        'firebase_messenger_server_sync_enabled',
+        'firebase_client_stream_enabled',
+        'firebase_client_write_enabled',
+        'android_force_update_enabled',
+        'android_release_acknowledgement_required',
+        'android_geofence_required',
+        'android_offline_queue_enabled',
+        'android_media_upload_enabled',
+    ], true)) {
+        return in_array(strtolower(trim($settingValue)), ['1', 'true', 'yes', 'enabled'], true);
+    }
+
+    if (in_array($settingName, [
+        'session_timeout_minutes',
+        'password_min_length',
+        'password_expiration_days',
+        'password_history_count',
+        'password_reset_token_minutes',
+        'debug_trace_retention_days',
+        'android_current_version_code',
+        'android_min_supported_version_code',
+        'android_geofence_max_radius_meters',
+        'android_offline_retry_interval_seconds',
+        'android_dashboard_refresh_seconds',
+    ], true) && preg_match('/^-?\d+$/', trim($settingValue))) {
+        return (int) $settingValue;
+    }
+
+    if (in_array($settingName, ['android_geofence_latitude', 'android_geofence_longitude'], true) && trim($settingValue) !== '' && is_numeric($settingValue)) {
+        return (float) $settingValue;
+    }
+
+    return $settingValue;
+}
+
+function bx_firebase_setting_is_public(string $settingName, int $isSecret): bool
+{
+    if ($isSecret === 1 || str_starts_with($settingName, 'ui_') || $settingName === 'template_presets') {
+        return false;
+    }
+
+    return !preg_match('/(secret|service_account|credential|password|token|private_key)/i', $settingName);
+}
+
+function bx_settings_firebase_group_rows(array $rows, string $source, array $overrides = []): array
+{
+    $settings = [];
+    $groups = [];
+    foreach ($rows as $row) {
+        $settingName = (string) ($row['setting_name'] ?? '');
+        if ($settingName === '' || !bx_firebase_setting_is_public($settingName, (int) ($row['is_secret'] ?? 0))) {
+            continue;
+        }
+
+        $settingGroup = (string) ($row['setting_group'] ?? 'general');
+        $rawValue = array_key_exists($settingName, $overrides)
+            ? (string) $overrides[$settingName]
+            : (string) ($row['setting_value'] ?? '');
+        $settingValue = bx_firebase_setting_value($settingName, $rawValue);
+        $settings[$settingName] = $settingValue;
+        if (!isset($groups[$settingGroup])) {
+            $groups[$settingGroup] = [];
+        }
+        $groups[$settingGroup][$settingName] = $settingValue;
+    }
+
+    ksort($settings);
+    ksort($groups);
+
+    return [
+        'source' => $source,
+        'settings' => $settings,
+        'groups' => $groups,
+        'count' => count($settings),
+    ];
+}
+
+function bx_settings_firebase_payload(string $projectKey = '', array $overrides = []): array
+{
+    $db = bx_db();
+    $projectKey = trim($projectKey);
+    if ($projectKey === '') {
+        $projectKey = (string) ($db->GetOne("SELECT project_key FROM builder_project WHERE project_status <> 'DELETED' ORDER BY x_id ASC LIMIT 1") ?: '');
+    }
+
+    $project = $projectKey !== ''
+        ? ($db->GetRow("SELECT project_key, project_code, project_name, project_status FROM builder_project WHERE project_key = ? AND project_status <> 'DELETED' LIMIT 1", [$projectKey]) ?: [])
+        : [];
+    $resolvedProjectKey = (string) ($project['project_key'] ?? $projectKey);
+    $systemRows = $db->GetAll("SELECT setting_name, setting_value, setting_group, is_secret FROM builder_system_setting WHERE setting_status = 'ACTIVE' AND setting_group NOT IN ('android', 'media') ORDER BY setting_group ASC, setting_name ASC") ?: [];
+    $projectRows = $resolvedProjectKey !== ''
+        ? ($db->GetAll("SELECT setting_name, setting_value, setting_group, is_secret FROM project_setting WHERE project_key = ? AND setting_status = 'ACTIVE' ORDER BY setting_group ASC, setting_name ASC", [$resolvedProjectKey]) ?: [])
+        : [];
+    $mediaRows = $resolvedProjectKey !== ''
+        ? ($db->GetAll("SELECT setting_name, setting_value, setting_group, is_secret FROM project_setting_media WHERE project_key = ? AND setting_status = 'ACTIVE' ORDER BY setting_group ASC, setting_name ASC", [$resolvedProjectKey]) ?: [])
+        : [];
+
+    $systemSettings = bx_settings_firebase_group_rows($systemRows, 'builder_system_setting', $overrides);
+    $projectSettings = bx_settings_firebase_group_rows($projectRows, 'project_setting', $overrides);
+    $projectMedia = bx_settings_firebase_group_rows($mediaRows, 'project_setting_media', $overrides);
+
+    return [
+        'document_key' => $resolvedProjectKey !== '' ? $resolvedProjectKey : 'current',
+        'project' => [
+            'project_key' => $resolvedProjectKey,
+            'project_code' => (string) ($project['project_code'] ?? ''),
+            'project_name' => (string) ($project['project_name'] ?? ''),
+            'project_status' => (string) ($project['project_status'] ?? ''),
+        ],
+        'system' => $systemSettings,
+        'project_settings' => $projectSettings,
+        'project_media' => $projectMedia,
+        'summary' => [
+            'system_count' => (int) $systemSettings['count'],
+            'project_count' => (int) $projectSettings['count'],
+            'media_count' => (int) $projectMedia['count'],
+            'synced_from' => 'rbmsv4',
+            'synced_at' => date('c'),
+        ],
+    ];
+}
+
+function bx_sync_settings_to_firebase(string $projectKey = '', array $overrides = []): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    if ($projectId === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project id is not configured.'];
+    }
+    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
+    }
+
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-settings-sync.mjs';
+    if (!is_readable($scriptPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase settings sync script is missing.'];
+    }
+
+    $settingsDocument = bx_settings_firebase_payload($projectKey, $overrides);
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'settings_document' => $settingsDocument,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase settings sync payload could not be encoded.'];
+    }
+
+    $command = 'node ' . escapeshellarg($scriptPath);
+    $descriptorSpec = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase settings sync process could not start.'];
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = [
+            'ok' => false,
+            'message' => trim((string) $stderr) !== '' ? 'Firebase settings sync failed.' : 'Firebase settings sync returned an invalid response.',
+        ];
+    }
+
+    return $result + [
+        'exit_code' => $exitCode,
+        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
+    ];
 }
 
 function bx_project_bed_firebase_rows(?string $batchKey = null, ?string $bedKey = null, int $limit = 10000): array
@@ -1007,6 +1407,771 @@ function bx_sync_project_bed_rows_to_firebase(array $rows, ?array $analyticsRows
     ];
 }
 
+function bx_project_user_firebase_rows(string $projectKey = '', ?string $userKey = null, int $limit = 10000): array
+{
+    $where = ['1 = 1'];
+    $params = [];
+
+    $projectKey = trim($projectKey);
+    if ($projectKey !== '') {
+        $where[] = 'u.project_key = ?';
+        $params[] = $projectKey;
+    }
+
+    if ($userKey !== null && trim($userKey) !== '') {
+        $where[] = 'u.user_key = ?';
+        $params[] = trim($userKey);
+    }
+
+    $limit = max(1, min($limit, 10000));
+    $sql = "
+        SELECT
+            u.user_key,
+            u.project_key,
+            COALESCE(p.project_code, '') AS project_code,
+            COALESCE(p.project_name, '') AS project_name,
+            u.user_login,
+            COALESCE(u.user_auth_username, '') AS user_auth_username,
+            COALESCE(u.user_auth_email, '') AS user_auth_email,
+            u.user_name,
+            COALESCE(u.user_chat_name, '') AS user_chat_name,
+            COALESCE(u.user_mobile_number, '') AS user_mobile_number,
+            COALESCE(u.user_avatar_path, '') AS user_avatar_path,
+            COALESCE(u.user_avatar_original_name, '') AS user_avatar_original_name,
+            COALESCE(u.user_avatar_mime_type, '') AS user_avatar_mime_type,
+            COALESCE(u.user_avatar_byte_size, 0) AS user_avatar_byte_size,
+            COALESCE(u.user_avatar_sha256, '') AS user_avatar_sha256,
+            COALESCE(DATE_FORMAT(u.user_avatar_uploaded_at, '%Y-%m-%d %H:%i:%s'), '') AS user_avatar_uploaded_at,
+            COALESCE(u.group_key, '') AS group_key,
+            COALESCE(g.group_name, '') AS group_name,
+            COALESCE(g.group_status, '') AS group_status,
+            COALESCE(u.position_key, '') AS position_key,
+            COALESCE(pos.position_code, '') AS position_code,
+            COALESCE(pos.position_name, '') AS position_name,
+            COALESCE(pos.position_status, '') AS position_status,
+            u.user_status,
+            CASE WHEN u.user_password_changed_at IS NULL THEN 1 ELSE 0 END AS password_change_required,
+            COALESCE(DATE_FORMAT(u.user_last_login_at, '%Y-%m-%d %H:%i:%s'), '') AS user_last_login_at,
+            COALESCE(DATE_FORMAT(u.user_created_at, '%Y-%m-%d %H:%i:%s'), '') AS user_created_at,
+            COALESCE(DATE_FORMAT(u.user_updated_at, '%Y-%m-%d %H:%i:%s'), '') AS user_updated_at
+        FROM project_user u
+        LEFT JOIN builder_project p ON p.project_key = u.project_key
+        LEFT JOIN project_user_group g ON g.group_key = u.group_key
+        LEFT JOIN project_user_position pos ON pos.position_key = u.position_key
+        WHERE " . implode(' AND ', $where) . "
+        ORDER BY p.project_code ASC, u.user_name ASC
+        LIMIT " . $limit;
+
+    $rows = bx_db()->GetAll($sql, $params) ?: [];
+    return array_map(static function (array $row): array {
+        return array_map(static fn ($value): string => $value === null ? '' : (string) $value, $row);
+    }, $rows);
+}
+
+function bx_project_user_firebase_rows_by_keys(string $projectKey, array $userKeys, int $limit = 10000): array
+{
+    $projectKey = trim($projectKey);
+    $userKeys = array_values(array_unique(array_filter(array_map(
+        static fn ($value): string => trim((string) $value),
+        $userKeys
+    ), static fn (string $value): bool => $value !== '')));
+    if ($projectKey === '' || $userKeys === []) {
+        return [];
+    }
+
+    $limit = max(1, min($limit, 10000));
+    $placeholders = implode(',', array_fill(0, count($userKeys), '?'));
+    $params = array_merge([$projectKey], $userKeys);
+    $sql = "
+        SELECT
+            u.user_key,
+            u.project_key,
+            COALESCE(p.project_code, '') AS project_code,
+            COALESCE(p.project_name, '') AS project_name,
+            u.user_login,
+            COALESCE(u.user_auth_username, '') AS user_auth_username,
+            COALESCE(u.user_auth_email, '') AS user_auth_email,
+            u.user_name,
+            COALESCE(u.user_chat_name, '') AS user_chat_name,
+            COALESCE(u.user_mobile_number, '') AS user_mobile_number,
+            COALESCE(u.user_avatar_path, '') AS user_avatar_path,
+            COALESCE(u.user_avatar_original_name, '') AS user_avatar_original_name,
+            COALESCE(u.user_avatar_mime_type, '') AS user_avatar_mime_type,
+            COALESCE(u.user_avatar_byte_size, 0) AS user_avatar_byte_size,
+            COALESCE(u.user_avatar_sha256, '') AS user_avatar_sha256,
+            COALESCE(DATE_FORMAT(u.user_avatar_uploaded_at, '%Y-%m-%d %H:%i:%s'), '') AS user_avatar_uploaded_at,
+            COALESCE(u.group_key, '') AS group_key,
+            COALESCE(g.group_name, '') AS group_name,
+            COALESCE(g.group_status, '') AS group_status,
+            COALESCE(u.position_key, '') AS position_key,
+            COALESCE(pos.position_code, '') AS position_code,
+            COALESCE(pos.position_name, '') AS position_name,
+            COALESCE(pos.position_status, '') AS position_status,
+            u.user_status,
+            CASE WHEN u.user_password_changed_at IS NULL THEN 1 ELSE 0 END AS password_change_required,
+            COALESCE(DATE_FORMAT(u.user_last_login_at, '%Y-%m-%d %H:%i:%s'), '') AS user_last_login_at,
+            COALESCE(DATE_FORMAT(u.user_created_at, '%Y-%m-%d %H:%i:%s'), '') AS user_created_at,
+            COALESCE(DATE_FORMAT(u.user_updated_at, '%Y-%m-%d %H:%i:%s'), '') AS user_updated_at
+        FROM project_user u
+        LEFT JOIN builder_project p ON p.project_key = u.project_key
+        LEFT JOIN project_user_group g ON g.group_key = u.group_key
+        LEFT JOIN project_user_position pos ON pos.position_key = u.position_key
+        WHERE u.project_key = ?
+          AND u.user_key IN ($placeholders)
+        ORDER BY p.project_code ASC, u.user_name ASC
+        LIMIT " . $limit;
+
+    $rows = bx_db()->GetAll($sql, $params) ?: [];
+    return array_map(static function (array $row): array {
+        return array_map(static fn ($value): string => $value === null ? '' : (string) $value, $row);
+    }, $rows);
+}
+
+function bx_sync_project_user_rows_to_firebase(array $rows): array
+{
+    $rows = array_values(array_filter($rows, static fn ($row): bool => is_array($row)));
+    if ($rows === []) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'No project user row is available for Firebase sync.'];
+    }
+
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    if ($projectId === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project id is not configured.'];
+    }
+    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
+    }
+
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-user-sync.mjs';
+    if (!is_readable($scriptPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project user sync script is missing.'];
+    }
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'rows' => $rows,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project user payload could not be encoded.'];
+    }
+
+    $command = 'node ' . escapeshellarg($scriptPath);
+    $descriptorSpec = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project user sync process could not start.'];
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = [
+            'ok' => false,
+            'message' => trim((string) $stderr) !== '' ? 'Firebase project user sync failed.' : 'Firebase project user sync returned an invalid response.',
+        ];
+    }
+
+    return $result + [
+        'exit_code' => $exitCode,
+        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
+    ];
+}
+
+/**
+ * Write one project_user profile to Firebase before its MySQL projection.
+ * The payload is deliberately allowlisted and excludes assignments,
+ * passwords, password hashes, and browser credentials.
+ */
+function bx_admin_write_project_user_to_firebase(array $row, string $password = ''): array
+{
+    $projectId = bx_admin_firebase_project_id();
+    $serviceAccountPath = bx_admin_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-project-user-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Administrator Firebase project user write is not configured.'];
+    }
+
+    $allowedFields = [
+        'user_key', 'project_key', 'user_login', 'user_auth_username', 'user_auth_email',
+        'user_name', 'user_chat_name', 'user_mobile_number', 'user_avatar_path',
+        'user_avatar_original_name', 'user_avatar_mime_type', 'user_avatar_byte_size',
+        'user_avatar_sha256', 'user_avatar_uploaded_at', 'user_status', 'user_last_login_at', 'user_last_login_ip_address', 'user_last_login_device',
+        'user_last_logout_at', 'user_last_logout_ip_address', 'user_last_logout_device', 'user_password_reset_at', 'user_activated_at',
+        'user_deactivated_at', 'user_locked_at', 'user_deleted_at', 'user_password_change_required',
+    ];
+    $safeRow = [];
+    foreach ($allowedFields as $field) {
+        if (array_key_exists($field, $row)) {
+            $safeRow[$field] = $row[$field];
+        }
+    }
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'profile' => $safeRow,
+        'operation' => trim((string) ($row['user_key'] ?? '')) === '' ? 'create' : 'update',
+        'password' => $password,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'message' => 'Administrator Firebase project user payload could not be encoded.'];
+    }
+
+    $process = proc_open(
+        'node ' . escapeshellarg($scriptPath),
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        dirname(__DIR__)
+    );
+    if (!is_resource($process)) {
+        return ['ok' => false, 'message' => 'Administrator Firebase project user process could not start.'];
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result) || $exitCode !== 0) {
+        return ['ok' => false, 'message' => 'Administrator Firebase project user write failed.', 'exit_code' => $exitCode];
+    }
+
+    return $result + ['exit_code' => $exitCode];
+}
+
+function bx_sync_project_user_auth_to_firebase(array $row, string $createPassword = '', string $updatePassword = ''): array
+{
+    if ($row === []) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'No project user row is available for Firebase Auth sync.'];
+    }
+
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    if ($projectId === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project id is not configured.'];
+    }
+    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
+    }
+
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-auth-user-sync.mjs';
+    if (!is_readable($scriptPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase Auth project user sync script is missing.'];
+    }
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'row' => $row,
+        'create_password' => $createPassword,
+        'update_password' => $updatePassword,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase Auth project user payload could not be encoded.'];
+    }
+
+    $command = 'node ' . escapeshellarg($scriptPath);
+    $descriptorSpec = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase Auth project user sync process could not start.'];
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+    $stdout = '';
+    $stderr = '';
+    $deadline = microtime(true) + 45.0;
+    $timedOut = false;
+
+    while (true) {
+        $read = [];
+        if (!feof($pipes[1])) {
+            $read[] = $pipes[1];
+        }
+        if (!feof($pipes[2])) {
+            $read[] = $pipes[2];
+        }
+
+        if ($read !== []) {
+            $remaining = max(0.0, $deadline - microtime(true));
+            $seconds = (int) $remaining;
+            $microseconds = (int) (($remaining - $seconds) * 1000000);
+            $write = null;
+            $except = null;
+            @stream_select($read, $write, $except, $seconds, $microseconds);
+            foreach ($read as $stream) {
+                $chunk = stream_get_contents($stream);
+                if ($stream === $pipes[1]) {
+                    $stdout .= $chunk === false ? '' : $chunk;
+                } else {
+                    $stderr .= $chunk === false ? '' : $chunk;
+                }
+            }
+        }
+
+        $status = proc_get_status($process);
+        if (!$status['running'] && feof($pipes[1]) && feof($pipes[2])) {
+            break;
+        }
+        if (microtime(true) >= $deadline) {
+            $timedOut = true;
+            proc_terminate($process, true);
+            break;
+        }
+        usleep(10000);
+    }
+
+    $stdout .= (string) (stream_get_contents($pipes[1]) ?: '');
+    $stderr .= (string) (stream_get_contents($pipes[2]) ?: '');
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    if ($timedOut) {
+        $exitCode = 124;
+        $stderr .= "\nFirebase Auth sync timed out.";
+    }
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = [
+            'ok' => false,
+            'message' => trim((string) $stderr) !== '' ? 'Firebase Auth project user sync failed.' : 'Firebase Auth project user sync returned an invalid response.',
+        ];
+    }
+
+    return $result + [
+        'exit_code' => $exitCode,
+        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
+    ];
+}
+
+/**
+ * Write a project_user profile to Firebase/Auth before any MySQL projection.
+ * MySQL is intentionally not accessed by this helper; Master Sync owns the
+ * downstream projection and acknowledgement lifecycle.
+ */
+function bx_admin_write_project_user_firebase_first(array $profile, string $password = ''): array
+{
+    $projectId = bx_admin_firebase_project_id();
+    $serviceAccountPath = bx_admin_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-project-user-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Firebase project user writer is not configured.'];
+    }
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'operation' => !empty($profile['user_key']) ? 'update' : 'create',
+        'profile' => $profile,
+        'password' => $password,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'message' => 'Firebase project user payload could not be encoded.'];
+    }
+
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [
+        0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+    ], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'message' => 'Firebase project user writer could not start.'];
+    }
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = ['ok' => false, 'message' => 'Firebase project user writer returned an invalid response.'];
+    }
+    $result['exit_code'] = $exitCode;
+    $result['stderr'] = trim((string) $stderr) === '' ? '' : '[REDACTED]';
+    return $result;
+}
+
+function bx_admin_write_project_task_firebase_first(string $collection, array $record, string $operation = 'update', string $documentKey = ''): array
+{
+    if (!in_array($collection, ['project_task', 'project_task_stage', 'project_task_stage_response'], true)) {
+        return ['ok' => false, 'message' => 'Firebase task collection is not allowed.'];
+    }
+    if (!in_array($operation, ['create', 'update', 'soft_delete', 'ensure_default_stage'], true)) {
+        return ['ok' => false, 'message' => 'Firebase task operation is not allowed.'];
+    }
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-task-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Firebase task writer is not configured.'];
+    }
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'collection' => $collection,
+        'operation' => $operation,
+        'document_key' => $documentKey,
+        'record' => $record,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) return ['ok' => false, 'message' => 'Firebase task payload could not be encoded.'];
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) return ['ok' => false, 'message' => 'Firebase task writer could not start.'];
+    fwrite($pipes[0], $payload); fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) $result = ['ok' => false, 'message' => 'Firebase task writer returned an invalid response.'];
+    $result['exit_code'] = $exitCode;
+    $result['stderr'] = trim((string) $stderr) === '' ? '' : '[REDACTED]';
+    return $result;
+}
+
+function bx_admin_heal_project_task_default_stage(string $taskKey): array
+{
+    $taskKey = trim($taskKey);
+    if (!preg_match('/^[A-Za-z0-9]{20,40}$/', $taskKey)) {
+        return ['ok' => false, 'message' => 'Task document ID is invalid.'];
+    }
+    return bx_admin_write_project_task_firebase_first('project_task_stage', [
+        'task_key' => $taskKey,
+    ], 'ensure_default_stage');
+}
+
+function bx_admin_write_project_position_firebase_first(array $record): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-project-reference-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Firebase position writer is not configured.'];
+    }
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'collection' => 'project_position',
+        'record' => $record,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'message' => 'Firebase position payload could not be encoded.'];
+    }
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [
+        0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+    ], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'message' => 'Firebase position writer could not start.'];
+    }
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = ['ok' => false, 'message' => 'Firebase position writer returned an invalid response.'];
+    }
+    $result['exit_code'] = $exitCode;
+    $result['stderr'] = trim((string) $stderr) === '' ? '' : '[REDACTED]';
+    return $result;
+}
+
+function bx_admin_write_project_group_firebase_first(array $record, array $assignments = [], bool $syncAssignments = true): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-project-group-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Firebase group writer is not configured.'];
+    }
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'record' => $record,
+        'assignments' => $assignments,
+        'sync_assignments' => $syncAssignments,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) return ['ok' => false, 'message' => 'Firebase group payload could not be encoded.'];
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [
+        0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+    ], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) return ['ok' => false, 'message' => 'Firebase group writer could not start.'];
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) $result = ['ok' => false, 'message' => 'Firebase group writer returned an invalid response.'];
+    $result['exit_code'] = $exitCode;
+    $result['stderr'] = trim((string) $stderr) === '' ? '' : '[REDACTED]';
+    return $result;
+}
+
+function bx_admin_write_project_bed_source_firebase_first(array $record, string $operation = 'save', array $orderKeys = []): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-project-bed-source-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Firebase bed source writer is not configured.'];
+    }
+    $encoded = json_encode(['project_id' => $projectId, 'service_account_path' => $serviceAccountPath, 'operation' => $operation, 'record' => $record, 'order_keys' => $orderKeys], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($encoded)) return ['ok' => false, 'message' => 'Firebase bed source payload could not be encoded.'];
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) return ['ok' => false, 'message' => 'Firebase bed source writer could not start.'];
+    fwrite($pipes[0], $encoded); fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) $result = ['ok' => false, 'message' => 'Firebase bed source writer returned an invalid response.'];
+    $result['exit_code'] = $exitCode;
+    $result['stderr'] = trim((string) $stderr) === '' ? '' : '[REDACTED]';
+    return $result;
+}
+
+function bx_admin_write_project_bed_treatment_firebase_first(array $record, string $operation = 'save', array $orderKeys = []): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-project-bed-treatment-write.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return ['ok' => false, 'message' => 'Firebase bed treatment writer is not configured.'];
+    }
+    $encoded = json_encode(['project_id' => $projectId, 'service_account_path' => $serviceAccountPath, 'operation' => $operation, 'record' => $record, 'order_keys' => $orderKeys], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($encoded)) return ['ok' => false, 'message' => 'Firebase bed treatment payload could not be encoded.'];
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) return ['ok' => false, 'message' => 'Firebase bed treatment writer could not start.'];
+    fwrite($pipes[0], $encoded); fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) $result = ['ok' => false, 'message' => 'Firebase bed treatment writer returned an invalid response.'];
+    $result['exit_code'] = $exitCode;
+    $result['stderr'] = trim((string) $stderr) === '' ? '' : '[REDACTED]';
+    return $result;
+}
+
+function bx_sync_project_user_auth_rows_to_firebase(array $rows, string $createPassword = ''): array
+{
+    $rows = array_values(array_filter($rows, static fn ($row): bool => is_array($row)));
+    if ($rows === []) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'No project user row is available for Firebase Auth sync.'];
+    }
+
+    $created = 0;
+    $updated = 0;
+    foreach ($rows as $row) {
+        $sync = bx_sync_project_user_auth_to_firebase($row, $createPassword, '');
+        if (($sync['ok'] ?? false) !== true) {
+            return $sync + [
+                'created' => $created,
+                'updated' => $updated,
+            ];
+        }
+        $action = (string) ($sync['action'] ?? '');
+        if ($action === 'created') {
+            $created++;
+        } else {
+            $updated++;
+        }
+    }
+
+    return [
+        'ok' => true,
+        'synced' => count($rows),
+        'created' => $created,
+        'updated' => $updated,
+    ];
+}
+
+function bx_project_user_group_firebase_rows(string $projectKey = '', ?string $groupKey = null, int $limit = 10000): array
+{
+    $where = ["g.group_status <> 'DELETED'"];
+    $params = [];
+
+    $projectKey = trim($projectKey);
+    if ($projectKey !== '') {
+        $where[] = 'g.project_key = ?';
+        $params[] = $projectKey;
+    }
+
+    if ($groupKey !== null && trim($groupKey) !== '') {
+        $where[] = 'g.group_key = ?';
+        $params[] = trim($groupKey);
+    }
+
+    $limit = max(1, min($limit, 10000));
+    $sql = "
+        SELECT
+            g.group_key,
+            g.project_key,
+            COALESCE(p.project_code, '') AS project_code,
+            COALESCE(p.project_name, '') AS project_name,
+            g.group_name,
+            COALESCE(g.group_description, '') AS group_description,
+            COALESCE(g.group_image_path, '') AS group_image_path,
+            COALESCE(g.group_image_original_name, '') AS group_image_original_name,
+            COALESCE(g.group_image_mime_type, '') AS group_image_mime_type,
+            COALESCE(g.group_image_byte_size, 0) AS group_image_byte_size,
+            COALESCE(g.group_image_sha256, '') AS group_image_sha256,
+            COALESCE(DATE_FORMAT(g.group_image_uploaded_at, '%Y-%m-%d %H:%i:%s'), '') AS group_image_uploaded_at,
+            g.group_status,
+            COALESCE(DATE_FORMAT(g.created_at, '%Y-%m-%d %H:%i:%s'), '') AS group_created_at,
+            COALESCE(DATE_FORMAT(g.updated_at, '%Y-%m-%d %H:%i:%s'), '') AS group_updated_at,
+            COALESCE((SELECT COUNT(*) FROM project_user_position pos WHERE pos.group_key = g.group_key AND pos.position_status <> 'DELETED'), 0) AS position_count,
+            COALESCE((SELECT COUNT(*) FROM project_user u WHERE u.group_key = g.group_key AND u.user_status <> 'DELETED'), 0) AS member_count
+        FROM project_user_group g
+        LEFT JOIN builder_project p ON p.project_key = g.project_key
+        WHERE " . implode(' AND ', $where) . "
+        ORDER BY p.project_code ASC, g.group_name ASC
+        LIMIT " . $limit;
+
+    $rows = bx_db()->GetAll($sql, $params) ?: [];
+    $documents = [];
+    foreach ($rows as $row) {
+        $currentProjectKey = (string) ($row['project_key'] ?? '');
+        $currentGroupKey = (string) ($row['group_key'] ?? '');
+        $positions = bx_db()->GetAll(
+            "SELECT
+                position_key,
+                project_key,
+                group_key,
+                position_code,
+                position_name,
+                COALESCE(position_description, '') AS position_description,
+                position_status,
+                COALESCE(DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s'), '') AS position_created_at,
+                COALESCE(DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s'), '') AS position_updated_at
+            FROM project_user_position
+            WHERE project_key = ? AND group_key = ? AND position_status <> 'DELETED'
+            ORDER BY position_name ASC",
+            [$currentProjectKey, $currentGroupKey]
+        ) ?: [];
+        $members = bx_db()->GetAll(
+            "SELECT
+                u.user_key,
+                u.project_key,
+                COALESCE(u.group_key, '') AS group_key,
+                COALESCE(u.position_key, '') AS position_key,
+                u.user_login,
+                u.user_name,
+                COALESCE(u.user_chat_name, '') AS user_chat_name,
+                COALESCE(u.user_mobile_number, '') AS user_mobile_number,
+                COALESCE(u.user_avatar_path, '') AS user_avatar_path,
+                u.user_status,
+                COALESCE(pos.position_code, '') AS position_code,
+                COALESCE(pos.position_name, '') AS position_name
+            FROM project_user u
+            LEFT JOIN project_user_position pos ON pos.position_key = u.position_key
+            WHERE u.project_key = ? AND u.group_key = ? AND u.user_status <> 'DELETED'
+            ORDER BY u.user_name ASC",
+            [$currentProjectKey, $currentGroupKey]
+        ) ?: [];
+
+        $stringRow = array_map(static fn ($value): string => $value === null ? '' : (string) $value, $row);
+        $stringRow['position_count'] = (string) count($positions);
+        $stringRow['member_count'] = (string) count($members);
+        $stringRow['positions'] = array_map(static function (array $position): array {
+            return array_map(static fn ($value): string => $value === null ? '' : (string) $value, $position);
+        }, $positions);
+        $stringRow['members'] = array_map(static function (array $member): array {
+            return array_map(static fn ($value): string => $value === null ? '' : (string) $value, $member);
+        }, $members);
+        $documents[] = $stringRow;
+    }
+
+    return $documents;
+}
+
+function bx_sync_project_user_group_rows_to_firebase(array $rows): array
+{
+    $rows = array_values(array_filter($rows, static fn ($row): bool => is_array($row)));
+    if ($rows === []) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'No project user group row is available for Firebase sync.'];
+    }
+
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    if ($projectId === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project id is not configured.'];
+    }
+    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
+    }
+
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-user-group-sync.mjs';
+    if (!is_readable($scriptPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project user group sync script is missing.'];
+    }
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'rows' => $rows,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project user group payload could not be encoded.'];
+    }
+
+    $command = 'node ' . escapeshellarg($scriptPath);
+    $descriptorSpec = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project user group sync process could not start.'];
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = [
+            'ok' => false,
+            'message' => trim((string) $stderr) !== '' ? 'Firebase project user group sync failed.' : 'Firebase project user group sync returned an invalid response.',
+        ];
+    }
+
+    return $result + [
+        'exit_code' => $exitCode,
+        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
+    ];
+}
+
 function bx_sync_project_bed_to_firebase(string $bedKey): array
 {
     $bedRows = bx_project_bed_firebase_rows(null, $bedKey, 1);
@@ -1165,7 +2330,7 @@ function bx_messenger_message_public(array $row, array $attachments = [], ?array
         'attachments' => $removed ? [] : array_values($attachments),
         'reply' => $reply,
         'reactions' => $removed ? [] : array_values($reactions),
-        'viewer_base_url' => $viewerBaseUrl ?? bx_setting('media_image_viewer_url', 'http://localhost/rbms.com/view.php'),
+        'viewer_base_url' => $viewerBaseUrl ?? bx_project_media_setting((string) ($row['project_key'] ?? ''), 'media_image_viewer_url', ''),
     ];
 }
 
@@ -1378,7 +2543,7 @@ function bx_messenger_messages_page(string $groupKey, int $limit = 20, string $b
     $attachments = bx_messenger_attachments_for_chat_keys($chatKeys);
     $replies = bx_messenger_reply_rows($rows);
     $reactions = bx_messenger_reactions_for_chat_keys($chatKeys, $user);
-    $viewerBaseUrl = bx_setting('media_image_viewer_url', 'http://localhost/rbms.com/view.php');
+    $viewerBaseUrl = bx_project_media_setting((string) ($rows[0]['project_key'] ?? ''), 'media_image_viewer_url', '');
 
     $messages = array_map(
         static fn (array $row): array => bx_messenger_message_public(
@@ -1601,7 +2766,7 @@ function bx_messenger_message_by_chat_key(string $chatKey, ?array $user = null):
     $attachments = bx_messenger_attachments_for_chat_keys([$chatKey]);
     $replies = bx_messenger_reply_rows([$row]);
     $reactions = bx_messenger_reactions_for_chat_keys([$chatKey], $user);
-    $viewerBaseUrl = bx_setting('media_image_viewer_url', 'http://localhost/rbms.com/view.php');
+    $viewerBaseUrl = bx_project_media_setting((string) ($row['project_key'] ?? ''), 'media_image_viewer_url', '');
 
     return bx_messenger_message_public(
         $row,
@@ -1716,6 +2881,22 @@ function bx_messenger_toggle_reaction(string $chatKey, string $reactionValue, ?a
         if ($saved === false) {
             throw new RuntimeException('Reaction save failed: ' . trim((string) $db->ErrorMsg()));
         }
+
+        $reactionRows = $db->GetAll(
+            "SELECT reaction_key, chat_key, project_key, group_key, user_key, reaction_value,
+                reaction_status, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+                DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+            FROM project_messenger_chat_reaction WHERE chat_key = ? ORDER BY x_id ASC",
+            [$chatKey]
+        ) ?: [];
+        bx_messenger_queue_firebase_event(
+            'REACTION_CHANGED',
+            (string) ($message['project_key'] ?? ''),
+            (string) ($message['group_key'] ?? ''),
+            $chatKey,
+            ['chat_key' => $chatKey, 'reactions' => $reactionRows]
+        );
+
         if ($db->CommitTrans() === false) {
             throw new RuntimeException('Reaction transaction could not commit.');
         }
@@ -1863,6 +3044,15 @@ function bx_messenger_send_message(string $groupKey, string $messageText, string
             throw new RuntimeException('Messenger read-back failed after save.');
         }
 
+        $syncPayload = bx_messenger_sync_payload_for_chat($chatKey);
+        bx_messenger_queue_firebase_event(
+            'MESSAGE_CREATED',
+            $projectKey,
+            $groupKey,
+            $chatKey,
+            $syncPayload
+        );
+
         if ($db->CommitTrans() === false) {
             throw new RuntimeException('Messenger transaction could not commit.');
         }
@@ -1944,6 +3134,15 @@ function bx_messenger_remove_message(string $chatKey, ?array $user = null): arra
         if ($saved === false) {
             throw new RuntimeException('Message attachment remove failed: ' . trim((string) $db->ErrorMsg()));
         }
+
+        $syncPayload = bx_messenger_sync_payload_for_chat($chatKey);
+        bx_messenger_queue_firebase_event(
+            'MESSAGE_REMOVED',
+            (string) ($syncPayload['message']['project_key'] ?? ''),
+            (string) ($syncPayload['message']['group_key'] ?? ''),
+            $chatKey,
+            $syncPayload
+        );
 
         if ($db->CommitTrans() === false) {
             throw new RuntimeException('Messenger delete transaction could not commit.');
@@ -2096,6 +3295,194 @@ function bx_add_unique_index_if_missing(string $table, string $column, string $i
     if ((int) $columnIsUnique === 0) {
         $db->Execute("ALTER TABLE {$table} ADD {$definition}");
     }
+}
+
+/**
+ * Additive Portal projection schema for the Firebase-first group/position/user
+ * contract. Legacy project_user_group and project_user_position definitions are
+ * intentionally preserved; no rename, drop, or data backfill is performed.
+ */
+function bx_ensure_portal_authoritative_projection_schema(): void
+{
+    $db = bx_db();
+
+    $db->Execute("CREATE TABLE IF NOT EXISTS project_group (
+        group_key VARCHAR(255) NOT NULL,
+        project_key VARCHAR(255) NOT NULL,
+        group_name VARCHAR(120) NOT NULL,
+        group_description TEXT NULL,
+        group_image_path VARCHAR(500) NULL,
+        group_image_original_name VARCHAR(255) NULL,
+        group_image_mime_type VARCHAR(120) NULL,
+        group_image_byte_size BIGINT UNSIGNED NULL,
+        group_image_sha256 CHAR(64) NULL,
+        group_image_uploaded_at DATETIME(6) NULL,
+        group_status ENUM('ACTIVE','INACTIVE','DELETED') NOT NULL DEFAULT 'ACTIVE',
+        firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_group',
+        mysql_created_at DATETIME(6) NULL,
+        mysql_updated_at DATETIME(6) NULL,
+        mysql_deleted_at DATETIME(6) NULL,
+        mysql_synced_at DATETIME(6) NULL,
+        mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        PRIMARY KEY (group_key),
+        KEY idx_project_group_project_status (project_key, group_status),
+        KEY idx_project_group_sync_status (mysql_sync_status),
+        KEY idx_project_group_firebase_collection (firebase_collection)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $db->Execute("CREATE TABLE IF NOT EXISTS project_position (
+        position_key VARCHAR(255) NOT NULL,
+        project_key VARCHAR(255) NOT NULL,
+        group_key VARCHAR(255) NOT NULL,
+        position_code VARCHAR(80) NOT NULL,
+        position_name VARCHAR(160) NOT NULL,
+        position_description TEXT NULL,
+        position_status ENUM('ACTIVE','INACTIVE','DELETED') NOT NULL DEFAULT 'ACTIVE',
+        firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_position',
+        mysql_created_at DATETIME(6) NULL,
+        mysql_updated_at DATETIME(6) NULL,
+        mysql_deleted_at DATETIME(6) NULL,
+        mysql_synced_at DATETIME(6) NULL,
+        mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        PRIMARY KEY (position_key),
+        UNIQUE KEY uq_project_position_code (project_key, position_code),
+        UNIQUE KEY uq_project_position_name (project_key, position_name),
+        KEY idx_project_position_project_status (project_key, position_status),
+        KEY idx_project_position_group_status (group_key, position_status),
+        KEY idx_project_position_sync_status (mysql_sync_status),
+        KEY idx_project_position_firebase_collection (firebase_collection)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // The legacy table currently owns this name and stores group definitions.
+    // Never reinterpret it as assignments during an automatic bootstrap.
+    $assignmentTableExists = (int) $db->GetOne(
+        'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+        [BUILDERX_DB_NAME, 'project_user_group']
+    ) === 1;
+    // Existing installations may already have project_group/project_position
+    // without the Firebase projection metadata. Add only missing columns and
+    // indexes; do not rewrite or infer values for existing rows.
+    $schemaFields = [
+        ['project_group', 'group_key', 'VARCHAR(255) NULL AFTER project_key'],
+        ['project_position', 'position_key', 'VARCHAR(255) NULL AFTER project_key'],
+        ['project_group', 'firebase_collection', "VARCHAR(80) NOT NULL DEFAULT 'project_group' AFTER group_status"],
+        ['project_group', 'mysql_created_at', 'DATETIME(6) NULL AFTER firebase_collection'],
+        ['project_group', 'mysql_updated_at', 'DATETIME(6) NULL AFTER mysql_created_at'],
+        ['project_group', 'mysql_deleted_at', 'DATETIME(6) NULL AFTER mysql_updated_at'],
+        ['project_group', 'mysql_synced_at', 'DATETIME(6) NULL AFTER mysql_deleted_at'],
+        ['project_group', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_synced_at"],
+        ['project_position', 'firebase_collection', "VARCHAR(80) NOT NULL DEFAULT 'project_position' AFTER position_status"],
+        ['project_position', 'mysql_created_at', 'DATETIME(6) NULL AFTER firebase_collection'],
+        ['project_position', 'mysql_updated_at', 'DATETIME(6) NULL AFTER mysql_created_at'],
+        ['project_position', 'mysql_deleted_at', 'DATETIME(6) NULL AFTER mysql_updated_at'],
+        ['project_position', 'mysql_synced_at', 'DATETIME(6) NULL AFTER mysql_deleted_at'],
+        ['project_position', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_synced_at"],
+    ];
+    foreach ($schemaFields as $schemaField) {
+        [$table, $column, $definition] = $schemaField;
+        bx_add_column_if_missing($table, $column, $definition);
+    }
+    bx_add_index_if_missing('project_group', 'idx_project_group_sync_status', 'INDEX idx_project_group_sync_status (mysql_sync_status)');
+    bx_add_index_if_missing('project_group', 'idx_project_group_firebase_collection', 'INDEX idx_project_group_firebase_collection (firebase_collection)');
+    bx_add_index_if_missing('project_position', 'idx_project_position_sync_status', 'INDEX idx_project_position_sync_status (mysql_sync_status)');
+    bx_add_index_if_missing('project_position', 'idx_project_position_firebase_collection', 'INDEX idx_project_position_firebase_collection (firebase_collection)');
+    if (!$assignmentTableExists) {
+        $db->Execute("CREATE TABLE project_user_group (
+            assignment_key VARCHAR(255) NOT NULL,
+            project_key VARCHAR(255) NOT NULL,
+            group_key VARCHAR(255) NOT NULL,
+            user_key VARCHAR(255) NOT NULL,
+            position_key VARCHAR(255) NULL,
+            assignment_status ENUM('ACTIVE','INACTIVE','DELETED') NOT NULL DEFAULT 'ACTIVE',
+            firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_user_group',
+            mysql_created_at DATETIME(6) NULL,
+            mysql_updated_at DATETIME(6) NULL,
+            mysql_deleted_at DATETIME(6) NULL,
+            mysql_synced_at DATETIME(6) NULL,
+            mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+            PRIMARY KEY (assignment_key),
+            UNIQUE KEY uq_project_user_group_assignment (project_key, group_key, user_key),
+            KEY idx_project_user_group_assignment_project_status (project_key, assignment_status),
+            KEY idx_project_user_group_assignment_group_user (group_key, user_key),
+            KEY idx_project_user_group_assignment_user_project (user_key, project_key),
+            KEY idx_project_user_group_assignment_sync_status (mysql_sync_status),
+            KEY idx_project_user_group_assignment_firebase_collection (firebase_collection)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    }
+
+    // Do not add assignment fields to an existing project_user_group table:
+    // legacy installations use that table for group definitions. Reusing it
+    // would make old rows invalid and would silently change their meaning.
+
+    // Firebase Auth is authoritative. These columns are additive and retain
+    // the existing NOT NULL password hash until an explicit credential gate.
+    bx_add_column_if_missing('project_user', 'firebase_uid', 'VARCHAR(255) NULL AFTER user_key');
+    bx_add_column_if_missing('project_user', 'user_password_change_required', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER user_status');
+    bx_add_column_if_missing('project_user', 'user_disabled_at', 'DATETIME(6) NULL AFTER password_change_required');
+    bx_add_column_if_missing('project_user', 'user_disabled', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER user_disabled_at');
+    bx_add_column_if_missing('project_user', 'user_deleted', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER user_disabled');
+    bx_add_column_if_missing('project_user', 'user_locked', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER user_deleted');
+    bx_add_column_if_missing('project_user', 'firebase_collection', "VARCHAR(80) NOT NULL DEFAULT 'project_user' AFTER user_deleted_at");
+    bx_add_column_if_missing('project_user', 'mysql_created_at', 'DATETIME(6) NULL AFTER firebase_collection');
+    bx_add_column_if_missing('project_user', 'mysql_updated_at', 'DATETIME(6) NULL AFTER mysql_created_at');
+    bx_add_column_if_missing('project_user', 'mysql_deleted_at', 'DATETIME(6) NULL AFTER mysql_updated_at');
+    bx_add_column_if_missing('project_user', 'mysql_synced_at', 'DATETIME(6) NULL AFTER mysql_deleted_at');
+    bx_add_column_if_missing('project_user', 'mysql_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER mysql_synced_at");
+    bx_add_column_if_missing('project_user', 'user_last_login_ip_address', 'VARCHAR(80) NULL AFTER user_last_login_at');
+    bx_add_column_if_missing('project_user', 'user_last_login_device', 'VARCHAR(255) NULL AFTER user_last_login_ip_address');
+    bx_add_column_if_missing('project_user', 'user_last_logout_at', 'DATETIME(6) NULL AFTER user_last_login_device');
+    bx_add_column_if_missing('project_user', 'user_last_logout_ip_address', 'VARCHAR(80) NULL AFTER user_last_logout_at');
+    bx_add_column_if_missing('project_user', 'user_last_logout_device', 'VARCHAR(255) NULL AFTER user_last_logout_ip_address');
+    bx_add_column_if_missing('project_user', 'user_password_reset_at', 'DATETIME(6) NULL AFTER user_last_logout_device');
+    bx_add_column_if_missing('project_user', 'user_activated_at', 'DATETIME(6) NULL AFTER user_password_reset_at');
+    bx_add_column_if_missing('project_user', 'user_deactivated_at', 'DATETIME(6) NULL AFTER user_activated_at');
+    bx_add_column_if_missing('project_user', 'user_locked_at', 'DATETIME(6) NULL AFTER user_deactivated_at');
+    bx_add_column_if_missing('project_user', 'firebase_created_at', 'DATETIME(6) NULL AFTER firebase_collection');
+    bx_add_column_if_missing('project_user', 'firebase_updated_at', 'DATETIME(6) NULL AFTER firebase_created_at');
+    bx_add_column_if_missing('project_user', 'firebase_deleted_at', 'DATETIME(6) NULL AFTER firebase_updated_at');
+    bx_add_index_if_missing('project_user', 'uq_project_user_firebase_uid', 'UNIQUE KEY uq_project_user_firebase_uid (project_key, firebase_uid)');
+    bx_add_index_if_missing('project_user', 'idx_project_user_sync_status', 'INDEX idx_project_user_sync_status (mysql_sync_status)');
+    bx_add_index_if_missing('project_user', 'idx_project_user_disabled', 'INDEX idx_project_user_disabled (project_key, user_status, user_disabled_at)');
+
+    $db->Execute("CREATE TABLE IF NOT EXISTS project_user_login_history (
+        user_login_history_key VARCHAR(255) NOT NULL,
+        project_key VARCHAR(255) NOT NULL,
+        user_key VARCHAR(255) NULL,
+        user_login VARCHAR(80) NULL,
+        user_action ENUM('LOGIN','LOGOUT','CREATE','EDIT','RESET_PASSWORD','ACTIVATE','DEACTIVATE','LOCK','DELETE','RESTORE') NOT NULL,
+        user_action_status ENUM('SUCCESS','FAILED') NOT NULL,
+        user_action_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        user_previous_status VARCHAR(20) NULL,
+        user_new_status VARCHAR(20) NULL,
+        user_action_reason VARCHAR(255) NULL,
+        user_performed_by_key VARCHAR(255) NULL,
+        user_ip_address VARCHAR(80) NULL,
+        user_device VARCHAR(255) NULL,
+        firebase_collection VARCHAR(80) NOT NULL DEFAULT 'project_user_login_history',
+        mysql_created_at DATETIME(6) NULL,
+        mysql_updated_at DATETIME(6) NULL,
+        mysql_deleted_at DATETIME(6) NULL,
+        mysql_synced_at DATETIME(6) NULL,
+        mysql_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        PRIMARY KEY (user_login_history_key),
+        KEY idx_project_user_login_history_project_time (project_key, user_action_at),
+        KEY idx_project_user_login_history_user_time (user_key, user_action_at),
+        KEY idx_project_user_login_history_action (user_action, user_action_status),
+        KEY idx_project_user_login_history_sync_status (mysql_sync_status),
+        KEY idx_project_user_login_history_firebase_collection (firebase_collection)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    bx_add_column_if_missing('project_user_login_history', 'firebase_created_at', 'DATETIME(6) NULL AFTER firebase_collection');
+    bx_add_column_if_missing('project_user_login_history', 'firebase_updated_at', 'DATETIME(6) NULL AFTER firebase_created_at');
+    bx_add_column_if_missing('project_user_login_history', 'firebase_deleted_at', 'DATETIME(6) NULL AFTER firebase_updated_at');
+    $db->Execute("ALTER TABLE project_user_login_history MODIFY created_at DATETIME(6) NULL, MODIFY updated_at DATETIME(6) NULL");
 }
 
 function bx_phase_builder_current_draft_key(): string
@@ -2515,6 +3902,23 @@ function bx_schema(): void
     ");
 
     $db->Execute("
+        CREATE TABLE IF NOT EXISTS project_setting_media (
+            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            setting_key CHAR(36) NOT NULL UNIQUE,
+            project_key CHAR(36) NOT NULL,
+            setting_name VARCHAR(120) NOT NULL,
+            setting_value TEXT NULL,
+            setting_group VARCHAR(80) NOT NULL DEFAULT 'media',
+            is_secret TINYINT(1) NOT NULL DEFAULT 0,
+            setting_status ENUM('ACTIVE','INACTIVE','DELETED') NOT NULL DEFAULT 'ACTIVE',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_project_setting_media_name (project_key, setting_name),
+            KEY idx_project_setting_media_group (project_key, setting_group, setting_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    $db->Execute("
         CREATE TABLE IF NOT EXISTS builder_android_client_app (
             x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             client_app_key CHAR(36) NOT NULL UNIQUE,
@@ -2529,6 +3933,8 @@ function bx_schema(): void
             firebase_storage_bucket VARCHAR(180) NOT NULL DEFAULT '',
             android_package_name VARCHAR(160) NOT NULL,
             apk_download_path VARCHAR(500) NOT NULL DEFAULT '',
+            banner_image_url TEXT NULL,
+            login_background_image_url TEXT NULL,
             splash_screen_image_url_1 TEXT NULL,
             splash_screen_image_url_2 TEXT NULL,
             splash_screen_image_url_3 TEXT NULL,
@@ -2538,6 +3944,9 @@ function bx_schema(): void
             force_update_enabled TINYINT(1) NOT NULL DEFAULT 0,
             release_acknowledgement_required TINYINT(1) NOT NULL DEFAULT 1,
             geofence_required TINYINT(1) NOT NULL DEFAULT 0,
+            geofence_latitude DECIMAL(10,7) NULL,
+            geofence_longitude DECIMAL(10,7) NULL,
+            geofence_max_radius_meters INT UNSIGNED NOT NULL DEFAULT 100,
             offline_queue_enabled TINYINT(1) NOT NULL DEFAULT 1,
             offline_retry_interval_seconds INT UNSIGNED NOT NULL DEFAULT 300,
             dashboard_refresh_seconds INT UNSIGNED NOT NULL DEFAULT 60,
@@ -2548,6 +3957,11 @@ function bx_schema(): void
             INDEX idx_android_client_app_status (client_app_status, client_app_code)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+    bx_add_column_if_missing('builder_android_client_app', 'banner_image_url', 'TEXT NULL AFTER apk_download_path');
+    bx_add_column_if_missing('builder_android_client_app', 'login_background_image_url', 'TEXT NULL AFTER banner_image_url');
+    bx_add_column_if_missing('builder_android_client_app', 'geofence_latitude', 'DECIMAL(10,7) NULL AFTER geofence_required');
+    bx_add_column_if_missing('builder_android_client_app', 'geofence_longitude', 'DECIMAL(10,7) NULL AFTER geofence_latitude');
+    bx_add_column_if_missing('builder_android_client_app', 'geofence_max_radius_meters', 'INT UNSIGNED NOT NULL DEFAULT 100 AFTER geofence_longitude');
 
     $db->Execute("
         CREATE TABLE IF NOT EXISTS builder_user_position (
@@ -2571,10 +3985,15 @@ function bx_schema(): void
         CREATE TABLE IF NOT EXISTS builder_user (
             x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             user_key CHAR(36) NOT NULL UNIQUE,
+            firebase_uid VARCHAR(255) NULL,
             user_login VARCHAR(80) NOT NULL UNIQUE,
             user_password_hash VARCHAR(255) NOT NULL,
             user_name VARCHAR(160) NOT NULL,
-            user_email VARCHAR(190) NOT NULL UNIQUE,
+            user_task_notification_sound VARCHAR(80) NOT NULL DEFAULT 'ding_sound_01',
+            user_task_notification_volume TINYINT UNSIGNED NOT NULL DEFAULT 100,
+            user_messenger_notification_sound VARCHAR(80) NOT NULL DEFAULT 'ding_sound_01',
+            user_messenger_notification_volume TINYINT UNSIGNED NOT NULL DEFAULT 100,
+            user_email VARCHAR(190) NULL UNIQUE,
             position_key CHAR(36) NULL,
             user_status ENUM('DRAFT','ACTIVE','INACTIVE','LOCKED','DELETED') NOT NULL DEFAULT 'DRAFT',
             user_failed_login_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2591,15 +4010,23 @@ function bx_schema(): void
             user_updated_by_key CHAR(36) NULL,
             user_deleted_at TIMESTAMP NULL,
             user_deleted_by_key CHAR(36) NULL,
-            INDEX idx_builder_user_status (user_status)
+            INDEX idx_builder_user_status (user_status),
+            UNIQUE KEY uq_builder_user_firebase_uid (firebase_uid)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
+    bx_add_column_if_missing('builder_user', 'firebase_uid', 'VARCHAR(255) NULL AFTER user_key');
+    bx_add_unique_index_if_missing('builder_user', 'firebase_uid', 'uq_builder_user_firebase_uid', 'UNIQUE KEY uq_builder_user_firebase_uid (firebase_uid)');
     bx_add_column_if_missing('builder_user', 'user_password_expires_at', 'TIMESTAMP NULL AFTER user_password_changed_at');
     bx_add_column_if_missing('builder_user', 'user_email_verified_at', 'TIMESTAMP NULL AFTER user_password_expires_at');
     bx_add_column_if_missing('builder_user', 'user_two_factor_required', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER user_email_verified_at');
     bx_add_column_if_missing('builder_user', 'user_recovery_codes_enabled', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER user_two_factor_required');
     bx_add_column_if_missing('builder_user', 'position_key', 'CHAR(36) NULL AFTER user_email');
+    bx_add_column_if_missing('builder_user', 'user_task_notification_sound', "VARCHAR(80) NOT NULL DEFAULT 'ding_sound_01' AFTER user_name");
+    bx_add_column_if_missing('builder_user', 'user_task_notification_volume', 'TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER user_task_notification_sound');
+    bx_add_column_if_missing('builder_user', 'user_messenger_notification_sound', "VARCHAR(80) NOT NULL DEFAULT 'ding_sound_01' AFTER user_task_notification_volume");
+    bx_add_column_if_missing('builder_user', 'user_messenger_notification_volume', 'TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER user_messenger_notification_sound');
+    $db->Execute('ALTER TABLE builder_user MODIFY user_email VARCHAR(190) NULL');
 
     $db->Execute("
         CREATE TABLE IF NOT EXISTS builder_group (
@@ -2671,12 +4098,14 @@ function bx_schema(): void
     $db->Execute("
         CREATE TABLE IF NOT EXISTS project_user (
             x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            user_key CHAR(36) NOT NULL UNIQUE,
+            user_key VARCHAR(255) NOT NULL UNIQUE,
             project_key CHAR(36) NOT NULL,
             group_key CHAR(36) NULL,
             position_key CHAR(36) NULL,
             user_login VARCHAR(80) NOT NULL,
-            user_password_hash VARCHAR(255) NOT NULL,
+            user_auth_username VARCHAR(40) NULL,
+            user_auth_email VARCHAR(190) NULL,
+            user_password_hash VARCHAR(255) NULL,
             user_name VARCHAR(160) NOT NULL,
             user_chat_name VARCHAR(160) NULL,
             user_email VARCHAR(190) NULL,
@@ -2698,6 +4127,7 @@ function bx_schema(): void
             user_deleted_at TIMESTAMP NULL,
             user_deleted_by_key CHAR(36) NULL,
             UNIQUE KEY uq_project_user_login (project_key, user_login),
+            UNIQUE KEY uq_project_user_auth_username (project_key, user_auth_username),
             UNIQUE KEY uq_project_user_email (project_key, user_email),
             UNIQUE KEY uq_project_user_mobile (project_key, user_mobile_number),
             KEY idx_project_user_project (project_key),
@@ -2706,6 +4136,8 @@ function bx_schema(): void
             KEY idx_project_user_status (user_status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+    bx_add_column_if_missing('project_user', 'user_auth_username', 'VARCHAR(40) NULL AFTER user_login');
+    bx_add_column_if_missing('project_user', 'user_auth_email', 'VARCHAR(190) NULL AFTER user_login');
     bx_add_column_if_missing('project_user', 'user_chat_name', 'VARCHAR(160) NULL AFTER user_name');
     bx_add_column_if_missing('project_user', 'user_mobile_number', 'VARCHAR(40) NULL AFTER user_email');
     bx_add_column_if_missing('project_user', 'user_avatar_path', 'VARCHAR(500) NULL AFTER user_mobile_number');
@@ -2715,7 +4147,42 @@ function bx_schema(): void
     bx_add_column_if_missing('project_user', 'user_avatar_sha256', 'CHAR(64) NULL AFTER user_avatar_byte_size');
     bx_add_column_if_missing('project_user', 'user_avatar_uploaded_at', 'TIMESTAMP NULL AFTER user_avatar_sha256');
     $db->Execute('ALTER TABLE project_user MODIFY user_email VARCHAR(190) NULL');
+    bx_add_index_if_missing('project_user', 'uq_project_user_auth_username', 'UNIQUE KEY uq_project_user_auth_username (project_key, user_auth_username)');
+    bx_add_index_if_missing('project_user', 'uq_project_user_auth_email', 'UNIQUE KEY uq_project_user_auth_email (project_key, user_auth_email)');
     bx_add_index_if_missing('project_user', 'uq_project_user_mobile', 'UNIQUE KEY uq_project_user_mobile (project_key, user_mobile_number)');
+    $db->Execute(
+        "UPDATE project_user
+            SET user_login = LOWER(TRIM(user_login))
+          WHERE user_login REGEXP '^[A-Za-z0-9_.-]+$'
+            AND BINARY user_login <> BINARY LOWER(TRIM(user_login))"
+    );
+    $projectUserAuthEmailDomain = strtolower(trim((string) ($db->GetOne("SELECT setting_value FROM builder_system_setting WHERE setting_name = 'project_user_auth_email_domain' AND setting_status = 'ACTIVE' LIMIT 1") ?: '')));
+    $projectUserAuthEmailDomain = preg_replace('/^@+/', '', $projectUserAuthEmailDomain);
+    $projectUserAuthEmailDomain = is_string($projectUserAuthEmailDomain) && preg_match('/^[a-z0-9.-]+\.[a-z]{2,}$/', $projectUserAuthEmailDomain)
+        ? $projectUserAuthEmailDomain
+        : 'rbms.app';
+    $usersWithoutAuthUsername = $db->GetAll(
+        "SELECT user_key, project_key
+           FROM project_user
+          WHERE user_status <> 'DELETED'
+            AND (user_auth_username IS NULL OR user_auth_username = '')"
+    ) ?: [];
+    foreach ($usersWithoutAuthUsername as $userWithoutAuthUsername) {
+        $authUsername = bx_project_user_auth_username();
+        $authEmail = $authUsername . '@' . $projectUserAuthEmailDomain;
+        $db->Execute(
+            'UPDATE project_user SET user_auth_username = ?, user_auth_email = ? WHERE user_key = ? AND project_key = ?',
+            [$authUsername, $authEmail, $userWithoutAuthUsername['user_key'], $userWithoutAuthUsername['project_key']]
+        );
+    }
+    $db->Execute(
+        "UPDATE project_user
+            SET user_auth_email = CONCAT(user_auth_username, ?)
+          WHERE user_auth_username IS NOT NULL
+            AND user_auth_username <> ''
+            AND (user_auth_email IS NULL OR user_auth_email = '')",
+        ['@' . $projectUserAuthEmailDomain]
+    );
 
     if ($schemaTableExists('project_group')) {
         $db->Execute("
@@ -3434,6 +4901,7 @@ function bx_schema(): void
     bx_ensure_bed_master_list_schema();
     bx_ensure_project_task_schema();
     bx_ensure_project_task_stage_schema();
+    bx_ensure_portal_authoritative_projection_schema();
 
     foreach (['phase_builder_requirements_analysis', 'phase_builder_system_architecture', 'phase_builder_ui_ux_design', 'phase_builder_execution_roadmap'] as $artifactTable) {
         bx_add_column_if_missing($artifactTable, 'draft_key', 'CHAR(36) NULL');
@@ -3455,19 +4923,25 @@ function bx_schema(): void
 
 function bx_android_project_setting_defaults(): array
 {
-    return [
-        ['android_app_package_name', 'com.everythingiscreated.rbmsv4', 'android'],
-        ['android_tenant_configuration_endpoint_url', 'http://localhost/rbms.com/api/mobile/tenant-configuration/', 'android'],
-        ['android_current_version_code', '1', 'android'],
+	    return [
+	        ['android_app_package_name', 'com.everythingiscreated.rbmsv4', 'android'],
+	        ['android_tenant_configuration_endpoint_url', 'http://192.168.1.70/rbms.com/api/mobile/tenant-configuration/', 'android'],
+	        ['android_welcome_title', 'Welcome to RBMS', 'android'],
+	        ['android_welcome_description', 'RBMS VRP Demo (RBMS-VRP)', 'android'],
+	        ['android_current_version_code', '1', 'android'],
         ['android_min_supported_version_code', '1', 'android'],
         ['android_force_update_enabled', '0', 'android'],
         ['android_release_acknowledgement_required', '1', 'android'],
         ['android_geofence_required', '0', 'android'],
+        ['android_geofence_latitude', '', 'android'],
+        ['android_geofence_longitude', '', 'android'],
+        ['android_geofence_max_radius_meters', '100', 'android'],
         ['android_update_apk_download_path', '/downloads/rbmsv4-latest.apk', 'android'],
-        ['android_splash_screen_image_url_1', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-1.jpg', 'android'],
-        ['android_splash_screen_image_url_2', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-2.jpg', 'android'],
-        ['android_splash_screen_image_url_3', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-3.jpg', 'android'],
-        ['android_splash_screen_image_url_4', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-4.jpg', 'android'],
+        ['android_banner_image_url', 'http://192.168.1.70/rbms.com/_Mobile/rbmsv4-vrp/banner.png', 'android'],
+        ['android_login_background_image_url', 'http://192.168.1.70/rbms.com/_Mobile/rbmsv4-vrp/login-background.jpg', 'android'],
+        ['android_splash_screen_image_url_1', 'http://192.168.1.70/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-1.jpg', 'android'],
+        ['android_splash_screen_image_url_2', 'http://192.168.1.70/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-2.jpg', 'android'],
+        ['android_splash_screen_image_url_3', 'http://192.168.1.70/rbms.com/_Mobile/rbmsv4-vrp/splash/splash-3.jpg', 'android'],
         ['android_offline_queue_enabled', '1', 'android'],
         ['android_offline_retry_interval_seconds', '300', 'android'],
         ['android_dashboard_refresh_seconds', '60', 'android'],
@@ -3506,6 +4980,45 @@ function bx_seed_android_project_settings(): void
     }
 }
 
+function bx_media_project_setting_defaults(): array
+{
+    return [
+        ['media_uploader_target_url', '', 'media'],
+        ['media_image_viewer_url', '', 'media'],
+    ];
+}
+
+function bx_seed_media_project_settings(): void
+{
+    $db = bx_db();
+    $legacyRows = $db->GetAll("SELECT setting_name, setting_value FROM builder_system_setting WHERE setting_group = 'media'") ?: [];
+    $legacyValues = [];
+    foreach ($legacyRows as $legacyRow) {
+        $legacyValues[(string) ($legacyRow['setting_name'] ?? '')] = (string) ($legacyRow['setting_value'] ?? '');
+    }
+
+    $projects = $db->GetAll("SELECT project_key FROM builder_project WHERE project_status <> 'DELETED'") ?: [];
+    foreach ($projects as $project) {
+        $projectKey = (string) ($project['project_key'] ?? '');
+        if ($projectKey === '') {
+            continue;
+        }
+
+        foreach (bx_media_project_setting_defaults() as $setting) {
+            $settingName = (string) $setting[0];
+            if ((int) $db->GetOne('SELECT COUNT(*) FROM project_setting_media WHERE project_key = ? AND setting_name = ?', [$projectKey, $settingName]) > 0) {
+                continue;
+            }
+
+            $settingValue = array_key_exists($settingName, $legacyValues) ? $legacyValues[$settingName] : (string) $setting[1];
+            $db->Execute(
+                'INSERT INTO project_setting_media (setting_key, project_key, setting_name, setting_value, setting_group) VALUES (?, ?, ?, ?, ?)',
+                [bx_uuid(), $projectKey, $settingName, $settingValue, (string) $setting[2]]
+            );
+        }
+    }
+}
+
 function bx_seed_foundation(): void
 {
     $db = bx_db();
@@ -3529,8 +5042,6 @@ function bx_seed_foundation(): void
         ['password_expiration_days', '90', 'security'],
         ['account_recovery_email_delivery', 'placeholder', 'security'],
         ['account_recovery_2fa_policy', 'optional-planned', 'security'],
-        ['media_uploader_target_url', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/upload-image.php', 'media'],
-        ['media_image_viewer_url', 'http://localhost/rbms.com/_Mobile/rbmsv4-vrp/view.php', 'media'],
         ['firebase_project_id', 'rbmsv4-vrp', 'firebase'],
         ['firebase_messenger_server_sync_enabled', '0', 'firebase'],
         ['firebase_client_stream_enabled', '0', 'firebase'],
@@ -3589,11 +5100,12 @@ function bx_seed_foundation(): void
                     firebase_storage_bucket,
                     android_package_name,
                     apk_download_path,
+                    banner_image_url,
+                    login_background_image_url,
                     splash_screen_image_url_1,
                     splash_screen_image_url_2,
-                    splash_screen_image_url_3,
-                    splash_screen_image_url_4
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    splash_screen_image_url_3
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     bx_uuid(),
                     $clientApp[0],
@@ -3607,10 +5119,11 @@ function bx_seed_foundation(): void
                     $clientApp[8],
                     'com.everythingiscreated.rbmsv4',
                     '/downloads/rbmsv4-latest.apk',
-                    'http://localhost/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-1.jpg',
-                    'http://localhost/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-2.jpg',
-                    'http://localhost/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-3.jpg',
-                    'http://localhost/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-4.jpg',
+                    'http://192.168.1.70/rbms.com/_Mobile/' . $clientApp[2] . '/banner.png',
+                    'http://192.168.1.70/rbms.com/_Mobile/' . $clientApp[2] . '/login-background.jpg',
+                    'http://192.168.1.70/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-1.jpg',
+                    'http://192.168.1.70/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-2.jpg',
+                    'http://192.168.1.70/rbms.com/_Mobile/' . $clientApp[2] . '/splash/splash-3.jpg',
                 ]
             );
         }
@@ -3679,6 +5192,7 @@ function bx_seed_foundation(): void
     }
 
     bx_seed_android_project_settings();
+    bx_seed_media_project_settings();
 
     $adminRole = (string) bx_db()->GetOne('SELECT role_key FROM builder_role WHERE role_name = ?', ['Administrator']);
     $permissions = bx_db()->GetAll('SELECT permission_key FROM builder_permission');
@@ -3818,6 +5332,359 @@ function bx_ensure_bed_master_list_schema(): void
     }
 
     bx_ensure_project_bed_analytics_schema();
+}
+
+function bx_project_building_floor_token(array $row): string
+{
+    $parts = [
+        trim((string) ($row['branch_key'] ?? '')) !== '' ? trim((string) $row['branch_key']) : trim((string) ($row['branch_name'] ?? '')),
+        trim((string) ($row['building_key'] ?? '')) !== '' ? trim((string) $row['building_key']) : trim((string) ($row['building_name'] ?? '')),
+        trim((string) ($row['floor_key'] ?? '')) !== '' ? trim((string) $row['floor_key']) : trim((string) ($row['floor_name'] ?? '')),
+    ];
+
+    return strtolower(implode('|', $parts));
+}
+
+function bx_project_building_floor_key(array $row): string
+{
+    return substr(sha1(bx_project_building_floor_token($row)), 0, 20);
+}
+
+function bx_ensure_project_building_floor_schema(): void
+{
+    // Building floors are derived from the approved bed masterlist/API source.
+    // Create and refresh this local lookup table when the Administrator view
+    // opens; this collection is not a Firebase/TRAVERSE source of truth.
+    $db = bx_db();
+    $saved = $db->Execute("
+        CREATE TABLE IF NOT EXISTS project_building_floor (
+            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            building_floor_key VARCHAR(40) NOT NULL UNIQUE,
+            branch_key VARCHAR(100) NOT NULL DEFAULT '',
+            branch_name VARCHAR(100) NOT NULL DEFAULT '',
+            building_key VARCHAR(100) NOT NULL DEFAULT '',
+            building_name VARCHAR(100) NOT NULL DEFAULT '',
+            floor_key VARCHAR(100) NOT NULL DEFAULT '',
+            floor_name VARCHAR(100) NOT NULL DEFAULT '',
+            building_sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+            floor_sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+            floor_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE',
+            created_by_user_key CHAR(36) NULL,
+            updated_by_user_key CHAR(36) NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_project_building_floor_scope (branch_key, building_key, floor_key),
+            INDEX idx_project_building_floor_order (branch_key, building_key, building_sort_order, floor_sort_order),
+            INDEX idx_project_building_floor_status (floor_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    if ($saved === false) {
+        $databaseError = trim((string) $db->ErrorMsg());
+        throw new RuntimeException('Building floor schema setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
+    }
+
+    $sourceRows = $db->GetAll("SELECT
+        COALESCE(branch_key, '') AS branch_key,
+        COALESCE(branch_name, '') AS branch_name,
+        COALESCE(building_key, '') AS building_key,
+        COALESCE(building_name, '') AS building_name,
+        COALESCE(floor_key, '') AS floor_key,
+        COALESCE(floor_name, '') AS floor_name,
+        managed_status
+        FROM project_bed
+        WHERE TRIM(COALESCE(building_name, '')) <> ''
+          AND TRIM(COALESCE(floor_name, '')) <> ''
+        ORDER BY branch_name ASC, building_name ASC, floor_name ASC, x_id ASC") ?: [];
+    $existingRows = $db->GetAll('SELECT building_floor_key, branch_key, building_key, floor_key, floor_sort_order, floor_status FROM project_building_floor') ?: [];
+    $existing = [];
+    $nextFloorOrder = [];
+    foreach ($existingRows as $existingRow) {
+        $existing[(string) ($existingRow['building_floor_key'] ?? '')] = ['floor_status' => strtoupper((string) ($existingRow['floor_status'] ?? 'ACTIVE'))];
+        $groupScope = strtolower(implode('|', [trim((string) ($existingRow['branch_key'] ?? '')), trim((string) ($existingRow['building_key'] ?? ''))]));
+        $nextFloorOrder[$groupScope] = max($nextFloorOrder[$groupScope] ?? 0, (int) ($existingRow['floor_sort_order'] ?? 0));
+    }
+
+    $sourceByKey = [];
+    foreach ($sourceRows as $sourceRow) {
+        $branchKey = trim((string) ($sourceRow['branch_key'] ?? '')) ?: trim((string) ($sourceRow['branch_name'] ?? ''));
+        $branchName = trim((string) ($sourceRow['branch_name'] ?? '')) ?: $branchKey;
+        $buildingKey = trim((string) ($sourceRow['building_key'] ?? '')) ?: trim((string) ($sourceRow['building_name'] ?? ''));
+        $buildingName = trim((string) ($sourceRow['building_name'] ?? '')) ?: $buildingKey;
+        $floorKey = trim((string) ($sourceRow['floor_key'] ?? '')) ?: trim((string) ($sourceRow['floor_name'] ?? ''));
+        $floorName = trim((string) ($sourceRow['floor_name'] ?? '')) ?: $floorKey;
+        if ($buildingKey === '' || $buildingName === '' || $floorKey === '' || $floorName === '') {
+            continue;
+        }
+        $normalized = [
+            'branch_key' => $branchKey,
+            'branch_name' => $branchName,
+            'building_key' => $buildingKey,
+            'building_name' => $buildingName,
+            'floor_key' => $floorKey,
+            'floor_name' => $floorName,
+            'managed_status' => strtoupper((string) ($sourceRow['managed_status'] ?? 'ACTIVE')),
+        ];
+        $sourceByKey[bx_project_building_floor_key($normalized)] = $normalized;
+    }
+
+    if ($sourceByKey === []) {
+        return;
+    }
+
+    $transactionStarted = false;
+    try {
+        if ($db->BeginTrans() === false) {
+            throw new RuntimeException('Building floor discovery transaction could not start.');
+        }
+        $transactionStarted = true;
+        foreach ($sourceByKey as $buildingFloorKey => $sourceRow) {
+            $groupScope = strtolower(implode('|', [$sourceRow['branch_key'], $sourceRow['building_key']]));
+            if (!isset($existing[$buildingFloorKey])) {
+                $nextFloorOrder[$groupScope] = ($nextFloorOrder[$groupScope] ?? 0) + 1;
+            }
+            $savedRow = $db->Execute(
+                "INSERT INTO project_building_floor (
+                    building_floor_key, branch_key, branch_name, building_key, building_name,
+                    floor_key, floor_name, building_sort_order, floor_sort_order, floor_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    branch_name = VALUES(branch_name),
+                    building_name = VALUES(building_name),
+                    floor_name = VALUES(floor_name)",
+                [$buildingFloorKey, $sourceRow['branch_key'], $sourceRow['branch_name'], $sourceRow['building_key'], $sourceRow['building_name'], $sourceRow['floor_key'], $sourceRow['floor_name'], $nextFloorOrder[$groupScope] ?? 0, $sourceRow['managed_status'] === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE']
+            );
+            if ($savedRow === false) {
+                throw new RuntimeException('Building floor discovery failed: ' . trim((string) $db->ErrorMsg()));
+            }
+        }
+
+        $readBackCount = (int) $db->GetOne('SELECT COUNT(*) FROM project_building_floor WHERE building_floor_key IN (' . implode(',', array_fill(0, count($sourceByKey), '?')) . ')', array_keys($sourceByKey));
+        if ($readBackCount !== count($sourceByKey)) {
+            throw new RuntimeException('Building floor discovery read-back mismatch.');
+        }
+        if ($db->CommitTrans() === false) {
+            throw new RuntimeException('Building floor discovery transaction could not commit.');
+        }
+        $transactionStarted = false;
+    } catch (Throwable $error) {
+        if ($transactionStarted) {
+            $db->RollbackTrans();
+        }
+        throw $error;
+    }
+}
+
+function bx_project_building_floor_rows(): array
+{
+    bx_ensure_project_building_floor_schema();
+    $tableExists = (int) bx_db()->GetOne(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+        ['project_building_floor']
+    );
+    if ($tableExists !== 1) {
+        return [];
+    }
+    $rows = bx_db()->GetAll("SELECT
+        building_floor_key, branch_key, branch_name, building_key, building_name, floor_key, floor_name,
+        building_sort_order, floor_sort_order, floor_status,
+        DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+        FROM project_building_floor
+        ORDER BY branch_name ASC, building_sort_order ASC, building_name ASC, floor_sort_order ASC, floor_name ASC, x_id ASC") ?: [];
+
+    return is_array($rows) ? $rows : [];
+}
+
+function bx_project_building_floor_firebase_rows(): array
+{
+    return array_map(static function (array $row): array {
+        $floorSortOrder = (int) ($row['floor_sort_order'] ?? 0);
+        return [
+            'building_floor_key' => (string) ($row['building_floor_key'] ?? ''),
+            'branch_key' => (string) ($row['branch_key'] ?? ''),
+            'branch_name' => (string) ($row['branch_name'] ?? ''),
+            'building_key' => (string) ($row['building_key'] ?? ''),
+            'building_name' => (string) ($row['building_name'] ?? ''),
+            'floor_key' => (string) ($row['floor_key'] ?? ''),
+            'floor_name' => (string) ($row['floor_name'] ?? ''),
+            'building_sort_order' => (int) ($row['building_sort_order'] ?? 0),
+            'floor_sort_order' => $floorSortOrder,
+            'sort_order' => $floorSortOrder,
+            'floor_status' => (string) ($row['floor_status'] ?? 'ACTIVE'),
+            'updated_at' => (string) ($row['updated_at'] ?? ''),
+        ];
+    }, bx_project_building_floor_rows());
+}
+
+function bx_project_building_floor_order_input(array $input): array
+{
+    $raw = $input['order_keys'] ?? $input['order_keys[]'] ?? [];
+    if (is_string($raw)) {
+        $raw = array_filter(array_map('trim', explode(',', $raw)), static fn (string $value): bool => $value !== '');
+    }
+    if (!is_array($raw)) {
+        return [];
+    }
+
+    $ordered = [];
+    foreach ($raw as $key) {
+        $key = trim((string) $key);
+        if (!preg_match('/^[A-Za-z0-9]{20}$/', $key) || in_array($key, $ordered, true)) {
+            continue;
+        }
+        $ordered[] = $key;
+    }
+
+    return $ordered;
+}
+
+function bx_update_project_building_floor_sort_order(array $input, ?string $userKey = null): array
+{
+    bx_ensure_project_building_floor_schema();
+    $orderedKeys = bx_project_building_floor_order_input($input);
+    if ($orderedKeys === []) {
+        throw new RuntimeException('At least one floor is required to save the order.');
+    }
+
+    $db = bx_db();
+    $placeholders = implode(', ', array_fill(0, count($orderedKeys), '?'));
+    $rows = $db->GetAll("SELECT building_floor_key, branch_key, building_key FROM project_building_floor WHERE building_floor_key IN ({$placeholders})", $orderedKeys) ?: [];
+    if (count($rows) !== count($orderedKeys)) {
+        throw new RuntimeException('One or more selected floors are no longer available.');
+    }
+    $firstScope = null;
+    foreach ($rows as $row) {
+        $scope = strtolower(implode('|', [trim((string) ($row['branch_key'] ?? '')), trim((string) ($row['building_key'] ?? ''))]));
+        $firstScope ??= $scope;
+        if ($scope !== $firstScope) {
+            throw new RuntimeException('Floors must be reordered within one building at a time.');
+        }
+    }
+
+    $transactionStarted = false;
+    try {
+        if ($db->BeginTrans() === false) {
+            throw new RuntimeException('Floor order transaction could not start.');
+        }
+        $transactionStarted = true;
+        foreach ($orderedKeys as $index => $buildingFloorKey) {
+            $saved = $db->Execute('UPDATE project_building_floor SET floor_sort_order = ?, updated_by_user_key = ? WHERE building_floor_key = ?', [$index + 1, trim((string) ($userKey ?? '')) ?: null, $buildingFloorKey]);
+            if ($saved === false) {
+                throw new RuntimeException('Floor order update failed: ' . trim((string) $db->ErrorMsg()));
+            }
+        }
+        $readBack = $db->GetAll("SELECT building_floor_key, branch_key, branch_name, building_key, building_name, floor_key, floor_name, building_sort_order, floor_sort_order, floor_status, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at FROM project_building_floor WHERE building_floor_key IN ({$placeholders}) ORDER BY floor_sort_order ASC, x_id ASC", $orderedKeys) ?: [];
+        if (count($readBack) !== count($orderedKeys)) {
+            throw new RuntimeException('Floor order read-back failed.');
+        }
+        foreach ($readBack as $index => $row) {
+            if ((string) ($row['building_floor_key'] ?? '') !== $orderedKeys[$index] || (int) ($row['floor_sort_order'] ?? 0) !== $index + 1) {
+                throw new RuntimeException('Floor order read-back mismatch.');
+            }
+        }
+        bx_audit('UPDATE', 'project_building_floor', $firstScope, ['ordered_keys' => $orderedKeys, 'user_key' => trim((string) ($userKey ?? ''))], 'Administrator reordered floors for mobile display.');
+        if ($db->CommitTrans() === false) {
+            throw new RuntimeException('Floor order transaction could not commit.');
+        }
+        $transactionStarted = false;
+        return $readBack;
+    } catch (Throwable $error) {
+        if ($transactionStarted) {
+            $db->RollbackTrans();
+        }
+        throw $error;
+    }
+}
+
+function bx_set_project_building_floor_status(array $input, ?string $userKey = null): array
+{
+    bx_ensure_project_building_floor_schema();
+    $db = bx_db();
+    $buildingFloorKey = trim((string) ($input['building_floor_key'] ?? ''));
+    $status = strtoupper(trim((string) ($input['floor_status'] ?? 'INACTIVE')));
+    if (!preg_match('/^[A-Za-z0-9]{20}$/', $buildingFloorKey)) {
+        throw new RuntimeException('Invalid building floor key.');
+    }
+    if (!in_array($status, ['ACTIVE', 'INACTIVE'], true)) {
+        throw new RuntimeException('Building floor status must be ACTIVE or INACTIVE.');
+    }
+
+    $transactionStarted = false;
+    try {
+        if ($db->BeginTrans() === false) {
+            throw new RuntimeException('Building floor status transaction could not start.');
+        }
+        $transactionStarted = true;
+        $saved = $db->Execute('UPDATE project_building_floor SET floor_status = ?, updated_by_user_key = ? WHERE building_floor_key = ?', [$status, trim((string) ($userKey ?? '')) ?: null, $buildingFloorKey]);
+        if ($saved === false) {
+            throw new RuntimeException('Building floor status update failed: ' . trim((string) $db->ErrorMsg()));
+        }
+        $readBack = $db->GetRow("SELECT building_floor_key, branch_key, branch_name, building_key, building_name, floor_key, floor_name, building_sort_order, floor_sort_order, floor_status, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at FROM project_building_floor WHERE building_floor_key = ? LIMIT 1", [$buildingFloorKey]);
+        if (!is_array($readBack) || (string) ($readBack['floor_status'] ?? '') !== $status) {
+            throw new RuntimeException('Building floor status read-back did not match.');
+        }
+        bx_audit('STATUS', 'project_building_floor', $buildingFloorKey, ['floor_status' => $status], 'Administrator changed building floor status.');
+        if ($db->CommitTrans() === false) {
+            throw new RuntimeException('Building floor status transaction could not commit.');
+        }
+        $transactionStarted = false;
+        return $readBack;
+    } catch (Throwable $error) {
+        if ($transactionStarted) {
+            $db->RollbackTrans();
+        }
+        throw $error;
+    }
+}
+
+function bx_sync_project_building_floor_to_firebase(?array $rows = null): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    if ($projectId === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project id is not configured.'];
+    }
+    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
+    }
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-building-floor-sync.mjs';
+    if (!is_readable($scriptPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase building floor sync script is missing.'];
+    }
+    $payloadRows = $rows === null ? bx_project_building_floor_firebase_rows() : array_map(static function (array $row): array {
+        return [
+            'building_floor_key' => (string) ($row['building_floor_key'] ?? ''),
+            'branch_key' => (string) ($row['branch_key'] ?? ''),
+            'branch_name' => (string) ($row['branch_name'] ?? ''),
+            'building_key' => (string) ($row['building_key'] ?? ''),
+            'building_name' => (string) ($row['building_name'] ?? ''),
+            'floor_key' => (string) ($row['floor_key'] ?? ''),
+            'floor_name' => (string) ($row['floor_name'] ?? ''),
+            'building_sort_order' => (int) ($row['building_sort_order'] ?? 0),
+            'floor_sort_order' => (int) ($row['floor_sort_order'] ?? 0),
+            'floor_status' => (string) ($row['floor_status'] ?? 'ACTIVE'),
+            'updated_at' => (string) ($row['updated_at'] ?? ''),
+        ];
+    }, $rows);
+    $payload = json_encode(['project_id' => $projectId, 'service_account_path' => $serviceAccountPath, 'rows' => $payloadRows], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase building floor payload could not be encoded.'];
+    }
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase building floor sync process could not start.'];
+    }
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = ['ok' => false, 'message' => trim((string) $stderr) !== '' ? 'Firebase building floor sync failed.' : 'Firebase building floor sync returned an invalid response.'];
+    }
+    return $result + ['exit_code' => $exitCode, 'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : ''];
 }
 
 function bx_ensure_project_bed_analytics_schema(): void
@@ -4144,757 +6011,42 @@ function bx_project_bed_analytics_rows(?string $batchKey = null, int $limit = 20
 
 function bx_ensure_project_task_schema(): void
 {
-    $db = bx_db();
-    $tableExists = static function (string $tableName) use ($db): bool {
-        return (int) $db->GetOne(
-            'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
-            [BUILDERX_DB_NAME, $tableName]
-        ) === 1;
-    };
-    $indexExists = static function (string $indexName) use ($db): bool {
-        return (int) $db->GetOne(
-            'SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?',
-            [BUILDERX_DB_NAME, 'project_task', $indexName]
-        ) > 0;
-    };
-    $columnExists = static function (string $columnName) use ($db): bool {
-        return (int) $db->GetOne(
-            'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-            [BUILDERX_DB_NAME, 'project_task', $columnName]
-        ) > 0;
-    };
-
-    if (!$tableExists('project_task') && $tableExists('project_task_list')) {
-        $renamed = $db->Execute('RENAME TABLE project_task_list TO project_task');
-        if ($renamed === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task table rename failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $saved = $db->Execute("
-        CREATE TABLE IF NOT EXISTS project_task (
-            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            task_key VARCHAR(40) NOT NULL UNIQUE,
-            task_code VARCHAR(80) NULL,
-            task_title VARCHAR(255) NOT NULL,
-            task_description MEDIUMTEXT NULL,
-            task_group_keys TEXT NULL,
-            task_bypass_group_keys TEXT NULL,
-            task_type ENUM('PRIMARY','SECONDARY') NOT NULL DEFAULT 'PRIMARY',
-            task_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'INACTIVE',
-            task_priority ENUM('LOW','NORMAL','HIGH','URGENT') NOT NULL DEFAULT 'NORMAL',
-            task_color_hex CHAR(9) NOT NULL DEFAULT '#00000000',
-            task_can_run_manually TINYINT(1) NOT NULL DEFAULT 0,
-            task_can_run_via_api TINYINT(1) NOT NULL DEFAULT 0,
-            task_can_run_if_bed_vacant TINYINT(1) NOT NULL DEFAULT 1,
-            task_can_run_if_bed_occupied TINYINT(1) NOT NULL DEFAULT 1,
-            task_requires_bed_treatment TINYINT(1) NOT NULL DEFAULT 1,
-            task_requires_admission_source TINYINT(1) NOT NULL DEFAULT 1,
-            task_canvas_x INT UNSIGNED NOT NULL DEFAULT 24,
-            task_canvas_y INT UNSIGNED NOT NULL DEFAULT 24,
-            task_sort_order INT UNSIGNED NOT NULL DEFAULT 0,
-            created_by_user_key CHAR(36) NULL,
-            updated_by_user_key CHAR(36) NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_project_task_type (task_type, task_status, task_sort_order),
-            INDEX idx_project_task_status (task_status),
-            INDEX idx_project_task_priority (task_priority),
-            INDEX idx_project_task_code (task_code)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ");
-    if ($saved === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task schema setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-
-    $taskKeyColumnType = strtolower((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task', 'task_key']
-    ));
-    if ($taskKeyColumnType !== 'varchar(40)') {
-        $keyAltered = $db->Execute('ALTER TABLE project_task MODIFY task_key VARCHAR(40) NOT NULL');
-        if ($keyAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task key column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    bx_add_column_if_missing('project_task', 'task_type', "ENUM('PRIMARY','SECONDARY') NOT NULL DEFAULT 'PRIMARY' AFTER task_description");
-    bx_add_column_if_missing('project_task', 'task_group_keys', 'TEXT NULL AFTER task_description');
-    bx_add_column_if_missing('project_task', 'task_bypass_group_keys', 'TEXT NULL AFTER task_group_keys');
-    bx_add_column_if_missing('project_task', 'task_color_hex', "CHAR(9) NOT NULL DEFAULT '#00000000' AFTER task_priority");
-    bx_add_column_if_missing('project_task', 'task_can_run_manually', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER task_color_hex');
-    bx_add_column_if_missing('project_task', 'task_can_run_via_api', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER task_can_run_manually');
-    bx_add_column_if_missing('project_task', 'task_can_run_if_bed_vacant', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER task_can_run_via_api');
-    bx_add_column_if_missing('project_task', 'task_can_run_if_bed_occupied', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER task_can_run_if_bed_vacant');
-    bx_add_column_if_missing('project_task', 'task_requires_bed_treatment', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER task_can_run_if_bed_occupied');
-    bx_add_column_if_missing('project_task', 'task_requires_admission_source', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER task_requires_bed_treatment');
-    bx_add_column_if_missing('project_task', 'task_canvas_x', 'INT UNSIGNED NOT NULL DEFAULT 24 AFTER task_requires_admission_source');
-    bx_add_column_if_missing('project_task', 'task_canvas_y', 'INT UNSIGNED NOT NULL DEFAULT 24 AFTER task_canvas_x');
-
-    $taskColorColumn = $db->GetRow(
-        'SELECT COLUMN_TYPE AS column_type, COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
-        [BUILDERX_DB_NAME, 'project_task', 'task_color_hex']
-    );
-    $taskColorDefault = is_array($taskColorColumn) ? trim((string) ($taskColorColumn['column_default'] ?? ''), "'") : '';
-    if (
-        is_array($taskColorColumn)
-        && (strtolower((string) ($taskColorColumn['column_type'] ?? '')) !== 'char(9)' || $taskColorDefault !== '#00000000')
-    ) {
-        $taskColorAltered = $db->Execute("ALTER TABLE project_task MODIFY task_color_hex CHAR(9) NOT NULL DEFAULT '#00000000'");
-        if ($taskColorAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task color column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $colorNormalized = $db->Execute("UPDATE project_task SET task_color_hex = '#00000000' WHERE task_color_hex IS NULL OR task_color_hex NOT REGEXP '^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$'");
-    if ($colorNormalized === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task color normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-
-    foreach ([
-        'idx_project_task_project',
-        'idx_project_task_list_project',
-        'idx_project_task_assignee',
-        'idx_project_task_list_assignee',
-        'idx_project_task_due',
-        'idx_project_task_list_due',
-    ] as $obsoleteIndexName) {
-        if (!$indexExists($obsoleteIndexName)) {
-            continue;
-        }
-        $dropped = $db->Execute("ALTER TABLE project_task DROP INDEX {$obsoleteIndexName}");
-        if ($dropped === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task obsolete index removal failed for ' . $obsoleteIndexName . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    foreach (['project_key', 'assigned_user_key', 'due_at', 'completed_at'] as $obsoleteColumnName) {
-        if (!$columnExists($obsoleteColumnName)) {
-            continue;
-        }
-        $dropped = $db->Execute("ALTER TABLE project_task DROP COLUMN {$obsoleteColumnName}");
-        if ($dropped === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task obsolete column removal failed for ' . $obsoleteColumnName . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $statusColumnType = strtoupper((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task', 'task_status']
-    ));
-    if ($statusColumnType !== "ENUM('ACTIVE','INACTIVE')") {
-        $statusExpanded = $db->Execute("ALTER TABLE project_task MODIFY task_status ENUM('ACTIVE','INACTIVE','BACKLOG','READY','IN_PROGRESS','BLOCKED','COMPLETED','CANCELLED') NOT NULL DEFAULT 'INACTIVE'");
-        if ($statusExpanded === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task status transition setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-
-        $normalized = $db->Execute("UPDATE project_task SET task_status = CASE WHEN task_status = 'ACTIVE' THEN 'ACTIVE' ELSE 'INACTIVE' END");
-        if ($normalized === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task status normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-
-        $statusAltered = $db->Execute("ALTER TABLE project_task MODIFY task_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'INACTIVE'");
-        if ($statusAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task status column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    foreach ([
-        'idx_project_task_type' => ['old' => '', 'definition' => 'INDEX idx_project_task_type (task_type, task_status, task_sort_order)'],
-        'idx_project_task_status' => ['old' => 'idx_project_task_list_status', 'definition' => 'INDEX idx_project_task_status (task_status)'],
-        'idx_project_task_priority' => ['old' => 'idx_project_task_list_priority', 'definition' => 'INDEX idx_project_task_priority (task_priority)'],
-        'idx_project_task_code' => ['old' => 'idx_project_task_list_code', 'definition' => 'INDEX idx_project_task_code (task_code)'],
-        'idx_project_task_portal_run' => ['old' => '', 'definition' => 'INDEX idx_project_task_portal_run (task_type, task_status, task_can_run_manually, task_can_run_if_bed_vacant, task_can_run_if_bed_occupied, task_sort_order)'],
-    ] as $indexName => $indexSpec) {
-        if ($indexExists($indexName)) {
-            continue;
-        }
-        $oldIndexName = (string) $indexSpec['old'];
-        $definition = (string) $indexSpec['definition'];
-        $indexSql = $oldIndexName !== '' && $indexExists($oldIndexName)
-            ? "ALTER TABLE project_task DROP INDEX {$oldIndexName}, ADD {$definition}"
-            : "ALTER TABLE project_task ADD {$definition}";
-        $indexed = $db->Execute($indexSql);
-        if ($indexed === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task index setup failed for ' . $indexName . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
+    // Compatibility stub: TRAVERSE exclusively creates this projection schema.
 }
 
-function bx_ensure_project_bed_task_schema(): void
+function bx_task_projection_table_exists(string $table): bool
 {
-    bx_ensure_bed_master_list_schema();
-    bx_ensure_project_task_schema();
-    bx_ensure_project_bed_reference_schema();
-
-    $db = bx_db();
-    $assert = static function (mixed $result, string $label) use ($db): void {
-        if ($result === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException($label . ' failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    };
-
-    $assert($db->Execute("
-        CREATE TABLE IF NOT EXISTS project_bed_task (
-            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            bed_task_key VARCHAR(40) NOT NULL UNIQUE,
-            bed_key VARCHAR(40) NOT NULL,
-            bed_source_key VARCHAR(160) NOT NULL DEFAULT '',
-            source_pk_psbeds VARCHAR(100) NULL,
-            bed_no VARCHAR(100) NOT NULL DEFAULT '',
-            task_key VARCHAR(40) NOT NULL,
-            task_code VARCHAR(80) NULL,
-            task_title VARCHAR(255) NOT NULL DEFAULT '',
-            task_type ENUM('PRIMARY','SECONDARY') NOT NULL,
-            task_status ENUM('PENDING','IN_PROGRESS','ON_HOLD','FAILED') NOT NULL DEFAULT 'PENDING',
-            bed_status_at_request VARCHAR(100) NOT NULL DEFAULT '',
-            bed_class VARCHAR(100) NOT NULL DEFAULT '',
-            bed_treatment_key VARCHAR(40) NULL,
-            bed_treatment_name VARCHAR(160) NOT NULL DEFAULT '',
-            bed_source_option_key VARCHAR(40) NULL,
-            bed_source_option_name VARCHAR(160) NOT NULL DEFAULT '',
-            remarks TEXT NULL,
-            requester_user_key CHAR(36) NOT NULL,
-            requester_fullname VARCHAR(160) NOT NULL,
-            firebase_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
-            firebase_synced_at TIMESTAMP NULL DEFAULT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_project_bed_task_bed (bed_key, task_status, created_at),
-            INDEX idx_project_bed_task_bed_type (bed_key, task_type, task_status, created_at),
-            INDEX idx_project_bed_task_task (task_key, task_status),
-            INDEX idx_project_bed_task_requester (requester_user_key, created_at),
-            INDEX idx_project_bed_task_status (task_status, created_at),
-            INDEX idx_project_bed_task_firebase (firebase_sync_status, updated_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    "), 'Project bed task schema setup');
-
-    bx_add_index_if_missing('project_bed_task', 'idx_project_bed_task_bed_type', 'INDEX idx_project_bed_task_bed_type (bed_key, task_type, task_status, created_at)');
-
-    $assert($db->Execute("
-        CREATE TABLE IF NOT EXISTS project_bed_task_log (
-            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            bed_task_log_key VARCHAR(40) NOT NULL UNIQUE,
-            bed_task_key VARCHAR(40) NOT NULL,
-            bed_key VARCHAR(40) NOT NULL,
-            bed_source_key VARCHAR(160) NOT NULL DEFAULT '',
-            source_pk_psbeds VARCHAR(100) NULL,
-            bed_no VARCHAR(100) NOT NULL DEFAULT '',
-            task_key VARCHAR(40) NOT NULL,
-            task_code VARCHAR(80) NULL,
-            task_title VARCHAR(255) NOT NULL DEFAULT '',
-            task_type ENUM('PRIMARY','SECONDARY') NOT NULL,
-            event_type ENUM('CREATED','ASSIGNED','STARTED','UPDATED','COMPLETED','CANCELLED','FAILED') NOT NULL,
-            status_from VARCHAR(40) NULL,
-            status_to VARCHAR(40) NOT NULL,
-            bed_status_at_request VARCHAR(100) NOT NULL DEFAULT '',
-            bed_class VARCHAR(100) NOT NULL DEFAULT '',
-            bed_treatment_key VARCHAR(40) NULL,
-            bed_treatment_name VARCHAR(160) NOT NULL DEFAULT '',
-            bed_source_option_key VARCHAR(40) NULL,
-            bed_source_option_name VARCHAR(160) NOT NULL DEFAULT '',
-            remarks TEXT NULL,
-            requester_user_key CHAR(36) NOT NULL,
-            requester_fullname VARCHAR(160) NOT NULL,
-            actor_user_key CHAR(36) NOT NULL,
-            actor_fullname VARCHAR(160) NOT NULL,
-            firebase_sync_status ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING',
-            firebase_synced_at TIMESTAMP NULL DEFAULT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_project_bed_task_log_task (bed_task_key, created_at),
-            INDEX idx_project_bed_task_log_event (event_type, created_at),
-            INDEX idx_project_bed_task_log_actor (actor_user_key, created_at),
-            INDEX idx_project_bed_task_log_requester (requester_user_key, created_at),
-            INDEX idx_project_bed_task_log_firebase (firebase_sync_status, created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    "), 'Project bed task log schema setup');
-
-    bx_add_column_if_missing('project_bed_task_log', 'firebase_sync_status', "ENUM('PENDING','SYNCED','FAILED') NOT NULL DEFAULT 'PENDING' AFTER actor_fullname");
-    bx_add_column_if_missing('project_bed_task_log', 'firebase_synced_at', 'TIMESTAMP NULL DEFAULT NULL AFTER firebase_sync_status');
-    bx_add_index_if_missing('project_bed_task_log', 'idx_project_bed_task_log_firebase', 'INDEX idx_project_bed_task_log_firebase (firebase_sync_status, created_at)');
+    if (!in_array($table, ['project_task', 'project_task_stage', 'project_task_stage_response'], true)) {
+        return false;
+    }
+    return (int) bx_db()->GetOne(
+        'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+        [BUILDERX_DB_NAME, $table]
+    ) === 1;
 }
-
-function bx_project_bed_task_trim(mixed $value, int $maxLength): string
+function bx_project_task_first_active_stage(string $taskKey): array
 {
-    $text = trim((string) $value);
-    if ($maxLength > 0 && strlen($text) > $maxLength) {
-        $text = substr($text, 0, $maxLength);
-    }
-
-    return $text;
-}
-
-function bx_project_bed_task_status_bucket(string $bedStatus): string
-{
-    $status = strtolower(trim($bedStatus));
-    if ($status === 'occupied') {
-        return 'occupied';
-    }
-    if (in_array($status, ['available', 'vacant'], true)) {
-        return 'vacant';
-    }
-
-    return '';
-}
-
-function bx_create_project_bed_task(array $input, array $user): array
-{
-    bx_ensure_project_bed_task_schema();
-
-    $db = bx_db();
-    $bedKey = bx_project_bed_task_trim($input['bed_key'] ?? '', 40);
-    $taskKey = bx_project_bed_task_trim($input['task_key'] ?? '', 40);
-    $selectedBedClass = bx_project_bed_task_trim($input['room_class'] ?? '', 100);
-    $bedTreatmentKey = bx_project_bed_task_trim($input['bed_treatment_key'] ?? '', 40);
-    $bedSourceOptionKey = bx_project_bed_task_trim($input['bed_source_key'] ?? '', 40);
-    $remarks = bx_project_bed_task_trim($input['remarks'] ?? '', 4000);
-    $requesterUserKey = bx_project_bed_task_trim($user['user_key'] ?? '', 36);
-    $requesterFullname = bx_project_bed_task_trim($user['user_name'] ?? '', 160);
-
-    if (!preg_match('/^[A-Za-z0-9]{20,40}$/', $bedKey)) {
-        throw new RuntimeException('Invalid bed key.');
-    }
     if (!preg_match('/^[A-Za-z0-9]{20,40}$/', $taskKey)) {
-        throw new RuntimeException('Invalid task key.');
-    }
-    if (!preg_match('/^[A-Fa-f0-9-]{36}$/', $requesterUserKey)) {
-        throw new RuntimeException('A valid signed-in requester is required.');
-    }
-    if ($requesterFullname === '') {
-        $requesterFullname = 'Portal User';
+        return [];
     }
 
-    $bed = $db->GetRow(
+    $stage = bx_db()->GetRow(
         "SELECT
-            bed_key,
-            bed_source_key,
-            COALESCE(source_pk_psbeds, '') AS source_pk_psbeds,
-            COALESCE(bed_no, '') AS bed_no,
-            COALESCE(room_class, '') AS room_class,
-            COALESCE(source_bed_status, '') AS source_bed_status,
-            managed_status
-        FROM project_bed
-        WHERE bed_key = ?
-        LIMIT 1",
-        [$bedKey]
-    );
-    if (!is_array($bed)) {
-        throw new RuntimeException('Bed record was not found.');
-    }
-    if ((string) ($bed['managed_status'] ?? '') !== 'ACTIVE') {
-        throw new RuntimeException('Only active managed beds can receive task requests.');
-    }
-
-    $task = $db->GetRow(
-        "SELECT
-            task_key,
-            COALESCE(task_code, '') AS task_code,
-            task_title,
-            task_type,
-            task_status,
-            task_can_run_manually,
-            task_can_run_if_bed_vacant,
-            task_can_run_if_bed_occupied,
-            task_requires_bed_treatment,
-            task_requires_admission_source
-        FROM project_task
+            task_stage_key,
+            stage_label,
+            CASE
+                WHEN COALESCE(stage_color_hex, '#00000000') REGEXP '^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$' THEN UPPER(COALESCE(stage_color_hex, '#00000000'))
+                ELSE '#00000000'
+            END AS stage_color_hex
+        FROM project_task_stage
         WHERE task_key = ?
-          AND task_type IN ('PRIMARY', 'SECONDARY')
-          AND task_status = 'ACTIVE'
+          AND stage_status = 'ACTIVE'
+        ORDER BY stage_sort_order ASC, task_stage_key ASC
         LIMIT 1",
         [$taskKey]
     );
-    if (!is_array($task)) {
-        throw new RuntimeException('Active primary or secondary task was not found.');
-    }
-    if ((int) ($task['task_can_run_manually'] ?? 0) !== 1) {
-        throw new RuntimeException('This task is not allowed for manual portal requests.');
-    }
-    $taskType = strtoupper((string) ($task['task_type'] ?? 'PRIMARY'));
-    if (!in_array($taskType, ['PRIMARY', 'SECONDARY'], true)) {
-        throw new RuntimeException('Invalid task type.');
-    }
 
-    $duplicateTask = $db->GetRow(
-        "SELECT bed_task_key, task_key, task_title, task_type, task_status
-        FROM project_bed_task
-        WHERE bed_key = ?
-          AND task_key = ?
-        ORDER BY x_id DESC
-        LIMIT 1",
-        [$bedKey, $taskKey]
-    );
-    if (is_array($duplicateTask)) {
-        throw new RuntimeException('This bed already has an unfinished request for the selected task.');
-    }
-
-    $bedStatus = bx_project_bed_task_trim($bed['source_bed_status'] ?? '', 100);
-    $bedStatusBucket = bx_project_bed_task_status_bucket($bedStatus);
-    if ($bedStatusBucket === 'occupied' && (int) ($task['task_can_run_if_bed_occupied'] ?? 0) !== 1) {
-        throw new RuntimeException('This task is not allowed for occupied beds.');
-    }
-    if ($bedStatusBucket === 'vacant' && (int) ($task['task_can_run_if_bed_vacant'] ?? 0) !== 1) {
-        throw new RuntimeException('This task is not allowed for vacant beds.');
-    }
-    if ($bedStatusBucket === '') {
-        throw new RuntimeException('This bed status is not allowed for manual task requests.');
-    }
-
-    $bedClass = $selectedBedClass !== '' ? $selectedBedClass : bx_project_bed_task_trim($bed['room_class'] ?? '', 100);
-    $bedTreatmentName = '';
-    if ($bedTreatmentKey !== '') {
-        if (!preg_match('/^[A-Za-z0-9]{20,40}$/', $bedTreatmentKey)) {
-            throw new RuntimeException('Invalid bed treatment key.');
-        }
-        $treatment = $db->GetRow(
-            "SELECT bed_treatment_key, treatment_name FROM project_bed_treatment WHERE bed_treatment_key = ? AND treatment_status = 'ACTIVE' LIMIT 1",
-            [$bedTreatmentKey]
-        );
-        if (!is_array($treatment)) {
-            throw new RuntimeException('Active bed treatment was not found.');
-        }
-        $bedTreatmentName = bx_project_bed_task_trim($treatment['treatment_name'] ?? '', 160);
-    } elseif ((int) ($task['task_requires_bed_treatment'] ?? 0) === 1) {
-        throw new RuntimeException('Bed treatment is required for this task.');
-    }
-
-    $bedSourceOptionName = '';
-    if ($bedSourceOptionKey !== '') {
-        if (!preg_match('/^[A-Za-z0-9]{20,40}$/', $bedSourceOptionKey)) {
-            throw new RuntimeException('Invalid bed source key.');
-        }
-        $sourceOption = $db->GetRow(
-            "SELECT bed_source_key, bed_source_name FROM project_bed_source WHERE bed_source_key = ? AND bed_source_status = 'ACTIVE' LIMIT 1",
-            [$bedSourceOptionKey]
-        );
-        if (!is_array($sourceOption)) {
-            throw new RuntimeException('Active bed source was not found.');
-        }
-        $bedSourceOptionName = bx_project_bed_task_trim($sourceOption['bed_source_name'] ?? '', 160);
-    } elseif ((int) ($task['task_requires_admission_source'] ?? 0) === 1) {
-        throw new RuntimeException('Bed source is required for this task.');
-    }
-
-    $bedTaskKey = bx_unique_firebase_document_key('project_bed_task', 'bed_task_key');
-    $bedTaskLogKey = bx_unique_firebase_document_key('project_bed_task_log', 'bed_task_log_key');
-    $taskCode = bx_project_bed_task_trim($task['task_code'] ?? '', 80);
-    $taskTitle = bx_project_bed_task_trim($task['task_title'] ?? '', 255);
-    $activeStatus = 'PENDING';
-    $transactionStarted = false;
-
-    try {
-        if ($db->BeginTrans() === false) {
-            throw new RuntimeException('Bed task request transaction could not start.');
-        }
-        $transactionStarted = true;
-
-        $saved = $db->Execute(
-            'INSERT INTO project_bed_task (
-                bed_task_key, bed_key, bed_source_key, source_pk_psbeds, bed_no,
-                task_key, task_code, task_title, task_type, task_status,
-                bed_status_at_request, bed_class, bed_treatment_key, bed_treatment_name,
-                bed_source_option_key, bed_source_option_name, remarks,
-                requester_user_key, requester_fullname, firebase_sync_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-                $bedTaskKey,
-                $bedKey,
-                bx_project_bed_task_trim($bed['bed_source_key'] ?? '', 160),
-                bx_project_bed_task_trim($bed['source_pk_psbeds'] ?? '', 100) ?: null,
-                bx_project_bed_task_trim($bed['bed_no'] ?? '', 100),
-                $taskKey,
-                $taskCode !== '' ? $taskCode : null,
-                $taskTitle,
-                $taskType,
-                $activeStatus,
-                $bedStatus,
-                $bedClass,
-                $bedTreatmentKey !== '' ? $bedTreatmentKey : null,
-                $bedTreatmentName,
-                $bedSourceOptionKey !== '' ? $bedSourceOptionKey : null,
-                $bedSourceOptionName,
-                $remarks !== '' ? $remarks : null,
-                $requesterUserKey,
-                $requesterFullname,
-                'PENDING',
-            ]
-        );
-        if ($saved === false) {
-            throw new RuntimeException('Bed task request save failed: ' . trim((string) $db->ErrorMsg()));
-        }
-
-        $logged = $db->Execute(
-            'INSERT INTO project_bed_task_log (
-                bed_task_log_key, bed_task_key, bed_key, bed_source_key, source_pk_psbeds, bed_no,
-                task_key, task_code, task_title, task_type, event_type, status_from, status_to,
-                bed_status_at_request, bed_class, bed_treatment_key, bed_treatment_name,
-                bed_source_option_key, bed_source_option_name, remarks,
-                requester_user_key, requester_fullname, actor_user_key, actor_fullname
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-                $bedTaskLogKey,
-                $bedTaskKey,
-                $bedKey,
-                bx_project_bed_task_trim($bed['bed_source_key'] ?? '', 160),
-                bx_project_bed_task_trim($bed['source_pk_psbeds'] ?? '', 100) ?: null,
-                bx_project_bed_task_trim($bed['bed_no'] ?? '', 100),
-                $taskKey,
-                $taskCode !== '' ? $taskCode : null,
-                $taskTitle,
-                $taskType,
-                'CREATED',
-                null,
-                $activeStatus,
-                $bedStatus,
-                $bedClass,
-                $bedTreatmentKey !== '' ? $bedTreatmentKey : null,
-                $bedTreatmentName,
-                $bedSourceOptionKey !== '' ? $bedSourceOptionKey : null,
-                $bedSourceOptionName,
-                $remarks !== '' ? $remarks : null,
-                $requesterUserKey,
-                $requesterFullname,
-                $requesterUserKey,
-                $requesterFullname,
-            ]
-        );
-        if ($logged === false) {
-            throw new RuntimeException('Bed task request log failed: ' . trim((string) $db->ErrorMsg()));
-        }
-
-        $readBack = $db->GetRow(
-            "SELECT bed_task_key, bed_key, task_key, task_status, requester_user_key, requester_fullname FROM project_bed_task WHERE bed_task_key = ? LIMIT 1",
-            [$bedTaskKey]
-        );
-        $logReadBack = (int) $db->GetOne(
-            "SELECT COUNT(*) FROM project_bed_task_log WHERE bed_task_key = ? AND event_type = 'CREATED'",
-            [$bedTaskKey]
-        );
-        if (
-            !is_array($readBack)
-            || (string) ($readBack['bed_key'] ?? '') !== $bedKey
-            || (string) ($readBack['task_key'] ?? '') !== $taskKey
-            || (string) ($readBack['requester_user_key'] ?? '') !== $requesterUserKey
-            || $logReadBack < 1
-        ) {
-            throw new RuntimeException('Bed task request read-back did not match the saved values.');
-        }
-
-        bx_audit('CREATE', 'project_bed_task', $bedTaskKey, [
-            'bed_key' => $bedKey,
-            'task_key' => $taskKey,
-            'task_status' => $activeStatus,
-            'requester_user_key' => $requesterUserKey,
-            'requester_fullname' => $requesterFullname,
-        ], 'Portal submitted a bed task request.');
-
-        if ($db->CommitTrans() === false) {
-            throw new RuntimeException('Bed task request transaction could not commit.');
-        }
-        $transactionStarted = false;
-
-        return [
-            'bed_task_key' => $bedTaskKey,
-            'bed_task_log_key' => $bedTaskLogKey,
-            'bed_key' => $bedKey,
-            'task_key' => $taskKey,
-            'task_status' => $activeStatus,
-            'requester_user_key' => $requesterUserKey,
-            'requester_fullname' => $requesterFullname,
-        ];
-    } catch (Throwable $error) {
-        if ($transactionStarted) {
-            $db->FailTrans();
-            $db->CompleteTrans();
-        }
-        throw $error;
-    }
-}
-
-function bx_project_bed_task_firebase_payload(string $bedTaskKey): array
-{
-    bx_ensure_project_bed_task_schema();
-    if (!preg_match('/^[A-Za-z0-9]{20,40}$/', $bedTaskKey)) {
-        throw new RuntimeException('Invalid bed task key.');
-    }
-
-    $task = bx_db()->GetRow(
-        "SELECT
-            bed_task_key,
-            bed_key,
-            bed_source_key,
-            COALESCE(source_pk_psbeds, '') AS source_pk_psbeds,
-            bed_no,
-            task_key,
-            COALESCE(task_code, '') AS task_code,
-            task_title,
-            task_type,
-            task_status,
-            bed_status_at_request,
-            bed_class,
-            COALESCE(bed_treatment_key, '') AS bed_treatment_key,
-            bed_treatment_name,
-            COALESCE(bed_source_option_key, '') AS bed_source_option_key,
-            bed_source_option_name,
-            COALESCE(remarks, '') AS remarks,
-            requester_user_key,
-            requester_fullname,
-            firebase_sync_status,
-            COALESCE(DATE_FORMAT(firebase_synced_at, '%Y-%m-%d %H:%i:%s'), '') AS firebase_synced_at,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
-        FROM project_bed_task
-        WHERE bed_task_key = ?
-        LIMIT 1",
-        [$bedTaskKey]
-    );
-    $logs = bx_db()->GetAll(
-        "SELECT
-            bed_task_log_key,
-            bed_task_key,
-            bed_key,
-            bed_source_key,
-            COALESCE(source_pk_psbeds, '') AS source_pk_psbeds,
-            bed_no,
-            task_key,
-            COALESCE(task_code, '') AS task_code,
-            task_title,
-            task_type,
-            event_type,
-            COALESCE(status_from, '') AS status_from,
-            status_to,
-            bed_status_at_request,
-            bed_class,
-            COALESCE(bed_treatment_key, '') AS bed_treatment_key,
-            bed_treatment_name,
-            COALESCE(bed_source_option_key, '') AS bed_source_option_key,
-            bed_source_option_name,
-            COALESCE(remarks, '') AS remarks,
-            requester_user_key,
-            requester_fullname,
-            actor_user_key,
-            actor_fullname,
-            firebase_sync_status,
-            COALESCE(DATE_FORMAT(firebase_synced_at, '%Y-%m-%d %H:%i:%s'), '') AS firebase_synced_at,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
-        FROM project_bed_task_log
-        WHERE bed_task_key = ?
-        ORDER BY x_id ASC",
-        [$bedTaskKey]
-    ) ?: [];
-
-    if (!is_array($task) && $logs === []) {
-        throw new RuntimeException('Bed task request was not found for Firebase sync.');
-    }
-
-    return [
-        'task' => is_array($task) ? $task : null,
-        'logs' => $logs,
-    ];
-}
-
-function bx_mark_project_bed_task_firebase_sync(string $bedTaskKey, string $status): void
-{
-    $status = strtoupper(trim($status));
-    if (!in_array($status, ['SYNCED', 'FAILED'], true)) {
-        throw new RuntimeException('Invalid bed task Firebase sync status.');
-    }
-
-    $syncedAtSql = $status === 'SYNCED' ? ', firebase_synced_at = CURRENT_TIMESTAMP' : '';
-    bx_db()->Execute(
-        "UPDATE project_bed_task SET firebase_sync_status = ? {$syncedAtSql} WHERE bed_task_key = ?",
-        [$status, $bedTaskKey]
-    );
-    bx_db()->Execute(
-        "UPDATE project_bed_task_log SET firebase_sync_status = ? {$syncedAtSql} WHERE bed_task_key = ?",
-        [$status, $bedTaskKey]
-    );
-}
-
-function bx_sync_project_bed_task_to_firebase(string $bedTaskKey): array
-{
-    try {
-        $payloadRows = bx_project_bed_task_firebase_payload($bedTaskKey);
-    } catch (Throwable $error) {
-        return ['ok' => false, 'skipped' => false, 'message' => $error->getMessage()];
-    }
-
-    $projectId = bx_messenger_firebase_project_id();
-    $serviceAccountPath = bx_messenger_firebase_service_account_path();
-    $fail = static function (string $message) use ($bedTaskKey): array {
-        bx_mark_project_bed_task_firebase_sync($bedTaskKey, 'FAILED');
-        return ['ok' => false, 'skipped' => false, 'message' => $message];
-    };
-    if ($projectId === '') {
-        return $fail('Firebase project id is not configured.');
-    }
-    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
-        return $fail('Firebase service account path is not configured or readable.');
-    }
-
-    $scriptPath = dirname(__DIR__) . '/scripts/firebase-bed-task-sync.mjs';
-    if (!is_readable($scriptPath)) {
-        return $fail('Firebase bed task sync script is missing.');
-    }
-
-    $payload = json_encode([
-        'project_id' => $projectId,
-        'service_account_path' => $serviceAccountPath,
-        'task' => $payloadRows['task'],
-        'logs' => $payloadRows['logs'],
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if (!is_string($payload)) {
-        return $fail('Firebase bed task payload could not be encoded.');
-    }
-
-    $command = 'node ' . escapeshellarg($scriptPath);
-    $descriptorSpec = [
-        0 => ['pipe', 'r'],
-        1 => ['pipe', 'w'],
-        2 => ['pipe', 'w'],
-    ];
-    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
-    if (!is_resource($process)) {
-        return $fail('Firebase bed task sync process could not start.');
-    }
-
-    fwrite($pipes[0], $payload);
-    fclose($pipes[0]);
-    $stdout = stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
-    fclose($pipes[2]);
-    $exitCode = proc_close($process);
-    $result = json_decode((string) $stdout, true);
-    if (!is_array($result)) {
-        $result = [
-            'ok' => false,
-            'message' => trim((string) $stderr) !== '' ? trim((string) $stderr) : 'Firebase bed task sync returned an invalid response.',
-        ];
-    }
-
-    if ($exitCode === 0 && ($result['ok'] ?? false) === true) {
-        bx_mark_project_bed_task_firebase_sync($bedTaskKey, 'SYNCED');
-    } else {
-        bx_mark_project_bed_task_firebase_sync($bedTaskKey, 'FAILED');
-    }
-
-    return $result + [
-        'exit_code' => $exitCode,
-        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
-    ];
+    return is_array($stage) ? $stage : [];
 }
 
 function bx_ensure_project_bed_reference_schema(): void
@@ -4982,6 +6134,7 @@ function bx_ensure_project_bed_reference_schema(): void
     bx_add_index_if_missing('project_bed_source', 'idx_project_bed_source_status', 'INDEX idx_project_bed_source_status (bed_source_status, bed_source_sort_order)');
 }
 
+
 function bx_project_bed_treatment_rows(bool $activeOnly = false): array
 {
     bx_ensure_project_bed_reference_schema();
@@ -4994,11 +6147,11 @@ function bx_project_bed_treatment_rows(bool $activeOnly = false): array
             COALESCE(treatment_description, '') AS treatment_description,
             treatment_status,
             treatment_sort_order,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') AS created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i') AS updated_at
+            DATE_FORMAT(firebase_created_at, '%Y-%m-%d %H:%i') AS created_at,
+            DATE_FORMAT(firebase_updated_at, '%Y-%m-%d %H:%i') AS updated_at
         FROM project_bed_treatment
         {$where}
-        ORDER BY treatment_sort_order ASC, treatment_status ASC, treatment_name ASC, x_id ASC
+        ORDER BY treatment_sort_order ASC, treatment_status ASC, treatment_name ASC, bed_treatment_key ASC
     ");
 
     return is_array($rows) ? $rows : [];
@@ -5016,11 +6169,11 @@ function bx_project_bed_source_rows(bool $activeOnly = false): array
             COALESCE(bed_source_description, '') AS bed_source_description,
             bed_source_status,
             bed_source_sort_order,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') AS created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i') AS updated_at
+            DATE_FORMAT(firebase_created_at, '%Y-%m-%d %H:%i') AS created_at,
+            DATE_FORMAT(firebase_updated_at, '%Y-%m-%d %H:%i') AS updated_at
         FROM project_bed_source
         {$where}
-        ORDER BY bed_source_sort_order ASC, bed_source_status ASC, bed_source_name ASC, x_id ASC
+        ORDER BY bed_source_sort_order ASC, bed_source_status ASC, bed_source_name ASC, bed_source_key ASC
     ");
 
     return is_array($rows) ? $rows : [];
@@ -5048,7 +6201,7 @@ function bx_project_bed_reference_order_input(array $input, string $fieldName = 
     return $ordered;
 }
 
-function bx_update_project_bed_reference_sort_order(array $input, ?string $userKey = null): array
+function bx_legacy_update_project_bed_reference_sort_order(array $input, ?string $userKey = null): array
 {
     bx_ensure_project_bed_reference_schema();
 
@@ -5162,6 +6315,22 @@ function bx_update_project_bed_reference_sort_order(array $input, ?string $userK
     }
 }
 
+function bx_update_project_bed_reference_sort_order(array $input, ?string $userKey = null): array
+{
+    $type = strtolower(trim((string) ($input['reference_type'] ?? '')));
+    if ($type === 'treatment') {
+        $keys = bx_project_bed_reference_order_input($input);
+        $result = bx_admin_write_project_bed_treatment_firebase_first([], 'reorder', $keys);
+        if (($result['ok'] ?? false) !== true) throw new RuntimeException((string) ($result['message'] ?? 'Firebase bed treatment reorder failed.'));
+        return array_map(static fn (string $key, int $index): array => ['bed_treatment_key' => $key, 'treatment_sort_order' => $index + 1], $keys, array_keys($keys));
+    }
+    if ($type !== 'source') return bx_legacy_update_project_bed_reference_sort_order($input, $userKey);
+    $keys = bx_project_bed_reference_order_input($input);
+    $result = bx_admin_write_project_bed_source_firebase_first([], 'reorder', $keys);
+    if (($result['ok'] ?? false) !== true) throw new RuntimeException((string) ($result['message'] ?? 'Firebase admission source reorder failed.'));
+    return array_map(static fn (string $key, int $index): array => ['bed_source_key' => $key, 'bed_source_sort_order' => $index + 1], $keys, array_keys($keys));
+}
+
 function bx_validate_bed_reference_status(string $status): string
 {
     $status = strtoupper(trim($status));
@@ -5172,7 +6341,7 @@ function bx_validate_bed_reference_status(string $status): string
     return $status;
 }
 
-function bx_save_project_bed_treatment(array $input, ?string $userKey = null): array
+function bx_legacy_save_project_bed_treatment(array $input, ?string $userKey = null): array
 {
     bx_ensure_project_bed_reference_schema();
     $db = bx_db();
@@ -5256,7 +6425,7 @@ function bx_save_project_bed_treatment(array $input, ?string $userKey = null): a
     }
 }
 
-function bx_set_project_bed_treatment_status(array $input, ?string $userKey = null): array
+function bx_legacy_set_project_bed_treatment_status(array $input, ?string $userKey = null): array
 {
     bx_ensure_project_bed_reference_schema();
     $db = bx_db();
@@ -5279,7 +6448,46 @@ function bx_set_project_bed_treatment_status(array $input, ?string $userKey = nu
     return $readBack;
 }
 
-function bx_save_project_bed_source(array $input, ?string $userKey = null): array
+function bx_save_project_bed_treatment(array $input, ?string $userKey = null): array
+{
+    $treatmentKey = trim((string) ($input['bed_treatment_key'] ?? ''));
+    $code = strtoupper(trim((string) ($input['treatment_code'] ?? '')));
+    $name = trim((string) ($input['treatment_name'] ?? ''));
+    $description = trim((string) ($input['treatment_description'] ?? ''));
+    $status = bx_validate_bed_reference_status((string) ($input['treatment_status'] ?? 'ACTIVE'));
+    $sortOrder = max(0, (int) ($input['treatment_sort_order'] ?? 0));
+    if ($code === '' || !preg_match('/^[A-Z0-9_-]{2,80}$/', $code)) {
+        throw new RuntimeException('Treatment code must use 2-80 uppercase letters, numbers, underscores, or hyphens.');
+    }
+    if ($name === '' || strlen($name) > 160) {
+        throw new RuntimeException('Treatment name is required and must be 160 characters or fewer.');
+    }
+    if ($treatmentKey !== '' && !preg_match('/^[A-Za-z0-9]{20}$/', $treatmentKey)) {
+        throw new RuntimeException('Invalid bed treatment key.');
+    }
+    $result = bx_admin_write_project_bed_treatment_firebase_first([
+        'bed_treatment_key' => $treatmentKey,
+        'treatment_code' => $code,
+        'treatment_name' => $name,
+        'treatment_description' => $description,
+        'treatment_status' => $status,
+        'treatment_sort_order' => $sortOrder,
+    ]);
+    if (($result['ok'] ?? false) !== true) throw new RuntimeException((string) ($result['message'] ?? 'Firebase bed treatment write failed.'));
+    return ['bed_treatment_key' => (string) ($result['key'] ?? $treatmentKey), 'treatment_code' => $code, 'treatment_name' => $name, 'treatment_description' => $description, 'treatment_status' => $status, 'treatment_sort_order' => $sortOrder, '_firebase' => $result];
+}
+
+function bx_set_project_bed_treatment_status(array $input, ?string $userKey = null): array
+{
+    $treatmentKey = trim((string) ($input['bed_treatment_key'] ?? ''));
+    $status = bx_validate_bed_reference_status((string) ($input['treatment_status'] ?? 'INACTIVE'));
+    if (!preg_match('/^[A-Za-z0-9]{20}$/', $treatmentKey)) throw new RuntimeException('Invalid bed treatment key.');
+    $result = bx_admin_write_project_bed_treatment_firebase_first(['bed_treatment_key' => $treatmentKey, 'treatment_status' => $status]);
+    if (($result['ok'] ?? false) !== true) throw new RuntimeException((string) ($result['message'] ?? 'Firebase bed treatment status write failed.'));
+    return ['bed_treatment_key' => $treatmentKey, 'treatment_status' => $status, '_firebase' => $result];
+}
+
+function bx_legacy_save_project_bed_source(array $input, ?string $userKey = null): array
 {
     bx_ensure_project_bed_reference_schema();
     $db = bx_db();
@@ -5363,7 +6571,7 @@ function bx_save_project_bed_source(array $input, ?string $userKey = null): arra
     }
 }
 
-function bx_set_project_bed_source_status(array $input, ?string $userKey = null): array
+function bx_legacy_set_project_bed_source_status(array $input, ?string $userKey = null): array
 {
     bx_ensure_project_bed_reference_schema();
     $db = bx_db();
@@ -5386,9 +6594,259 @@ function bx_set_project_bed_source_status(array $input, ?string $userKey = null)
     return $readBack;
 }
 
+function bx_save_project_bed_source(array $input, ?string $userKey = null): array
+{
+    $sourceKey = trim((string) ($input['bed_source_key'] ?? ''));
+    $code = strtoupper(trim((string) ($input['bed_source_code'] ?? '')));
+    $name = trim((string) ($input['bed_source_name'] ?? ''));
+    $description = trim((string) ($input['bed_source_description'] ?? ''));
+    $status = bx_validate_bed_reference_status((string) ($input['bed_source_status'] ?? 'ACTIVE'));
+    $sortOrder = max(0, (int) ($input['bed_source_sort_order'] ?? 0));
+    if ($code === '' || !preg_match('/^[A-Z0-9_-]{2,80}$/', $code)) throw new RuntimeException('Admission source code must use 2-80 uppercase letters, numbers, underscores, or hyphens.');
+    if ($name === '' || strlen($name) > 160) throw new RuntimeException('Admission source name is required and must be 160 characters or fewer.');
+    if ($sourceKey !== '' && !preg_match('/^[A-Za-z0-9]{20}$/', $sourceKey)) throw new RuntimeException('Invalid admission source key.');
+    $result = bx_admin_write_project_bed_source_firebase_first([
+        'bed_source_key' => $sourceKey, 'bed_source_code' => $code, 'bed_source_name' => $name,
+        'bed_source_description' => $description, 'bed_source_status' => $status, 'bed_source_sort_order' => $sortOrder,
+    ]);
+    if (($result['ok'] ?? false) !== true) throw new RuntimeException((string) ($result['message'] ?? 'Firebase admission source write failed.'));
+    return ['bed_source_key' => (string) ($result['key'] ?? $sourceKey), 'bed_source_code' => $code, 'bed_source_name' => $name, 'bed_source_description' => $description, 'bed_source_status' => $status, 'bed_source_sort_order' => $sortOrder, '_firebase' => $result];
+}
+
+function bx_set_project_bed_source_status(array $input, ?string $userKey = null): array
+{
+    $sourceKey = trim((string) ($input['bed_source_key'] ?? ''));
+    $status = bx_validate_bed_reference_status((string) ($input['bed_source_status'] ?? 'INACTIVE'));
+    if (!preg_match('/^[A-Za-z0-9]{20}$/', $sourceKey)) throw new RuntimeException('Invalid admission source key.');
+    $result = bx_admin_write_project_bed_source_firebase_first(['bed_source_key' => $sourceKey, 'bed_source_status' => $status]);
+    if (($result['ok'] ?? false) !== true) throw new RuntimeException((string) ($result['message'] ?? 'Firebase admission source status write failed.'));
+    return ['bed_source_key' => $sourceKey, 'bed_source_status' => $status, '_firebase' => $result];
+}
+
+function bx_project_task_firebase_rows(?string $taskKey = null, int $limit = 10000): array
+{
+    bx_ensure_project_task_stage_response_schema();
+    $where = ['1 = 1'];
+    $params = [];
+    $taskKey = $taskKey === null ? '' : trim($taskKey);
+    if ($taskKey !== '') {
+        if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskKey)) {
+            throw new RuntimeException('Invalid task key for Firebase sync.');
+        }
+        $where[] = 't.task_key = ?';
+        $params[] = $taskKey;
+    }
+
+    $limit = max(1, min($limit, 10000));
+    $rows = bx_db()->GetAll(
+        "SELECT
+            t.task_key,
+            COALESCE(t.task_code, '') AS task_code,
+            t.task_title,
+            COALESCE(t.task_description, '') AS task_description,
+            COALESCE(t.task_group_keys, '[]') AS task_group_keys,
+            COALESCE(t.task_bypass_group_keys, '[]') AS task_bypass_group_keys,
+            t.task_type,
+            t.task_status,
+            t.task_priority,
+            t.task_color_hex,
+            t.task_can_run_manually,
+            t.task_can_run_via_api,
+            t.task_can_run_if_bed_vacant,
+            t.task_can_run_if_bed_occupied,
+            t.task_requires_bed_treatment,
+            t.task_requires_admission_source,
+            t.task_canvas_x,
+            t.task_canvas_y,
+            t.task_sort_order,
+            DATE_FORMAT(t.firebase_created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+            DATE_FORMAT(t.firebase_updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+        FROM project_task t
+        WHERE " . implode(' AND ', $where) . "
+        ORDER BY
+            CASE t.task_type WHEN 'PRIMARY' THEN 1 WHEN 'SECONDARY' THEN 2 ELSE 3 END,
+            t.task_sort_order ASC,
+            t.firebase_updated_at DESC,
+            t.task_key DESC
+        LIMIT {$limit}",
+        $params
+    ) ?: [];
+
+    $documents = [];
+    foreach ($rows as $row) {
+        $currentTaskKey = (string) ($row['task_key'] ?? '');
+        if ($currentTaskKey === '') {
+            continue;
+        }
+
+        $stages = bx_db()->GetAll(
+            "SELECT
+                task_stage_key,
+                task_key,
+                stage_label,
+                COALESCE(stage_description, '') AS stage_description,
+                stage_color_hex,
+                stage_status,
+                stage_ends_task,
+                stage_can_run_manually,
+                stage_can_run_via_api,
+                COALESCE(connected_task_key, '') AS connected_task_key,
+                connected_task_trigger_point,
+                stage_sort_order,
+                DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+                DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+            FROM project_task_stage
+            WHERE task_key = ?
+            ORDER BY stage_sort_order ASC, x_id ASC",
+            [$currentTaskKey]
+        ) ?: [];
+        $responses = bx_db()->GetAll(
+            "SELECT
+                task_stage_response_key,
+                task_key,
+                task_stage_key,
+                response_label,
+                COALESCE(response_description, '') AS response_description,
+                response_color_hex,
+                response_status,
+                response_sort_order,
+                DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+                DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+            FROM project_task_stage_response
+            WHERE task_key = ?
+            ORDER BY task_stage_key ASC, response_sort_order ASC, x_id ASC",
+            [$currentTaskKey]
+        ) ?: [];
+
+        $stringRow = array_map(static fn ($value): string => $value === null ? '' : (string) $value, $row);
+        $stringRow['deleted'] = '0';
+        $stringRow['stages'] = array_map(static function (array $stage): array {
+            return array_map(static fn ($value): string => $value === null ? '' : (string) $value, $stage);
+        }, $stages);
+        $stringRow['responses'] = array_map(static function (array $response): array {
+            return array_map(static fn ($value): string => $value === null ? '' : (string) $value, $response);
+        }, $responses);
+        $documents[] = $stringRow;
+    }
+
+    return $documents;
+}
+
+function bx_deleted_project_task_firebase_row(string $taskKey, array $deletedTask = []): array
+{
+    $taskKey = trim($taskKey);
+    if (!preg_match('/^[A-Za-z0-9]{20}$/', $taskKey)) {
+        throw new RuntimeException('Invalid deleted task key for Firebase sync.');
+    }
+
+    return [
+        'task_key' => $taskKey,
+        'task_code' => (string) ($deletedTask['task_code'] ?? ''),
+        'task_title' => (string) ($deletedTask['task_title'] ?? ''),
+        'task_type' => (string) ($deletedTask['task_type'] ?? ''),
+        'task_status' => 'DELETED',
+        'deleted' => '1',
+        'stages' => [],
+        'responses' => [],
+    ];
+}
+
+function bx_sync_project_task_rows_to_firebase(array $rows): array
+{
+    $rows = array_values(array_filter($rows, static fn ($row): bool => is_array($row)));
+    if ($rows === []) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'No project task row is available for Firebase sync.'];
+    }
+
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    if ($projectId === '') {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project id is not configured.'];
+    }
+    if ($serviceAccountPath === '' || !is_readable($serviceAccountPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase service account path is not configured or readable.'];
+    }
+
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-project-task-sync.mjs';
+    if (!is_readable($scriptPath)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project task sync script is missing.'];
+    }
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'rows' => $rows,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project task payload could not be encoded.'];
+    }
+
+    $command = 'node ' . escapeshellarg($scriptPath);
+    $descriptorSpec = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptorSpec, $pipes, dirname(__DIR__));
+    if (!is_resource($process)) {
+        return ['ok' => false, 'skipped' => false, 'message' => 'Firebase project task sync process could not start.'];
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+    $stdout = '';
+    $stderr = '';
+    $timedOut = false;
+    $deadline = microtime(true) + 8.0;
+    do {
+        $stdout .= (string) stream_get_contents($pipes[1]);
+        $stderr .= (string) stream_get_contents($pipes[2]);
+        $status = proc_get_status($process);
+        if (($status['running'] ?? false) !== true) {
+            break;
+        }
+        if (microtime(true) >= $deadline) {
+            $timedOut = true;
+            proc_terminate($process);
+            break;
+        }
+        usleep(100000);
+    } while (true);
+    $stdout .= (string) stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr .= (string) stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    if ($timedOut) {
+        return [
+            'ok' => false,
+            'skipped' => false,
+            'message' => 'Firebase project task sync timed out. Task was saved locally; try manual sync again.',
+            'exit_code' => $exitCode,
+            'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
+        ];
+    }
+
+    $result = json_decode((string) $stdout, true);
+    if (!is_array($result)) {
+        $result = [
+            'ok' => false,
+            'message' => trim((string) $stderr) !== '' ? 'Firebase project task sync failed.' : 'Firebase project task sync returned an invalid response.',
+        ];
+    }
+
+    return $result + [
+        'exit_code' => $exitCode,
+        'stderr' => trim((string) $stderr) !== '' ? '[REDACTED]' : '',
+    ];
+}
+
 function bx_project_task_rows(int $limit = 30): array
 {
     bx_ensure_project_task_schema();
+    if (!bx_task_projection_table_exists('project_task')) return [];
     $limit = max(1, min(100, $limit));
     $rows = bx_db()->GetAll(
         "SELECT
@@ -5411,8 +6869,8 @@ function bx_project_task_rows(int $limit = 30): array
             t.task_canvas_x,
             t.task_canvas_y,
             t.task_sort_order,
-            DATE_FORMAT(t.created_at, '%Y-%m-%d %H:%i') AS created_at,
-            DATE_FORMAT(t.updated_at, '%Y-%m-%d %H:%i') AS updated_at
+            DATE_FORMAT(t.firebase_created_at, '%Y-%m-%d %H:%i') AS created_at,
+            DATE_FORMAT(t.firebase_updated_at, '%Y-%m-%d %H:%i') AS updated_at
         FROM project_task t
         ORDER BY
             CASE t.task_type
@@ -5425,8 +6883,8 @@ function bx_project_task_rows(int $limit = 30): array
                 ELSE 2
             END,
             t.task_sort_order ASC,
-            t.updated_at DESC,
-            t.x_id DESC
+            t.firebase_updated_at DESC,
+            t.task_key DESC
         LIMIT {$limit}"
     );
 
@@ -5553,145 +7011,12 @@ function bx_project_task_stage_connection_trigger_point(array $input): string
 
 function bx_ensure_project_task_stage_schema(): void
 {
-    bx_ensure_project_task_schema();
-
-    $db = bx_db();
-    $indexExists = static function (string $indexName) use ($db): bool {
-        return (int) $db->GetOne(
-            'SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?',
-            [BUILDERX_DB_NAME, 'project_task_stage', $indexName]
-        ) > 0;
-    };
-
-    $saved = $db->Execute("
-        CREATE TABLE IF NOT EXISTS project_task_stage (
-            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            task_stage_key VARCHAR(40) NOT NULL UNIQUE,
-            task_key VARCHAR(40) NOT NULL,
-            stage_label VARCHAR(160) NOT NULL DEFAULT '',
-            stage_description TEXT NULL,
-            stage_color_hex CHAR(9) NOT NULL DEFAULT '#00000000',
-            stage_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'INACTIVE',
-            stage_ends_task TINYINT(1) NOT NULL DEFAULT 0,
-            stage_can_run_manually TINYINT(1) NOT NULL DEFAULT 0,
-            stage_can_run_via_api TINYINT(1) NOT NULL DEFAULT 0,
-            connected_task_key VARCHAR(40) NULL,
-            connected_task_trigger_point ENUM('PREVIOUS_STAGE_FINISHED','CURRENT_STAGE_FINISHED') NOT NULL DEFAULT 'CURRENT_STAGE_FINISHED',
-            stage_sort_order INT UNSIGNED NOT NULL DEFAULT 0,
-            created_by_user_key CHAR(36) NULL,
-            updated_by_user_key CHAR(36) NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_project_task_stage_task (task_key, stage_status, stage_sort_order),
-            INDEX idx_project_task_stage_status (stage_status)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ");
-    if ($saved === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task stage schema setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-
-    bx_add_column_if_missing('project_task_stage', 'stage_label', "VARCHAR(160) NOT NULL DEFAULT '' AFTER task_key");
-    bx_add_column_if_missing('project_task_stage', 'stage_description', 'TEXT NULL AFTER stage_label');
-    bx_add_column_if_missing('project_task_stage', 'stage_color_hex', "CHAR(9) NOT NULL DEFAULT '#00000000' AFTER stage_description");
-    bx_add_column_if_missing('project_task_stage', 'stage_status', "ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'INACTIVE' AFTER stage_color_hex");
-    bx_add_column_if_missing('project_task_stage', 'stage_ends_task', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER stage_status');
-    bx_add_column_if_missing('project_task_stage', 'stage_can_run_manually', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER stage_ends_task');
-    bx_add_column_if_missing('project_task_stage', 'stage_can_run_via_api', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER stage_can_run_manually');
-    bx_add_column_if_missing('project_task_stage', 'connected_task_key', 'VARCHAR(40) NULL AFTER stage_can_run_via_api');
-    bx_add_column_if_missing('project_task_stage', 'connected_task_trigger_point', "ENUM('PREVIOUS_STAGE_FINISHED','CURRENT_STAGE_FINISHED') NOT NULL DEFAULT 'CURRENT_STAGE_FINISHED' AFTER connected_task_key");
-    bx_add_column_if_missing('project_task_stage', 'stage_sort_order', 'INT UNSIGNED NOT NULL DEFAULT 0 AFTER connected_task_trigger_point');
-    bx_add_column_if_missing('project_task_stage', 'created_by_user_key', 'CHAR(36) NULL AFTER stage_sort_order');
-    bx_add_column_if_missing('project_task_stage', 'updated_by_user_key', 'CHAR(36) NULL AFTER created_by_user_key');
-
-    $stageKeyColumnType = strtolower((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task_stage', 'task_stage_key']
-    ));
-    if ($stageKeyColumnType !== 'varchar(40)') {
-        $keyAltered = $db->Execute('ALTER TABLE project_task_stage MODIFY task_stage_key VARCHAR(40) NOT NULL');
-        if ($keyAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage key column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $statusColumnType = strtoupper((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task_stage', 'stage_status']
-    ));
-    if ($statusColumnType !== "ENUM('ACTIVE','INACTIVE')") {
-        $normalized = $db->Execute("UPDATE project_task_stage SET stage_status = CASE WHEN stage_status = 'ACTIVE' THEN 'ACTIVE' ELSE 'INACTIVE' END");
-        if ($normalized === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage status normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-        $statusAltered = $db->Execute("ALTER TABLE project_task_stage MODIFY stage_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'INACTIVE'");
-        if ($statusAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage status column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $stageColorColumn = $db->GetRow(
-        'SELECT COLUMN_TYPE AS column_type, COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
-        [BUILDERX_DB_NAME, 'project_task_stage', 'stage_color_hex']
-    );
-    $stageColorDefault = is_array($stageColorColumn) ? trim((string) ($stageColorColumn['column_default'] ?? ''), "'") : '';
-    if (
-        is_array($stageColorColumn)
-        && (strtolower((string) ($stageColorColumn['column_type'] ?? '')) !== 'char(9)' || $stageColorDefault !== '#00000000')
-    ) {
-        $stageColorAltered = $db->Execute("ALTER TABLE project_task_stage MODIFY stage_color_hex CHAR(9) NOT NULL DEFAULT '#00000000'");
-        if ($stageColorAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage color column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $colorNormalized = $db->Execute("UPDATE project_task_stage SET stage_color_hex = '#00000000' WHERE stage_color_hex IS NULL OR stage_color_hex NOT REGEXP '^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$'");
-    if ($colorNormalized === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task stage color normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-
-    $triggerNormalized = $db->Execute("UPDATE project_task_stage SET connected_task_trigger_point = 'CURRENT_STAGE_FINISHED' WHERE connected_task_trigger_point IS NULL OR connected_task_trigger_point NOT IN ('PREVIOUS_STAGE_FINISHED','CURRENT_STAGE_FINISHED') OR connected_task_key IS NULL");
-    if ($triggerNormalized === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task stage trigger normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-    $triggerColumnType = strtoupper((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task_stage', 'connected_task_trigger_point']
-    ));
-    if ($triggerColumnType !== "ENUM('PREVIOUS_STAGE_FINISHED','CURRENT_STAGE_FINISHED')") {
-        $triggerAltered = $db->Execute("ALTER TABLE project_task_stage MODIFY connected_task_trigger_point ENUM('PREVIOUS_STAGE_FINISHED','CURRENT_STAGE_FINISHED') NOT NULL DEFAULT 'CURRENT_STAGE_FINISHED'");
-        if ($triggerAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage trigger column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    foreach ([
-	        'idx_project_task_stage_task' => 'INDEX idx_project_task_stage_task (task_key, stage_status, stage_sort_order)',
-	        'idx_project_task_stage_status' => 'INDEX idx_project_task_stage_status (stage_status)',
-	        'idx_project_task_stage_connected' => 'INDEX idx_project_task_stage_connected (connected_task_key)',
-	    ] as $indexName => $definition) {
-        if ($indexExists($indexName)) {
-            continue;
-        }
-        $indexed = $db->Execute("ALTER TABLE project_task_stage ADD {$definition}");
-        if ($indexed === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage index setup failed for ' . $indexName . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
+    // Compatibility stub: TRAVERSE exclusively creates this projection schema.
 }
-
 function bx_project_task_stage_rows(int $limit = 200): array
 {
     bx_ensure_project_task_stage_schema();
-    bx_repair_project_task_default_stages();
+    if (!bx_task_projection_table_exists('project_task_stage')) return [];
     $limit = max(1, min(500, $limit));
     $rows = bx_db()->GetAll(
         "SELECT
@@ -5707,10 +7032,10 @@ function bx_project_task_stage_rows(int $limit = 200): array
             COALESCE(connected_task_key, '') AS connected_task_key,
             connected_task_trigger_point,
             stage_sort_order,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') AS created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i') AS updated_at
+            DATE_FORMAT(firebase_created_at, '%Y-%m-%d %H:%i') AS created_at,
+            DATE_FORMAT(firebase_updated_at, '%Y-%m-%d %H:%i') AS updated_at
         FROM project_task_stage
-        ORDER BY task_key ASC, stage_sort_order ASC, updated_at DESC, x_id DESC
+        ORDER BY task_key ASC, stage_sort_order ASC, firebase_updated_at DESC, task_stage_key DESC
         LIMIT {$limit}"
     );
 
@@ -5719,133 +7044,12 @@ function bx_project_task_stage_rows(int $limit = 200): array
 
 function bx_ensure_project_task_stage_response_schema(): void
 {
-    bx_ensure_project_task_stage_schema();
-
-    $db = bx_db();
-    $indexExists = static function (string $indexName) use ($db): bool {
-        return (int) $db->GetOne(
-            'SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?',
-            [BUILDERX_DB_NAME, 'project_task_stage_response', $indexName]
-        ) > 0;
-    };
-
-    $saved = $db->Execute("
-        CREATE TABLE IF NOT EXISTS project_task_stage_response (
-            x_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            task_stage_response_key VARCHAR(40) NOT NULL UNIQUE,
-            task_key VARCHAR(40) NOT NULL,
-            task_stage_key VARCHAR(40) NOT NULL,
-            response_label VARCHAR(160) NOT NULL,
-            response_description TEXT NULL,
-            response_color_hex CHAR(9) NOT NULL DEFAULT '#00000000',
-            response_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE',
-            response_sort_order INT UNSIGNED NOT NULL DEFAULT 0,
-            created_by_user_key CHAR(36) NULL,
-            updated_by_user_key CHAR(36) NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_project_task_stage_response_stage (task_stage_key, response_status, response_sort_order),
-            INDEX idx_project_task_stage_response_task (task_key, response_status, response_sort_order),
-            INDEX idx_project_task_stage_response_status (response_status)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ");
-    if ($saved === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task stage response schema setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-
-    bx_add_column_if_missing('project_task_stage_response', 'task_key', 'VARCHAR(40) NOT NULL AFTER task_stage_response_key');
-    bx_add_column_if_missing('project_task_stage_response', 'task_stage_key', 'VARCHAR(40) NOT NULL AFTER task_key');
-    bx_add_column_if_missing('project_task_stage_response', 'response_label', "VARCHAR(160) NOT NULL DEFAULT '' AFTER task_stage_key");
-    bx_add_column_if_missing('project_task_stage_response', 'response_description', 'TEXT NULL AFTER response_label');
-    bx_add_column_if_missing('project_task_stage_response', 'response_color_hex', "CHAR(9) NOT NULL DEFAULT '#00000000' AFTER response_description");
-    bx_add_column_if_missing('project_task_stage_response', 'response_status', "ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE' AFTER response_color_hex");
-    bx_add_column_if_missing('project_task_stage_response', 'response_sort_order', 'INT UNSIGNED NOT NULL DEFAULT 0 AFTER response_status');
-    bx_add_column_if_missing('project_task_stage_response', 'created_by_user_key', 'CHAR(36) NULL AFTER response_sort_order');
-    bx_add_column_if_missing('project_task_stage_response', 'updated_by_user_key', 'CHAR(36) NULL AFTER created_by_user_key');
-
-    $responseKeyColumnType = strtolower((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task_stage_response', 'task_stage_response_key']
-    ));
-    if ($responseKeyColumnType !== 'varchar(40)') {
-        $keyAltered = $db->Execute('ALTER TABLE project_task_stage_response MODIFY task_stage_response_key VARCHAR(40) NOT NULL');
-        if ($keyAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage response key column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $statusColumnType = strtoupper((string) $db->GetOne(
-        'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-        [BUILDERX_DB_NAME, 'project_task_stage_response', 'response_status']
-    ));
-    if ($statusColumnType !== "ENUM('ACTIVE','INACTIVE')") {
-        $normalized = $db->Execute("UPDATE project_task_stage_response SET response_status = CASE WHEN response_status = 'ACTIVE' THEN 'ACTIVE' ELSE 'INACTIVE' END");
-        if ($normalized === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage response status normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-        $statusAltered = $db->Execute("ALTER TABLE project_task_stage_response MODIFY response_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE'");
-        if ($statusAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage response status column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-    $statusColumn = $db->GetRow(
-        'SELECT COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
-        [BUILDERX_DB_NAME, 'project_task_stage_response', 'response_status']
-    );
-    $responseStatusDefault = is_array($statusColumn) ? trim((string) ($statusColumn['column_default'] ?? ''), "'") : '';
-    if ($responseStatusDefault !== 'ACTIVE') {
-        $statusDefaultAltered = $db->Execute("ALTER TABLE project_task_stage_response MODIFY response_status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE'");
-        if ($statusDefaultAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage response status default setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $responseColorColumn = $db->GetRow(
-        'SELECT COLUMN_TYPE AS column_type, COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
-        [BUILDERX_DB_NAME, 'project_task_stage_response', 'response_color_hex']
-    );
-    $responseColorDefault = is_array($responseColorColumn) ? trim((string) ($responseColorColumn['column_default'] ?? ''), "'") : '';
-    if (
-        is_array($responseColorColumn)
-        && (strtolower((string) ($responseColorColumn['column_type'] ?? '')) !== 'char(9)' || $responseColorDefault !== '#00000000')
-    ) {
-        $responseColorAltered = $db->Execute("ALTER TABLE project_task_stage_response MODIFY response_color_hex CHAR(9) NOT NULL DEFAULT '#00000000'");
-        if ($responseColorAltered === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage response color column setup failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
-
-    $colorNormalized = $db->Execute("UPDATE project_task_stage_response SET response_color_hex = '#00000000' WHERE response_color_hex IS NULL OR response_color_hex NOT REGEXP '^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$'");
-    if ($colorNormalized === false) {
-        $databaseError = trim((string) $db->ErrorMsg());
-        throw new RuntimeException('Project task stage response color normalization failed' . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-    }
-
-    foreach ([
-        'idx_project_task_stage_response_stage' => 'INDEX idx_project_task_stage_response_stage (task_stage_key, response_status, response_sort_order)',
-        'idx_project_task_stage_response_task' => 'INDEX idx_project_task_stage_response_task (task_key, response_status, response_sort_order)',
-        'idx_project_task_stage_response_status' => 'INDEX idx_project_task_stage_response_status (response_status)',
-    ] as $indexName => $definition) {
-        if ($indexExists($indexName)) {
-            continue;
-        }
-        $indexed = $db->Execute("ALTER TABLE project_task_stage_response ADD {$definition}");
-        if ($indexed === false) {
-            $databaseError = trim((string) $db->ErrorMsg());
-            throw new RuntimeException('Project task stage response index setup failed for ' . $indexName . ($databaseError !== '' ? ': ' . $databaseError : '.'));
-        }
-    }
+    // Compatibility stub: TRAVERSE exclusively creates this projection schema.
 }
-
 function bx_project_task_stage_response_rows(int $limit = 500): array
 {
     bx_ensure_project_task_stage_response_schema();
+    if (!bx_task_projection_table_exists('project_task_stage_response')) return [];
     $limit = max(1, min(1000, $limit));
     $rows = bx_db()->GetAll(
         "SELECT
@@ -5857,10 +7061,10 @@ function bx_project_task_stage_response_rows(int $limit = 500): array
             response_color_hex,
             response_status,
             response_sort_order,
-            DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') AS created_at,
-            DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i') AS updated_at
+            DATE_FORMAT(firebase_created_at, '%Y-%m-%d %H:%i') AS created_at,
+            DATE_FORMAT(firebase_updated_at, '%Y-%m-%d %H:%i') AS updated_at
         FROM project_task_stage_response
-        ORDER BY task_key ASC, task_stage_key ASC, response_sort_order ASC, updated_at DESC, x_id DESC
+        ORDER BY task_key ASC, task_stage_key ASC, response_sort_order ASC, firebase_updated_at DESC, task_stage_response_key DESC
         LIMIT {$limit}"
     );
 
@@ -7661,35 +8865,43 @@ function bx_project_bed_lookup_options(array $filters): array
 function bx_project_bed_lookup_rows(array $filters, int $limit = 24): array
 {
     bx_ensure_bed_master_list_schema();
-    bx_ensure_project_bed_task_schema();
     $limit = max(1, min(60, $limit));
     [$where, $params] = bx_project_bed_lookup_where($filters);
-
     $whereSql = implode(' AND ', $where);
+
     $rows = bx_db()->GetAll(
         "SELECT
             bed_key,
             bed_source_key,
             COALESCE(source_pk_psbeds, '') AS source_pk_psbeds,
             COALESCE(bed_no, '') AS bed_no,
+            COALESCE(branch_key, '') AS branch_key,
             COALESCE(branch_name, '') AS branch_name,
+            COALESCE(building_key, '') AS building_key,
             COALESCE(building_name, '') AS building_name,
+            COALESCE(floor_key, '') AS floor_key,
             COALESCE(floor_name, '') AS floor_name,
+            COALESCE(nurse_station_key, '') AS nurse_station_key,
             COALESCE(nurse_station_name, '') AS nurse_station_name,
             COALESCE(room_key, '') AS room_key,
+            COALESCE(room_class_key, '') AS room_class_key,
             COALESCE(room_class, '') AS room_class,
+            COALESCE(source_bed_status_key, '') AS source_bed_status_key,
             COALESCE(source_bed_status, '') AS source_bed_status,
             COALESCE(NULLIF(TRIM(CAST(check_status.`BedStatus` AS CHAR)), ''), '') AS rbms_check_bed_status,
-            COALESCE(existing_task_count.existing_task_count, 0) AS existing_task_count,
-            COALESCE(existing_task_count.existing_primary_task_count, 0) AS existing_primary_task_count,
-            COALESCE(existing_task_count.existing_secondary_task_count, 0) AS existing_secondary_task_count,
-            COALESCE(existing_task_count.existing_task_keys, '') AS existing_task_keys,
-            COALESCE(existing_task_count.existing_task_types, '') AS existing_task_types,
-            COALESCE(existing_task.bed_task_key, '') AS existing_task_key,
-            COALESCE(existing_task.task_key, '') AS existing_task_task_key,
-            COALESCE(existing_task.task_title, '') AS existing_task_title,
-            COALESCE(existing_task.task_status, '') AS existing_task_status,
-            COALESCE(existing_task.task_color_hex, '#00000000') AS existing_task_color_hex,
+            0 AS existing_task_count,
+            0 AS existing_primary_task_count,
+            0 AS existing_secondary_task_count,
+            '' AS existing_task_keys,
+            '' AS existing_task_types,
+            '' AS existing_task_key,
+            '' AS existing_task_task_key,
+            '' AS existing_task_title,
+            '' AS existing_task_status,
+            '#00000000' AS existing_task_color_hex,
+            '' AS existing_task_stage_label,
+            '#00000000' AS existing_task_stage_color_hex,
+            '' AS existing_task_updated_at,
             CASE
                 WHEN NULLIF(TRIM(CAST(project_bed.`source_pk_psbeds` AS CHAR)), '') IS NULL THEN 0
                 WHEN check_status.`PK_psBeds` IS NULL THEN 1
@@ -7701,38 +8913,6 @@ function bx_project_bed_lookup_rows(array $filters, int $limit = 24): array
         FROM project_bed
         LEFT JOIN `RBMS_CheckBedStatus` check_status
             ON NULLIF(TRIM(CAST(project_bed.`source_pk_psbeds` AS CHAR)), '') COLLATE utf8mb4_unicode_ci = NULLIF(TRIM(CAST(check_status.`PK_psBeds` AS CHAR)), '') COLLATE utf8mb4_unicode_ci
-        LEFT JOIN (
-            SELECT
-                pbt.bed_key AS task_bed_key,
-                pbt.bed_task_key,
-                pbt.task_key,
-                pbt.task_title,
-                pbt.task_status,
-                CASE
-                    WHEN COALESCE(pt.task_color_hex, '#00000000') REGEXP '^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$' THEN UPPER(COALESCE(pt.task_color_hex, '#00000000'))
-                    ELSE '#00000000'
-                END AS task_color_hex
-            FROM project_bed_task pbt
-            INNER JOIN (
-                SELECT bed_key, MAX(x_id) AS latest_task_x_id
-                FROM project_bed_task
-                GROUP BY bed_key
-            ) latest_task ON latest_task.latest_task_x_id = pbt.x_id
-            LEFT JOIN project_task pt ON pt.task_key = pbt.task_key
-        ) existing_task
-            ON NULLIF(TRIM(CAST(existing_task.task_bed_key AS CHAR)), '') COLLATE utf8mb4_unicode_ci = NULLIF(TRIM(CAST(project_bed.`bed_key` AS CHAR)), '') COLLATE utf8mb4_unicode_ci
-        LEFT JOIN (
-            SELECT
-                bed_key AS task_count_bed_key,
-                COUNT(*) AS existing_task_count,
-                SUM(CASE WHEN task_type = 'PRIMARY' THEN 1 ELSE 0 END) AS existing_primary_task_count,
-                SUM(CASE WHEN task_type = 'SECONDARY' THEN 1 ELSE 0 END) AS existing_secondary_task_count,
-                GROUP_CONCAT(DISTINCT task_key ORDER BY x_id SEPARATOR ',') AS existing_task_keys,
-                GROUP_CONCAT(DISTINCT task_type ORDER BY task_type SEPARATOR ',') AS existing_task_types
-            FROM project_bed_task
-            GROUP BY bed_key
-        ) existing_task_count
-            ON NULLIF(TRIM(CAST(existing_task_count.task_count_bed_key AS CHAR)), '') COLLATE utf8mb4_unicode_ci = NULLIF(TRIM(CAST(project_bed.`bed_key` AS CHAR)), '') COLLATE utf8mb4_unicode_ci
         WHERE {$whereSql}
         ORDER BY
             CASE managed_status WHEN 'ACTIVE' THEN 1 ELSE 2 END,
@@ -7747,7 +8927,6 @@ function bx_project_bed_lookup_rows(array $filters, int $limit = 24): array
 
     return is_array($rows) ? $rows : [];
 }
-
 function bx_bed_master_list_group_counts(): array
 {
     bx_ensure_bed_master_list_schema();
@@ -7828,6 +9007,7 @@ function bx_project_bed_source_row(string $bedSourceKey): ?array
     return is_array($row) ? $row : null;
 }
 
+
 function bx_resync_project_bed(string $bedKey, ?string $userKey = null): array
 {
     bx_ensure_bed_master_list_schema();
@@ -7867,8 +9047,6 @@ function bx_resync_project_bed(string $bedKey, ?string $userKey = null): array
         if (!is_array($managed)) {
             throw new RuntimeException('Selected project bed was not found.');
         }
-        $oldFloorGroupKey = bx_project_bed_floor_group_key($managed);
-
         $source = bx_project_bed_source_row((string) ($managed['bed_source_key'] ?? ''));
         if ($source !== null) {
             $saved = $db->Execute(
@@ -7954,183 +9132,10 @@ function bx_resync_project_bed(string $bedKey, ?string $userKey = null): array
             'user_key' => (string) ($userKey ?? ''),
         ], 'Administrator re-synced one project_bed row from RBMS_BedMasterlist.');
 
-        $analytics = bx_refresh_project_bed_analytics($batchKey, $userKey);
-        $bedRows = bx_project_bed_firebase_rows(null, $bedKey, 1);
-        $floorKeys = [$oldFloorGroupKey];
-        foreach ($bedRows as $bedRow) {
-            $floorKeys[] = bx_project_bed_floor_group_key($bedRow);
-        }
-        $floorKeys = array_values(array_unique(array_filter($floorKeys)));
         $readBack['sourceFound'] = $source !== null;
         $readBack['batchKey'] = $batchKey;
-        $readBack['analyticsRows'] = (int) ($analytics['activeRows'] ?? 0);
-        $readBack['firebaseSync'] = bx_sync_project_bed_rows_to_firebase(
-            $bedRows,
-            is_array($analytics['documents'] ?? null) ? $analytics['documents'] : bx_project_bed_analytics_documents($batchKey),
-            bx_project_bed_floor_documents(null, $floorKeys, array_merge([$managed], $bedRows)),
-            false
-        );
 
         return $readBack;
-    } catch (Throwable $error) {
-        if ($transactionStarted) {
-            $db->RollbackTrans();
-        }
-        throw $error;
-    }
-}
-
-function bx_resync_bed_master_list(?string $userKey = null): array
-{
-    bx_ensure_bed_master_list_schema();
-    if (!bx_bed_master_list_source_exists()) {
-        throw new RuntimeException('Source table RBMS_BedMasterlist was not found.');
-    }
-
-    $db = bx_db();
-    $batchKey = bx_uuid();
-    $transactionStarted = false;
-
-    $cleanSource = static function (string $column): string {
-        return "NULLIF(TRIM(CAST(source.`{$column}` AS CHAR)), '')";
-    };
-
-    try {
-        if ($db->BeginTrans() === false) {
-            throw new RuntimeException('Bed master list sync transaction could not start.');
-        }
-        $transactionStarted = true;
-
-        $sourceRows = (int) $db->GetOne('SELECT COUNT(*) FROM `RBMS_BedMasterlist`');
-        $beforeManagedRows = (int) $db->GetOne('SELECT COUNT(*) FROM project_bed');
-        $sourceKeySql = "CONCAT('RBMS_BedMasterlist:', COALESCE({$cleanSource('PK_psBeds')}, CONCAT('id:', source.`id`)))";
-        $saved = $db->Execute(
-            "
-            INSERT INTO project_bed (
-                bed_key, bed_source_key, source_table, source_id, source_pk_psbeds, bed_no,
-                branch_key, branch_name, building_key, building_name, floor_key, floor_name,
-                nurse_station_key, nurse_station_name, room_key, room_class_key, room_class,
-                source_bed_status_key, source_bed_status, managed_status, sync_batch_key,
-                last_synced_at, last_seen_at
-            )
-            SELECT
-                source.generated_bed_key,
-                {$sourceKeySql},
-                'RBMS_BedMasterlist',
-                source.`id`,
-                {$cleanSource('PK_psBeds')},
-                {$cleanSource('bedno')},
-                {$cleanSource('PK_mscBranches')},
-                {$cleanSource('branchname')},
-                {$cleanSource('PK_mscBldgs')},
-                {$cleanSource('bldgname')},
-                {$cleanSource('PK_mscBldgFloors')},
-                {$cleanSource('floorname')},
-                {$cleanSource('PK_mscNrstation')},
-                {$cleanSource('Nrstation')},
-                {$cleanSource('PK_psRooms')},
-                {$cleanSource('PK_mscRoomClass')},
-                {$cleanSource('RoomClass')},
-                {$cleanSource('PK_mscBedStatus')},
-                {$cleanSource('BedStatus')},
-                'ACTIVE',
-                ?,
-                CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP
-            FROM (
-                SELECT LEFT(REPLACE(UUID(), '-', ''), 20) AS generated_bed_key, source.*
-                FROM `RBMS_BedMasterlist` source
-                WHERE source.`id` IS NOT NULL
-            ) source
-            ON DUPLICATE KEY UPDATE
-                source_id = VALUES(source_id),
-                source_pk_psbeds = VALUES(source_pk_psbeds),
-                bed_no = VALUES(bed_no),
-                branch_key = VALUES(branch_key),
-                branch_name = VALUES(branch_name),
-                building_key = VALUES(building_key),
-                building_name = VALUES(building_name),
-                floor_key = VALUES(floor_key),
-                floor_name = VALUES(floor_name),
-                nurse_station_key = VALUES(nurse_station_key),
-                nurse_station_name = VALUES(nurse_station_name),
-                room_key = VALUES(room_key),
-                room_class_key = VALUES(room_class_key),
-                room_class = VALUES(room_class),
-                source_bed_status_key = VALUES(source_bed_status_key),
-                source_bed_status = VALUES(source_bed_status),
-                managed_status = 'ACTIVE',
-                sync_batch_key = VALUES(sync_batch_key),
-                last_synced_at = CURRENT_TIMESTAMP,
-                last_seen_at = CURRENT_TIMESTAMP
-            ",
-            [$batchKey]
-        );
-        if ($saved === false) {
-            throw new RuntimeException('Bed master list upsert failed: ' . trim((string) $db->ErrorMsg()));
-        }
-
-        $inactive = $db->Execute(
-            "
-            UPDATE project_bed managed
-            LEFT JOIN `RBMS_BedMasterlist` source
-                ON managed.bed_source_key COLLATE utf8mb4_unicode_ci = CONCAT('RBMS_BedMasterlist:', COALESCE(NULLIF(TRIM(CAST(source.`PK_psBeds` AS CHAR)), ''), CONCAT('id:', source.`id`))) COLLATE utf8mb4_unicode_ci
-            SET managed.managed_status = 'INACTIVE',
-                managed.sync_batch_key = ?,
-                managed.last_synced_at = CURRENT_TIMESTAMP
-            WHERE managed.source_table = 'RBMS_BedMasterlist'
-                AND source.`id` IS NULL
-            ",
-            [$batchKey]
-        );
-        if ($inactive === false) {
-            throw new RuntimeException('Bed master list inactive reconciliation failed: ' . trim((string) $db->ErrorMsg()));
-        }
-
-        $activeRows = (int) $db->GetOne("SELECT COUNT(*) FROM project_bed WHERE managed_status = 'ACTIVE'");
-        $managedRows = (int) $db->GetOne('SELECT COUNT(*) FROM project_bed');
-        $firebaseDocumentRows = (int) $db->GetOne("SELECT COUNT(*) FROM project_bed WHERE TRIM(bed_key) REGEXP '^[A-Za-z0-9]{20}$'");
-        $lastSyncedAt = (string) ($db->GetOne('SELECT MAX(last_synced_at) FROM project_bed WHERE sync_batch_key = ?', [$batchKey]) ?: '');
-        if ($activeRows !== $sourceRows) {
-            throw new RuntimeException('Bed master list read-back mismatch after sync.');
-        }
-        if ($firebaseDocumentRows !== $managedRows) {
-            throw new RuntimeException('Project bed_key Firebase document id read-back mismatch after sync.');
-        }
-
-        if ($db->CommitTrans() === false) {
-            throw new RuntimeException('Bed master list sync transaction could not commit.');
-        }
-        $transactionStarted = false;
-
-        $analytics = bx_refresh_project_bed_analytics($batchKey, $userKey);
-        $summary = bx_bed_master_list_summary();
-        $summary['batchKey'] = $batchKey;
-        $summary['beforeManagedRows'] = $beforeManagedRows;
-        $summary['lastSyncedAt'] = $lastSyncedAt ?: $summary['lastSyncedAt'];
-        $summary['analyticsRows'] = (int) ($analytics['activeRows'] ?? 0);
-        $summary['analyticsBatchKey'] = $batchKey;
-        $floorDocuments = bx_project_bed_floor_documents($batchKey);
-        $summary['firebaseSync'] = bx_sync_project_bed_rows_to_firebase(
-            bx_project_bed_firebase_rows($batchKey, null, max(1, $managedRows)),
-            is_array($analytics['documents'] ?? null) ? $analytics['documents'] : bx_project_bed_analytics_documents($batchKey),
-            $floorDocuments,
-            true
-        );
-        $summary['floorGroups'] = count($floorDocuments);
-
-        bx_audit('SYNC', 'project_bed', $batchKey, [
-            'source_table' => 'RBMS_BedMasterlist',
-            'source_rows' => (string) $sourceRows,
-            'managed_rows' => (string) $managedRows,
-            'active_rows' => (string) $activeRows,
-            'analytics_rows' => (string) ($summary['analyticsRows'] ?? 0),
-            'floor_groups' => (string) ($summary['floorGroups'] ?? 0),
-            'firebase_document_key_format' => 'bed_key',
-            'user_key' => (string) ($userKey ?? ''),
-        ], 'Administrator re-synced project_bed from RBMS_BedMasterlist with bed_key Firebase document ids.');
-
-        return $summary;
     } catch (Throwable $error) {
         if ($transactionStarted) {
             $db->RollbackTrans();
@@ -8147,6 +9152,122 @@ function bx_setting(string $name, ?string $default = null): ?string
     );
 
     return $value === false || $value === null ? $default : (string) $value;
+}
+
+function bx_media_url_has_loopback_host(string $url): bool
+{
+    $parts = parse_url(trim($url));
+    if (!is_array($parts)) {
+        return false;
+    }
+
+    $host = strtolower((string) ($parts['host'] ?? ''));
+
+    return in_array($host, ['localhost', '127.0.0.1', '::1'], true);
+}
+
+function bx_media_base_url_from_upload_target(string $uploadTargetUrl): string
+{
+    $uploadTargetUrl = trim($uploadTargetUrl);
+    if ($uploadTargetUrl === '' || !filter_var($uploadTargetUrl, FILTER_VALIDATE_URL) || bx_media_url_has_loopback_host($uploadTargetUrl)) {
+        return '';
+    }
+
+    $parts = parse_url($uploadTargetUrl);
+    if (!is_array($parts)) {
+        return '';
+    }
+
+    $scheme = strtolower((string) ($parts['scheme'] ?? 'http'));
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        return '';
+    }
+
+    $host = (string) ($parts['host'] ?? '');
+    if ($host === '') {
+        return '';
+    }
+
+    $port = isset($parts['port']) ? ':' . (string) $parts['port'] : '';
+    $path = str_replace('\\', '/', (string) ($parts['path'] ?? ''));
+    $directory = rtrim(dirname($path), '/');
+
+    return $scheme . '://' . $host . $port . ($directory === '' || $directory === '.' ? '' : $directory);
+}
+
+function bx_media_base_url_from_app_url(): string
+{
+    $appUrl = trim((string) bx_setting('app_url', ''));
+    if ($appUrl === '' || !filter_var($appUrl, FILTER_VALIDATE_URL) || bx_media_url_has_loopback_host($appUrl)) {
+        return '';
+    }
+
+    $parts = parse_url($appUrl);
+    if (!is_array($parts)) {
+        return '';
+    }
+
+    $scheme = strtolower((string) ($parts['scheme'] ?? 'http'));
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        return '';
+    }
+
+    $host = (string) ($parts['host'] ?? '');
+    if ($host === '') {
+        return '';
+    }
+
+    $port = isset($parts['port']) ? ':' . (string) $parts['port'] : '';
+
+    return $scheme . '://' . $host . $port . '/rbms.com';
+}
+
+function bx_project_media_uploaded_url(string $projectKey, string $uploadedUrl): string
+{
+    $uploadedUrl = trim($uploadedUrl);
+    if ($uploadedUrl === '' || !filter_var($uploadedUrl, FILTER_VALIDATE_URL) || !bx_media_url_has_loopback_host($uploadedUrl)) {
+        return $uploadedUrl;
+    }
+
+    $parts = parse_url($uploadedUrl);
+    if (!is_array($parts)) {
+        return $uploadedUrl;
+    }
+
+    $path = str_replace('\\', '/', (string) ($parts['path'] ?? ''));
+    $mediaSegment = '/' . '_Media' . '/';
+    $mediaPosition = strpos($path, $mediaSegment);
+    if ($mediaPosition === false) {
+        return $uploadedUrl;
+    }
+
+    $relativePath = ltrim(substr($path, $mediaPosition + 1), '/');
+    $baseUrl = bx_media_base_url_from_upload_target((string) bx_project_media_setting($projectKey, 'media_uploader_target_url', ''));
+    if ($baseUrl === '') {
+        $baseUrl = bx_media_base_url_from_app_url();
+    }
+    if ($baseUrl === '') {
+        return $uploadedUrl;
+    }
+
+    return rtrim($baseUrl, '/') . '/' . $relativePath;
+}
+
+function bx_project_media_setting(string $projectKey, string $name, ?string $default = null): ?string
+{
+    $projectKey = trim($projectKey);
+    if ($projectKey !== '') {
+        bx_seed_media_project_settings();
+        $value = bx_db()->GetOne(
+            "SELECT setting_value FROM project_setting_media WHERE project_key = ? AND setting_name = ? AND setting_status = 'ACTIVE'",
+            [$projectKey, $name]
+        );
+        if ($value !== false && $value !== null) {
+            return (string) $value;
+        }
+    }
+
+    return $default;
 }
 
 function bx_audit(string $action, string $module, ?string $recordKey = null, array $newValues = [], ?string $reason = null): void
@@ -8251,9 +9372,28 @@ function bx_authorization_status_code(array $authorization): int
     return in_array((string) ($authorization['reasonCode'] ?? ''), ['authentication_required', 'session_required', 'session_invalid', 'account_inactive'], true) ? 401 : 403;
 }
 
+function bx_persist_portal_session(): void
+{
+    if (!defined('BUILDERX_PORTAL_SESSION') || BUILDERX_PORTAL_SESSION !== true
+        || session_status() !== PHP_SESSION_ACTIVE || session_id() === '' || headers_sent()) {
+        return;
+    }
+
+    $isSecure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    setcookie(session_name(), session_id(), [
+        'expires' => time() + 315360000,
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+}
+
 function bx_authorization_guard(array $requirements = []): array
 {
     $requireAuthenticated = (bool) ($requirements['requireAuthenticated'] ?? true);
+    $portalSession = defined('BUILDERX_PORTAL_SESSION') && BUILDERX_PORTAL_SESSION === true;
+    $sessionExpiryCondition = $portalSession ? '1 = 1' : '(s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)';
     $userKey = trim((string) ($_SESSION['builderx_user_key'] ?? ''));
     $sessionKey = trim((string) ($_SESSION['builderx_session_key'] ?? ''));
     if ($userKey === '' || $sessionKey === '') {
@@ -8270,7 +9410,7 @@ function bx_authorization_guard(array $requirements = []): array
             AND s.user_key = ?
             AND s.session_token_hash = ?
             AND s.session_status = 'ACTIVE'
-            AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
+            AND ({$sessionExpiryCondition})
             AND u.user_status = 'ACTIVE'
             AND u.user_deleted_at IS NULL
         LIMIT 1",
@@ -8278,6 +9418,14 @@ function bx_authorization_guard(array $requirements = []): array
     );
     if (!$user) {
         return bx_authorization_result(false, 'session_invalid', 'Sign in before continuing.');
+    }
+
+    if ($portalSession) {
+        bx_db()->Execute(
+            'UPDATE builder_user_session SET expires_at = NULL WHERE session_key = ? AND user_key = ? AND session_status = \'ACTIVE\'',
+            [$sessionKey, $userKey]
+        );
+        bx_persist_portal_session();
     }
 
     $roleRows = bx_db()->GetAll(
@@ -8341,6 +9489,20 @@ function bx_authorization_guard(array $requirements = []): array
 
     if (!empty($requirements['requireAdmin']) && bx_authorization_missing(['Administrator'], $context['roleNames'], true) !== null) {
         return bx_authorization_result(false, 'administrator_required', 'Administrator access is required.', $user, $context);
+    }
+
+    if (!empty($requirements['requireAdminFirebase'])) {
+        $sessionAuthMarker = trim((string) ($_SESSION['builderx_admin_auth_marker'] ?? ''));
+        $sessionAudience = trim((string) ($_SESSION['builderx_auth_audience'] ?? ''));
+        $sessionFirebaseUid = trim((string) ($_SESSION['builderx_admin_firebase_uid'] ?? ''));
+        $mappedFirebaseUid = trim((string) ($user['firebase_uid'] ?? ''));
+        if ($sessionAuthMarker !== 'RBMS_ADMINISTRATOR'
+            || $sessionAudience !== 'rbms-administrator'
+            || $sessionFirebaseUid === ''
+            || $mappedFirebaseUid === ''
+            || !hash_equals($mappedFirebaseUid, $sessionFirebaseUid)) {
+            return bx_authorization_result(false, 'administrator_firebase_required', 'Administrator Firebase authentication is required.', $user, $context);
+        }
     }
 
     foreach ([
@@ -8435,7 +9597,7 @@ function bx_current_user(): ?array
  * Authentication and account-security columns must remain server-side.
  *
  * @param array<string, mixed>|null $user
- * @return array{user_key: string, user_name: string}|null
+ * @return array{user_key: string, user_name: string, task_notification_sound: string, task_notification_volume: int, messenger_notification_sound: string, messenger_notification_volume: int}|null
  */
 function bx_user_public_projection(?array $user): ?array
 {
@@ -8446,6 +9608,18 @@ function bx_user_public_projection(?array $user): ?array
     return [
         'user_key' => (string) ($user['user_key'] ?? ''),
         'user_name' => (string) ($user['user_name'] ?? ''),
+        'task_notification_sound' => preg_match('/^ding_sound_(0[1-9]|1[0-2])$/', (string) ($user['user_task_notification_sound'] ?? '')) === 1
+            ? (string) $user['user_task_notification_sound']
+            : 'ding_sound_01',
+        'task_notification_volume' => in_array((int) ($user['user_task_notification_volume'] ?? 0), [25, 50, 75, 100], true)
+            ? (int) $user['user_task_notification_volume']
+            : 100,
+        'messenger_notification_sound' => preg_match('/^ding_sound_(0[1-9]|1[0-2])$/', (string) ($user['user_messenger_notification_sound'] ?? '')) === 1
+            ? (string) $user['user_messenger_notification_sound']
+            : 'ding_sound_01',
+        'messenger_notification_volume' => in_array((int) ($user['user_messenger_notification_volume'] ?? 0), [25, 50, 75, 100], true)
+            ? (int) $user['user_messenger_notification_volume']
+            : 100,
     ];
 }
 
@@ -8460,7 +9634,198 @@ function bx_is_admin(array $user): bool
     ) > 0;
 }
 
-function bx_login(string $login, string $password): bool
+/**
+ * Verify one Firebase Auth ID token through the Administrator-owned verifier.
+ * The token is sent to the child process over stdin and is never returned,
+ * logged, or persisted by this application.
+ *
+ * @return array{uid: string, email: string, email_verified: bool, auth_time: int, issued_at: int, expires_at: int}
+ */
+function bx_admin_verify_firebase_id_token(string $idToken, bool $requireEmailVerified = true): array
+{
+    $idToken = trim($idToken);
+    if ($idToken === '' || strlen($idToken) > 16384 || !preg_match('/^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$/D', $idToken)) {
+        throw new InvalidArgumentException('firebase_id_token_invalid');
+    }
+
+    $projectId = bx_admin_firebase_project_id();
+    $serviceAccountPath = bx_admin_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-id-token-verify.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        throw new RuntimeException('firebase_auth_unavailable');
+    }
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'id_token' => $idToken,
+        'require_email_verified' => $requireEmailVerified,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        throw new RuntimeException('firebase_auth_unavailable');
+    }
+
+    $process = proc_open(
+        'node ' . escapeshellarg($scriptPath),
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        dirname(__DIR__)
+    );
+    if (!is_resource($process)) {
+        throw new RuntimeException('firebase_auth_unavailable');
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if ($exitCode !== 0 || !is_array($result) || ($result['ok'] ?? false) !== true) {
+        $code = is_array($result) ? trim((string) ($result['code'] ?? 'firebase_id_token_invalid')) : 'firebase_id_token_invalid';
+        throw new RuntimeException(preg_match('/^[a-z0-9_]+$/', $code) === 1 ? $code : 'firebase_id_token_invalid');
+    }
+
+    $uid = trim((string) ($result['uid'] ?? ''));
+    $email = strtolower(trim((string) ($result['email'] ?? '')));
+    if ($uid === '' || strlen($uid) > 128 || preg_match('/[[:cntrl:]]/', $uid) === 1
+        || $email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)
+        || ($requireEmailVerified && ($result['email_verified'] ?? false) !== true)) {
+        throw new RuntimeException('firebase_identity_invalid');
+    }
+
+    return [
+        'uid' => $uid,
+        'email' => $email,
+        'email_verified' => ($result['email_verified'] ?? false) === true,
+        'auth_time' => max(0, (int) ($result['auth_time'] ?? 0)),
+        'issued_at' => max(0, (int) ($result['issued_at'] ?? 0)),
+        'expires_at' => max(0, (int) ($result['expires_at'] ?? 0)),
+    ];
+}
+
+function bx_admin_firebase_email_for_uid(string $uid): string
+{
+    $projectId = bx_admin_firebase_project_id();
+    $serviceAccountPath = bx_admin_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/firebase-admin-auth-email.mjs';
+    if ($uid === '' || $projectId === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        return '';
+    }
+    $payload = json_encode(['project_id' => $projectId, 'service_account_path' => $serviceAccountPath, 'uid' => $uid], JSON_UNESCAPED_SLASHES);
+    if (!is_string($payload)) return '';
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) return '';
+    fwrite($pipes[0], $payload); fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    stream_get_contents($pipes[2]); fclose($pipes[2]);
+    proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    $email = is_array($result) && ($result['ok'] ?? false) === true ? strtolower(trim((string) ($result['email'] ?? ''))) : '';
+    return filter_var($email, FILTER_VALIDATE_EMAIL) ? $email : '';
+}
+
+/**
+ * Establish the existing Administrator PHP session after Firebase identity
+ * and database role checks have completed. This path never accepts a password
+ * and never mutates project_user authentication state.
+ */
+function bx_login_with_firebase_identity(array $user, array $identity): void
+{
+    $userKey = trim((string) ($user['user_key'] ?? ''));
+    $userLogin = trim((string) ($user['user_login'] ?? ''));
+    $firebaseUid = trim((string) ($identity['uid'] ?? ''));
+    if ($userKey === '' || $userLogin === '' || $firebaseUid === '') {
+        throw new RuntimeException('firebase_identity_invalid');
+    }
+
+    session_regenerate_id(true);
+    $sessionKey = bx_uuid();
+    $_SESSION['builderx_user_key'] = $userKey;
+    $_SESSION['builderx_user_name'] = (string) ($user['user_name'] ?? '');
+    $_SESSION['builderx_session_key'] = $sessionKey;
+    $_SESSION['builderx_admin_auth_marker'] = 'RBMS_ADMINISTRATOR';
+    $_SESSION['builderx_auth_audience'] = 'rbms-administrator';
+    $_SESSION['builderx_admin_firebase_uid'] = $firebaseUid;
+
+    $db = bx_db();
+    $transactionStarted = false;
+    try {
+        if ($db->BeginTrans() === false) {
+            throw new RuntimeException('firebase_session_unavailable');
+        }
+        $transactionStarted = true;
+
+        $updated = $db->Execute(
+            "UPDATE builder_user
+             SET user_failed_login_count = 0, user_last_login_at = CURRENT_TIMESTAMP
+             WHERE user_key = ? AND user_status = 'ACTIVE' AND user_deleted_at IS NULL",
+            [$userKey]
+        );
+        if ($updated === false) {
+            throw new RuntimeException('firebase_session_unavailable');
+        }
+
+        $projectLoginIpAddress = bx_client_ip();
+        $projectLoginDevice = bx_project_user_device_label();
+        bx_project_user_firebase_telemetry($firebaseUid, [
+            'user_last_login_at' => gmdate('c'), 'user_last_login_ip_address' => $projectLoginIpAddress, 'user_last_login_device' => $projectLoginDevice,
+        ]);
+        $projectUser = $db->GetRow(
+            "SELECT user_key, project_key, user_login
+             FROM project_user
+             WHERE user_login = ? AND user_status = 'ACTIVE' AND (user_deleted = 0 OR user_deleted IS NULL)
+             LIMIT 1",
+            [$userLogin]
+        );
+        if (is_array($projectUser)) {
+            $_SESSION['builderx_project_user_key'] = (string) ($projectUser['user_key'] ?? '');
+            $_SESSION['builderx_project_key'] = (string) ($projectUser['project_key'] ?? '');
+            $_SESSION['builderx_project_user_login'] = (string) ($projectUser['user_login'] ?? $userLogin);
+        }
+
+        $saved = $db->Execute(
+            'INSERT INTO builder_user_session (session_key, user_key, session_token_hash, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))',
+            [$sessionKey, $userKey, hash('sha256', session_id()), bx_client_ip(), bx_user_agent(), max(1, (int) bx_setting('session_timeout_minutes', '120'))]
+        );
+        if ($saved === false) {
+            throw new RuntimeException('firebase_session_unavailable');
+        }
+
+        bx_login_history($userKey, $userLogin, 'SUCCESS', null);
+        bx_project_user_activity_history(
+            (string) ($_SESSION['builderx_project_user_key'] ?? $userKey),
+            $userLogin,
+            'LOGIN',
+            'SUCCESS',
+            null,
+            null,
+            null,
+            null,
+            (string) ($_SESSION['builderx_project_key'] ?? '')
+        );
+        bx_audit('LOGIN', 'authentication', $userKey, [
+            'authentication_method' => 'firebase_email_password',
+            'firebase_uid' => $firebaseUid,
+        ], 'Administrator signed in with Firebase Auth.');
+
+        if ($db->CommitTrans() === false) {
+            throw new RuntimeException('firebase_session_unavailable');
+        }
+        $transactionStarted = false;
+    } catch (Throwable $error) {
+        if ($transactionStarted) {
+            $db->RollbackTrans();
+        }
+        unset($_SESSION['builderx_user_key'], $_SESSION['builderx_user_name'], $_SESSION['builderx_session_key'], $_SESSION['builderx_admin_auth_marker'], $_SESSION['builderx_auth_audience'], $_SESSION['builderx_admin_firebase_uid']);
+        session_regenerate_id(true);
+        throw new RuntimeException('firebase_session_unavailable', 0, $error);
+    }
+}
+
+function bx_login(string $login, string $password, bool $persistUntilLogout = false): bool
 {
     $user = bx_db()->GetRow(
         "SELECT * FROM builder_user WHERE (user_login = ? OR user_email = ?) AND user_status IN ('ACTIVE','LOCKED')",
@@ -8481,6 +9846,7 @@ function bx_login(string $login, string $password): bool
         $failed = (int) $user['user_failed_login_count'] + 1;
         $status = $failed >= 5 ? 'LOCKED' : 'ACTIVE';
         bx_db()->Execute('UPDATE builder_user SET user_failed_login_count = ?, user_status = ? WHERE user_key = ?', [$failed, $status, $user['user_key']]);
+        bx_db()->Execute('UPDATE project_user SET user_failed_login_count = ?, user_status = ? WHERE user_key = ? AND user_status <> \'DELETED\'', [$failed, $status, $user['user_key']]);
         bx_login_history($user['user_key'], $login, $status === 'LOCKED' ? 'LOCKED' : 'FAILED', 'Invalid password.');
         return false;
     }
@@ -8489,13 +9855,28 @@ function bx_login(string $login, string $password): bool
     $_SESSION['builderx_user_key'] = $user['user_key'];
     $_SESSION['builderx_user_name'] = $user['user_name'];
     $_SESSION['builderx_session_key'] = bx_uuid();
+    unset($_SESSION['builderx_admin_auth_marker'], $_SESSION['builderx_auth_audience'], $_SESSION['builderx_admin_firebase_uid']);
 
     bx_db()->Execute('UPDATE builder_user SET user_failed_login_count = 0, user_last_login_at = CURRENT_TIMESTAMP WHERE user_key = ?', [$user['user_key']]);
-    bx_db()->Execute(
-        'INSERT INTO builder_user_session (session_key, user_key, session_token_hash, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))',
-        [$_SESSION['builderx_session_key'], $user['user_key'], hash('sha256', session_id()), bx_client_ip(), bx_user_agent(), (int) bx_setting('session_timeout_minutes', '120')]
-    );
+    $loginIpAddress = bx_client_ip();
+    $loginDevice = bx_project_user_device_label();
+    bx_project_user_firebase_telemetry((string) $user['user_key'], [
+        'user_last_login_at' => gmdate('c'), 'user_last_login_ip_address' => $loginIpAddress, 'user_last_login_device' => $loginDevice,
+    ]);
+    if ($persistUntilLogout) {
+        bx_db()->Execute(
+            'INSERT INTO builder_user_session (session_key, user_key, session_token_hash, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?, NULL)',
+            [$_SESSION['builderx_session_key'], $user['user_key'], hash('sha256', session_id()), bx_client_ip(), bx_user_agent()]
+        );
+        bx_persist_portal_session();
+    } else {
+        bx_db()->Execute(
+            'INSERT INTO builder_user_session (session_key, user_key, session_token_hash, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))',
+            [$_SESSION['builderx_session_key'], $user['user_key'], hash('sha256', session_id()), bx_client_ip(), bx_user_agent(), (int) bx_setting('session_timeout_minutes', '120')]
+        );
+    }
     bx_login_history($user['user_key'], $login, 'SUCCESS', null);
+    bx_project_user_activity_history($user['user_key'], $login, 'LOGIN', 'SUCCESS');
     bx_audit('LOGIN', 'authentication', $user['user_key']);
 
     return true;
@@ -8503,10 +9884,96 @@ function bx_login(string $login, string $password): bool
 
 function bx_login_history(?string $userKey, string $login, string $status, ?string $reason): void
 {
+    $ipAddress = bx_client_ip();
+    $userAgent = bx_user_agent();
     bx_db()->Execute(
         'INSERT INTO builder_user_login_history (login_key, user_key, user_login, login_status, ip_address, user_agent, failure_reason) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [bx_uuid(), $userKey, $login, $status, bx_client_ip(), bx_user_agent(), $reason]
+        [bx_uuid(), $userKey, $login, $status, $ipAddress, $userAgent, $reason]
     );
+}
+
+function bx_project_user_device_label(?string $userAgent = null): string
+{
+    $userAgent = trim((string) ($userAgent ?? bx_user_agent()));
+    if ($userAgent === '') {
+        return 'Unknown device';
+    }
+
+    $browser = str_contains($userAgent, 'Edg/') ? 'Edge' : (str_contains($userAgent, 'Chrome/') ? 'Chrome' : (str_contains($userAgent, 'Firefox/') ? 'Firefox' : (str_contains($userAgent, 'Safari/') ? 'Safari' : 'Browser')));
+    $device = str_contains($userAgent, 'Android') ? 'Android device' : (str_contains($userAgent, 'iPhone') ? 'iPhone' : (str_contains($userAgent, 'iPad') ? 'iPad' : (str_contains($userAgent, 'Windows') ? 'Windows PC' : (str_contains($userAgent, 'Mac OS') ? 'Mac' : (str_contains($userAgent, 'Linux') ? 'Linux device' : 'Device')))));
+
+    return substr($browser . ' on ' . $device, 0, 255);
+}
+
+function bx_project_user_firebase_process(string $scriptName, array $payload): array
+{
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = dirname(__DIR__) . '/scripts/' . $scriptName;
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) return ['ok' => false, 'code' => 'firebase_writer_not_configured'];
+    $encoded = json_encode(['project_id' => $projectId, 'service_account_path' => $serviceAccountPath] + $payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($encoded)) return ['ok' => false, 'code' => 'firebase_payload_invalid'];
+    $process = proc_open('node ' . escapeshellarg($scriptPath), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__));
+    if (!is_resource($process)) return ['ok' => false, 'code' => 'firebase_writer_unavailable'];
+    fwrite($pipes[0], $encoded); fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    return is_array($result) ? ($result + ['exit_code' => $exitCode]) : ['ok' => false, 'code' => 'firebase_writer_invalid_response', 'exit_code' => $exitCode];
+}
+
+function bx_project_user_firebase_telemetry(string $userKey, array $telemetry): void
+{
+    $result = bx_project_user_firebase_process('firebase-admin-project-user-telemetry-write.mjs', ['user_key' => $userKey, 'telemetry' => $telemetry]);
+    if (($result['ok'] ?? false) !== true) error_log('Project user telemetry Firebase write failed: ' . (preg_match('/^[a-z0-9_]+$/', (string) ($result['code'] ?? '')) === 1 ? $result['code'] : 'write_failed'));
+}
+
+function bx_project_user_activity_history(?string $userKey, ?string $login, string $action, string $status = 'SUCCESS', ?string $reason = null, ?string $previousStatus = null, ?string $newStatus = null, ?string $performedByKey = null, ?string $projectKeyOverride = null): void
+{
+    try {
+        $userKey = trim((string) ($userKey ?? ''));
+        $login = trim((string) ($login ?? ''));
+        $projectKey = trim((string) ($projectKeyOverride ?? ''));
+        if ($userKey !== '') {
+            $row = bx_db()->GetRow('SELECT project_key, user_login FROM project_user WHERE user_key = ? LIMIT 1', [$userKey]);
+            if (is_array($row)) {
+                $projectKey = trim((string) ($row['project_key'] ?? ''));
+                if ($login === '') {
+                    $login = trim((string) ($row['user_login'] ?? ''));
+                }
+            }
+        }
+        if ($projectKey === '' && $login !== '') {
+            $row = bx_db()->GetRow(
+                "SELECT user_key, project_key, user_login
+                 FROM project_user
+                 WHERE user_login = ? AND user_status <> 'DELETED' AND (user_deleted = 0 OR user_deleted IS NULL)
+                 LIMIT 1",
+                [$login]
+            );
+            if (is_array($row)) {
+                $userKey = trim((string) ($row['user_key'] ?? $userKey));
+                $projectKey = trim((string) ($row['project_key'] ?? ''));
+                $login = trim((string) ($row['user_login'] ?? $login));
+            }
+        }
+
+        if ($projectKey === '') {
+            return;
+        }
+
+        $ipAddress = bx_client_ip();
+        $firebaseResult = bx_project_user_firebase_process('firebase-admin-project-user-history-write.mjs', ['event' => [
+            'project_key' => $projectKey, 'user_key' => $userKey !== '' ? $userKey : null, 'user_login' => $login !== '' ? $login : null,
+            'user_action' => $action, 'user_action_status' => $status, 'user_previous_status' => $previousStatus, 'user_new_status' => $newStatus,
+            'user_action_reason' => $reason, 'user_performed_by_key' => $performedByKey, 'user_ip_address' => $ipAddress,
+            'user_device' => bx_project_user_device_label(),
+        ]]);
+        if (($firebaseResult['ok'] ?? false) !== true) error_log('Project user activity Firebase write failed: ' . (preg_match('/^[a-z0-9_]+$/', (string) ($firebaseResult['code'] ?? '')) === 1 ? $firebaseResult['code'] : 'write_failed'));
+    } catch (Throwable $error) {
+        error_log('Project user activity history write failed: ' . (preg_match('/^[a-z0-9_]+$/', $error->getMessage()) === 1 ? $error->getMessage() : 'write_failed'));
+    }
 }
 
 function bx_recovery_token_hash(string $token): string
@@ -8694,6 +10161,19 @@ function bx_reset_password_with_token(string $token, string $password, string $p
 
 function bx_logout(): void
 {
+    $logoutUserKey = trim((string) ($_SESSION['builderx_user_key'] ?? ''));
+    $projectUserKey = trim((string) ($_SESSION['builderx_project_user_key'] ?? ''));
+    $projectUserLogin = trim((string) ($_SESSION['builderx_project_user_login'] ?? ''));
+    $projectKey = trim((string) ($_SESSION['builderx_project_key'] ?? ''));
+    if ($logoutUserKey !== '') {
+        $logoutIpAddress = bx_client_ip();
+        $logoutDevice = bx_project_user_device_label();
+        bx_project_user_firebase_telemetry($logoutUserKey, [
+            'user_last_logout_at' => gmdate('c'), 'user_last_logout_ip_address' => $logoutIpAddress, 'user_last_logout_device' => $logoutDevice,
+        ]);
+        bx_project_user_activity_history($projectUserKey !== '' ? $projectUserKey : $logoutUserKey, $projectUserLogin !== '' ? $projectUserLogin : null, 'LOGOUT', 'SUCCESS', null, null, null, null, $projectKey);
+    }
+
     if (!empty($_SESSION['builderx_session_key'])) {
         bx_db()->Execute(
             "UPDATE builder_user_session SET session_status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP WHERE session_key = ?",
@@ -8702,7 +10182,11 @@ function bx_logout(): void
     }
 
     bx_audit('LOGOUT', 'authentication', $_SESSION['builderx_user_key'] ?? null);
-    unset($_SESSION['builderx_user_key'], $_SESSION['builderx_user_name'], $_SESSION['builderx_session_key']);
+    unset($_SESSION['builderx_user_key'], $_SESSION['builderx_user_name'], $_SESSION['builderx_session_key'], $_SESSION['builderx_admin_auth_marker'], $_SESSION['builderx_auth_audience'], $_SESSION['builderx_admin_firebase_uid'], $_SESSION['builderx_project_user_key'], $_SESSION['builderx_project_key'], $_SESSION['builderx_project_user_login'], $_SESSION['builderx_portal_firebase_uid'], $_SESSION['builderx_portal_administrator_group']);
+
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_regenerate_id(true);
+    }
 }
 
 function bx_create_initial_admin(array $input): bool

@@ -11,18 +11,24 @@ if (!is_string($foundationSource) || !is_string($adminSource) || !is_string($fro
 }
 
 $settingNames = [
-    'android_app_package_name',
-    'android_tenant_configuration_endpoint_url',
-    'android_current_version_code',
+	    'android_app_package_name',
+	    'android_tenant_configuration_endpoint_url',
+	    'android_welcome_title',
+	    'android_welcome_description',
+	    'android_current_version_code',
     'android_min_supported_version_code',
     'android_force_update_enabled',
     'android_release_acknowledgement_required',
     'android_geofence_required',
+    'android_geofence_latitude',
+    'android_geofence_longitude',
+    'android_geofence_max_radius_meters',
     'android_update_apk_download_path',
+    'android_banner_image_url',
+    'android_login_background_image_url',
     'android_splash_screen_image_url_1',
     'android_splash_screen_image_url_2',
     'android_splash_screen_image_url_3',
-    'android_splash_screen_image_url_4',
     'android_offline_queue_enabled',
     'android_offline_retry_interval_seconds',
     'android_dashboard_refresh_seconds',
@@ -45,10 +51,15 @@ $frontendMarkers = [
     "'android'",
     'settingMenuGroupDefinitions',
     "label: 'Mobile'",
-    "groups: ['android', 'media', 'firebase']",
-    "title: 'Tenant Bootstrap'",
-    "title: 'Release Gates'",
-    "title: 'Release Assets'",
+	    "groups: ['android', 'media', 'firebase']",
+	    "title: 'Tenant Bootstrap'",
+	    "'android_welcome_title'",
+	    "'android_welcome_description'",
+	    'data-skip-submit-confirmation="true"',
+	    "title: 'Confirm system settings sync'",
+	    "confirmLabel: 'Save & Sync'",
+	    "title: 'Release Gates And Assets'",
+    "title: 'Geofencing'",
     "title: 'Offline And Sync'",
     "android: 'Android app tenant bootstrap, release gate, offline queue, and sync defaults.'",
 ];
@@ -59,14 +70,25 @@ foreach ($frontendMarkers as $marker) {
     }
 }
 
+foreach (["title: 'Release Gates'", "title: 'Release Assets'"] as $removedMarker) {
+    if (str_contains($frontendSource, $removedMarker)) {
+        throw new RuntimeException('System Settings UI still has separate Android release section marker: ' . $removedMarker);
+    }
+}
+
 $adminValidationMarkers = [
-    "'Android version code settings must be positive whole numbers.'",
-    "'Android timing settings must be between 5 and 86400 seconds.'",
+	    "'Android version code settings must be positive whole numbers.'",
+	    "'Android welcome title must be 1 to 120 characters.'",
+	    "'Android welcome description must be 240 characters or less.'",
+	    "'Android timing settings must be between 5 and 86400 seconds.'",
     "'Android package name is invalid.'",
-    "'Android tenant configuration endpoint must be a valid HTTPS URL, or localhost HTTP URL for development.'",
+    "'Android tenant configuration endpoint must be a valid HTTPS URL, or private network HTTP URL for development.'",
+    "'Android geofence latitude must be between -90 and 90.'",
+    "'Android geofence longitude must be between -180 and 180.'",
+    "'Android geofence max radius must be between 1 and 1000000 meters.'",
     "'Android APK download path must be an HTTP(S) URL or root-relative .apk path.'",
-    "'Android splash image links must be valid HTTP(S) URLs.'",
-    "\$androidEndpointIsLocalHttp = \$androidEndpointScheme === 'http'",
+    "'Android image links must be valid HTTP(S) URLs.'",
+    "\$androidEndpointIsPrivateHttp = \$androidEndpointScheme === 'http'",
 ];
 
 foreach ($adminValidationMarkers as $marker) {
@@ -82,7 +104,7 @@ $projectSettingMarkers = [
     'function bx_seed_android_project_settings',
     'INSERT INTO project_setting',
     'UPDATE project_setting SET setting_value',
-    "setting_group <> 'android'",
+    "setting_group NOT IN ('android', 'media')",
     "setting_group = 'android'",
     'name="project_key"',
 ];

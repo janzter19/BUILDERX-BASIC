@@ -7,7 +7,7 @@ $limit = isset($argv[1]) ? max(1, min(500, (int) $argv[1])) : 100;
 bx_ensure_project_messenger_schema();
 
 $rows = bx_db()->GetAll(
-    "SELECT chat_key, group_key
+    "SELECT chat_key
     FROM project_messenger_chat
     WHERE firebase_sync_status IN ('PENDING','FAILED')
     ORDER BY x_id ASC
@@ -25,22 +25,15 @@ $summary = [
 
 foreach ($rows as $row) {
     $chatKey = (string) ($row['chat_key'] ?? '');
-    $groupKey = (string) ($row['group_key'] ?? '');
-    if ($chatKey === '' || $groupKey === '') {
+    if ($chatKey === '') {
         continue;
     }
 
-    $messages = bx_messenger_messages($groupKey, 100);
-    $message = null;
-    foreach ($messages as $candidate) {
-        if ((string) ($candidate['chat_key'] ?? '') === $chatKey) {
-            $message = $candidate;
-            break;
-        }
-    }
-    if ($message === null) {
+    try {
+        $message = bx_messenger_message_by_chat_key($chatKey);
+    } catch (Throwable $error) {
         $summary['failed']++;
-        $summary['items'][] = ['chat_key' => $chatKey, 'ok' => false, 'message' => 'message_readback_missing'];
+        $summary['items'][] = ['chat_key' => $chatKey, 'ok' => false, 'message' => $error->getMessage()];
         continue;
     }
 

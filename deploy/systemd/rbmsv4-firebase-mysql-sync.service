@@ -1,0 +1,25 @@
+[Unit]
+Description=RBMSv4 Firebase to MySQL read-projection worker
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/html/rbmsv4
+EnvironmentFile=/var/www/html/rbmsv4/.env
+EnvironmentFile=-/etc/rbmsv4-firebase-mysql-sync.env
+ExecStart=/usr/local/bin/node /var/www/html/rbmsv4/scripts/firebase-mysql-sync-master.mjs
+Restart=on-failure
+RestartSec=10
+User=www-data
+Group=www-data
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/www/html/rbmsv4/storage
+
+[Install]
+# Deliberately not installed/enabled by source changes. A separately authorized
+# deployment must install and enable this unit after live credential review.
+WantedBy=multi-user.target

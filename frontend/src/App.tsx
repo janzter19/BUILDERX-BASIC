@@ -1,15 +1,33 @@
 import React from 'react'
 import { createPortal } from 'react-dom'
+import dingSound01Url from '@/assets/notification-sounds/ding_sound_01.mp3'
+import dingSound02Url from '@/assets/notification-sounds/ding_sound_02.wav'
+import dingSound03Url from '@/assets/notification-sounds/ding_sound_03.wav'
+import dingSound04Url from '@/assets/notification-sounds/ding_sound_04.wav'
+import dingSound05Url from '@/assets/notification-sounds/ding_sound_05.wav'
+import dingSound06Url from '@/assets/notification-sounds/ding_sound_06.wav'
+import dingSound07Url from '@/assets/notification-sounds/ding_sound_07.wav'
+import dingSound08Url from '@/assets/notification-sounds/ding_sound_08.wav'
+import dingSound09Url from '@/assets/notification-sounds/ding_sound_09.wav'
+import dingSound10Url from '@/assets/notification-sounds/ding_sound_10.wav'
+import dingSound11Url from '@/assets/notification-sounds/ding_sound_11.wav'
+import dingSound12Url from '@/assets/notification-sounds/ding_sound_12.wav'
 import { initializeApp, getApps, type FirebaseOptions } from 'firebase/app'
+import { getAuth, signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth'
 import {
   collection,
   doc,
   getFirestore,
+  getDoc,
+  getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
-  serverTimestamp,
-  setDoc,
+  startAfter,
+  updateDoc,
   where,
+  writeBatch,
   type Firestore,
 } from 'firebase/firestore'
 import {
@@ -32,11 +50,13 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Copy,
   Database,
   Download,
   ExternalLink,
   Eye,
+  EyeOff,
   FileBarChart,
   FileText,
   FolderKanban,
@@ -45,6 +65,7 @@ import {
   GripVertical,
   ImagePlus,
   KeyRound,
+  Layers,
   LayoutDashboard,
   Link2,
   LogIn,
@@ -53,6 +74,7 @@ import {
   MessageCircle,
   Milestone,
   Monitor,
+  Music2,
   MousePointer2,
   Network,
   Moon,
@@ -60,6 +82,7 @@ import {
   Pencil,
   PenLine,
   Play,
+  Power,
   Plus,
   RotateCcw,
   Save,
@@ -282,6 +305,8 @@ type AdminPayload = {
   softwareName: string
   projectBasePath: string
   projectRoot: string
+  firebaseConfig?: FirebaseOptions | Record<string, any>
+  firebaseLoginAliases?: Record<string, { username?: string; email?: string }>
   sharinganEnabled?: boolean
   templatePresets: Array<Record<string, string>>
   bedMasterListSummary?: Record<string, any> | null
@@ -290,6 +315,7 @@ type AdminPayload = {
   bedLookupRows?: Array<Record<string, any>>
   bedTreatments?: Array<Record<string, any>>
   bedSources?: Array<Record<string, any>>
+  buildingFloors?: Array<Record<string, any>>
   projectTasks?: Array<Record<string, any>>
   projectTaskStages?: Array<Record<string, any>>
   projectTaskStageResponses?: Array<Record<string, any>>
@@ -319,6 +345,7 @@ type AdminPayload = {
   audits: Array<Record<string, string | null>>
   loginHistory: Array<Record<string, string | null>>
   runtimeHealth: Record<string, any> | null
+  traverseDocuments?: { status?: string; message?: string; rows?: Array<Record<string, any>> }
 }
 
 type PhasePayload = {
@@ -384,7 +411,7 @@ type PhasePayload = {
   }
 }
 
-type PortalRouteKey = 'dashboard' | 'bed-management'
+type PortalRouteKey = 'dashboard' | 'bed-management' | 'signin'
 
 type PortalPayload = {
   csrf: string
@@ -399,6 +426,8 @@ type PortalPayload = {
   bedLookupFilters?: Record<string, string>
   bedLookupOptions?: Record<string, Record<string, any>>
   bedLookupRows?: Array<Record<string, any>>
+  projectBedTasks?: Record<string, Array<Record<string, any>>>
+  projectBedTaskLogs?: Record<string, Array<Record<string, any>>>
   bedTreatments?: Array<Record<string, any>>
   bedSources?: Array<Record<string, any>>
   projectTasks?: Array<Record<string, any>>
@@ -425,6 +454,49 @@ const data = window.__BUILDERX_ADMIN__
 const phaseData = window.__BUILDERX_PHASES__
 const portalData = window.__BUILDERX_PORTAL__
 const uiUxFlowPayloadUpdatedEvent = 'builderx:ui-ux-flow-payload-updated'
+
+const portalTaskNotificationSoundOptions = [
+  { key: 'ding_sound_01', label: 'Ding Sound 01', url: dingSound01Url },
+  { key: 'ding_sound_02', label: 'Ding Sound 02', url: dingSound02Url },
+  { key: 'ding_sound_03', label: 'Ding Sound 03', url: dingSound03Url },
+  { key: 'ding_sound_04', label: 'Ding Sound 04', url: dingSound04Url },
+  { key: 'ding_sound_05', label: 'Ding Sound 05', url: dingSound05Url },
+  { key: 'ding_sound_06', label: 'Ding Sound 06', url: dingSound06Url },
+  { key: 'ding_sound_07', label: 'Ding Sound 07', url: dingSound07Url },
+  { key: 'ding_sound_08', label: 'Ding Sound 08', url: dingSound08Url },
+  { key: 'ding_sound_09', label: 'Ding Sound 09', url: dingSound09Url },
+  { key: 'ding_sound_10', label: 'Ding Sound 10', url: dingSound10Url },
+  { key: 'ding_sound_11', label: 'Ding Sound 11', url: dingSound11Url },
+  { key: 'ding_sound_12', label: 'Ding Sound 12', url: dingSound12Url },
+] as const
+const defaultPortalTaskNotificationSoundKey = 'ding_sound_01'
+const defaultPortalMessengerNotificationSoundKey = 'ding_sound_01'
+const portalTaskNotificationVolumeOptions = [
+  { key: '25', label: '25%', volume: 0.25 },
+  { key: '50', label: '50%', volume: 0.5 },
+  { key: '75', label: '75%', volume: 0.75 },
+  { key: '100', label: '100%', volume: 1 },
+] as const
+const defaultPortalTaskNotificationVolumeKey = '100'
+const defaultPortalMessengerNotificationVolumeKey = '100'
+
+function portalTaskNotificationSoundOption(soundKey: string) {
+  return portalTaskNotificationSoundOptions.find((option) => option.key === soundKey)
+    || portalTaskNotificationSoundOptions[0]
+}
+
+function normalizePortalTaskNotificationSoundKey(value: unknown): string {
+  return portalTaskNotificationSoundOption(String(value || defaultPortalTaskNotificationSoundKey)).key
+}
+
+function portalTaskNotificationVolumeOption(volumeKey: string) {
+  return portalTaskNotificationVolumeOptions.find((option) => option.key === volumeKey)
+    || portalTaskNotificationVolumeOptions[portalTaskNotificationVolumeOptions.length - 1]
+}
+
+function normalizePortalTaskNotificationVolumeKey(value: unknown): string {
+  return portalTaskNotificationVolumeOption(String(value || defaultPortalTaskNotificationVolumeKey)).key
+}
 
 type CodexHandoff = {
   cwd: string
@@ -529,7 +601,7 @@ function loginSettingValue(name: string, fallback = ''): string {
   return settingValue(`login_${name}`, fallback)
 }
 
-const adminViewKeys = ['dashboard', 'users', 'positions', 'groups', 'roles', 'permissions', 'branches', 'projects', 'settings', 'bed-management', 'bed-lookup', 'bed-treatment', 'bed-source', 'task-builder', 'audit', 'health', 'template']
+const adminViewKeys = ['dashboard', 'users', 'positions', 'groups', 'roles', 'permissions', 'branches', 'projects', 'settings', 'traverse', 'bed-management', 'bed-lookup', 'bed-treatment', 'bed-source', 'floor-management', 'task-builder', 'audit', 'health', 'template']
 
 const tabs = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -588,20 +660,20 @@ const settingSections: Record<string, SettingSection[]> = {
     },
   ],
   android: [
+	    {
+	      title: 'Tenant Bootstrap',
+	      description: 'Android welcome copy, package, and tenant configuration endpoint used before the app opens tenant-bound screens.',
+	      names: ['android_welcome_title', 'android_welcome_description', 'android_app_package_name', 'android_tenant_configuration_endpoint_url'],
+	    },
     {
-      title: 'Tenant Bootstrap',
-      description: 'Android package and tenant configuration endpoint used before the app opens tenant-bound screens.',
-      names: ['android_app_package_name', 'android_tenant_configuration_endpoint_url'],
+      title: 'Release Gates And Assets',
+      description: 'Version gates, update requirements, APK source, banner, login background, and splash image links used by the Android app.',
+      names: ['android_current_version_code', 'android_min_supported_version_code', 'android_force_update_enabled', 'android_release_acknowledgement_required', 'android_geofence_required', 'android_update_apk_download_path', 'android_banner_image_url', 'android_login_background_image_url', 'android_splash_screen_image_url_1', 'android_splash_screen_image_url_2', 'android_splash_screen_image_url_3'],
     },
     {
-      title: 'Release Gates',
-      description: 'Version and release controls checked before tenant mutation sync is allowed.',
-      names: ['android_current_version_code', 'android_min_supported_version_code', 'android_force_update_enabled', 'android_release_acknowledgement_required', 'android_geofence_required'],
-    },
-    {
-      title: 'Release Assets',
-      description: 'APK update source and first-install splash image links used by the Android app.',
-      names: ['android_update_apk_download_path', 'android_splash_screen_image_url_1', 'android_splash_screen_image_url_2', 'android_splash_screen_image_url_3', 'android_splash_screen_image_url_4'],
+      title: 'Geofencing',
+      description: 'Latitude, longitude, and maximum radius used when Android geofence checks are enabled.',
+      names: ['android_geofence_latitude', 'android_geofence_longitude', 'android_geofence_max_radius_meters'],
     },
     {
       title: 'Offline And Sync',
@@ -752,20 +824,21 @@ const sidebarSections = [
   {
     key: 'bed-management-group',
     label: 'Bed Management',
-    icon: Building2,
+    icon: BedDouble,
     items: [
-      { key: 'bed-management', label: 'Analytics' },
-      { key: 'bed-lookup', label: 'Bed Lookup' },
+      { key: 'bed-management', label: 'Bed Analytics', icon: FileBarChart },
+      { key: 'bed-lookup', label: 'Bed Lookup', icon: Search },
       { key: 'bed-treatment', label: 'Bed Treatment', icon: Stethoscope },
       { key: 'bed-source', label: 'Bed Source', icon: Signpost },
     ],
   },
+  { key: 'floor-management', label: 'Floor Management', icon: Layers },
   {
     key: 'task-manager-group',
-    label: 'Task Manager',
+    label: 'Task Management',
     icon: ClipboardList,
     items: [
-      { key: 'task-builder', label: 'Task Builder' },
+      { key: 'task-builder', label: 'Task GUI', icon: Workflow },
     ],
   },
   {
@@ -774,6 +847,7 @@ const sidebarSections = [
     icon: Settings,
     items: [
       { key: 'settings', label: 'System Settings' },
+      { key: 'traverse', label: 'Traverse' },
       { key: 'health', label: 'Runtime Health' },
       { key: 'template', label: 'Template' },
       { key: 'audit', label: 'Audit Logs' },
@@ -937,14 +1011,236 @@ function MessengerHeaderButton({ onOpen = () => {}, unreadCount = 0 }: { onOpen?
   )
 }
 
+function PortalTaskUpdateHeaderButton({ onOpen = () => {}, updateCount = 0 }: { onOpen?: () => void; updateCount?: number }) {
+  const displayCount = Math.min(Math.max(updateCount, 0), 99)
+  const notificationLabel = displayCount > 0
+    ? `${displayCount} updated bed task${displayCount === 1 ? '' : 's'}`
+    : 'Task updates'
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            aria-label={notificationLabel}
+            onClick={onOpen}
+            className={cn(
+              'relative',
+              displayCount > 0 && 'border-amber-400/80 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.55)]',
+            )}
+          />
+        }
+      >
+        <Bell className={displayCount > 0 ? 'animate-pulse' : undefined} />
+        {displayCount > 0 ? (
+          <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold leading-4 text-black shadow-sm">
+            {displayCount}
+          </span>
+        ) : null}
+      </TooltipTrigger>
+      <TooltipContent>{notificationLabel}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function PortalNotificationSoundSettingsDialog({
+  open,
+  onOpenChange,
+  taskSoundKey,
+  taskVolumeKey,
+  messengerSoundKey,
+  messengerVolumeKey,
+  onSaved,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  taskSoundKey: string
+  taskVolumeKey: string
+  messengerSoundKey: string
+  messengerVolumeKey: string
+  onSaved: (taskSoundKey: string, taskVolumeKey: string, messengerSoundKey: string, messengerVolumeKey: string) => void
+}) {
+  const [draftTaskSoundKey, setDraftTaskSoundKey] = React.useState(taskSoundKey)
+  const [draftTaskVolumeKey, setDraftTaskVolumeKey] = React.useState(taskVolumeKey)
+  const [draftMessengerSoundKey, setDraftMessengerSoundKey] = React.useState(messengerSoundKey)
+  const [draftMessengerVolumeKey, setDraftMessengerVolumeKey] = React.useState(messengerVolumeKey)
+  const [saving, setSaving] = React.useState(false)
+  const [message, setMessage] = React.useState('')
+  const previewAudioRef = React.useRef<HTMLAudioElement | null>(null)
+  const selectedTaskSound = portalTaskNotificationSoundOption(draftTaskSoundKey)
+  const selectedTaskVolume = portalTaskNotificationVolumeOption(draftTaskVolumeKey)
+  const selectedMessengerSound = portalTaskNotificationSoundOption(draftMessengerSoundKey)
+  const selectedMessengerVolume = portalTaskNotificationVolumeOption(draftMessengerVolumeKey)
+
+  React.useEffect(() => {
+    if (!open) return
+    setDraftTaskSoundKey(normalizePortalTaskNotificationSoundKey(taskSoundKey))
+    setDraftTaskVolumeKey(normalizePortalTaskNotificationVolumeKey(taskVolumeKey))
+    setDraftMessengerSoundKey(normalizePortalTaskNotificationSoundKey(messengerSoundKey || defaultPortalMessengerNotificationSoundKey))
+    setDraftMessengerVolumeKey(normalizePortalTaskNotificationVolumeKey(messengerVolumeKey || defaultPortalMessengerNotificationVolumeKey))
+    setMessage('')
+  }, [open, messengerSoundKey, messengerVolumeKey, taskSoundKey, taskVolumeKey])
+
+  React.useEffect(() => () => {
+    previewAudioRef.current?.pause()
+  }, [])
+
+  const previewSound = () => {
+    previewAudioRef.current?.pause()
+    const audio = new Audio(selectedTaskSound.url)
+    audio.volume = selectedTaskVolume.volume
+    previewAudioRef.current = audio
+    void audio.play().catch(() => setMessage('Interact with the page before previewing the sound.'))
+  }
+
+  const previewMessengerSound = () => {
+    previewAudioRef.current?.pause()
+    const audio = new Audio(selectedMessengerSound.url)
+    audio.volume = selectedMessengerVolume.volume
+    previewAudioRef.current = audio
+    void audio.play().catch(() => setMessage('Interact with the page before previewing the sound.'))
+  }
+
+  const saveSound = async () => {
+    setSaving(true)
+    setMessage('')
+    try {
+      const body = new FormData()
+      body.set('csrf', String(portalData?.csrf || ''))
+      body.set('action', 'save_portal_task_notification_sound')
+      body.set('task_sound_key', draftTaskSoundKey)
+      body.set('task_volume_percent', draftTaskVolumeKey)
+      body.set('messenger_sound_key', draftMessengerSoundKey)
+      body.set('messenger_volume_percent', draftMessengerVolumeKey)
+      const response = await fetch(portalHref(''), {
+        method: 'POST',
+        body,
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      const result = await response.json() as { ok?: boolean; message?: string; data?: { task_notification_sound?: string; task_notification_volume?: number | string; messenger_notification_sound?: string; messenger_notification_volume?: number | string } }
+      if (!response.ok || result.ok !== true) throw new Error(result.message || 'The notification preferences could not be saved.')
+      const savedTaskSoundKey = normalizePortalTaskNotificationSoundKey(result.data?.task_notification_sound)
+      const savedTaskVolumeKey = normalizePortalTaskNotificationVolumeKey(result.data?.task_notification_volume)
+      const savedMessengerSoundKey = normalizePortalTaskNotificationSoundKey(result.data?.messenger_notification_sound)
+      const savedMessengerVolumeKey = normalizePortalTaskNotificationVolumeKey(result.data?.messenger_notification_volume)
+      onSaved(savedTaskSoundKey, savedTaskVolumeKey, savedMessengerSoundKey, savedMessengerVolumeKey)
+      setDraftTaskSoundKey(savedTaskSoundKey)
+      setDraftTaskVolumeKey(savedTaskVolumeKey)
+      setDraftMessengerSoundKey(savedMessengerSoundKey)
+      setDraftMessengerVolumeKey(savedMessengerVolumeKey)
+      setMessage('Notification preferences saved.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'The notification preferences could not be saved.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!saving) onOpenChange(nextOpen) }}>
+      <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+          <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close task notification sound settings" title="Close Task Notification Sound Settings" disabled={saving} />}>
+            <X />
+          </DialogClose>
+          <DialogTitle className="flex items-center gap-2"><Music2 className="size-4 text-muted-foreground" />Notification Sounds</DialogTitle>
+          <DialogDescription>Choose separate sounds for task updates and Messenger messages.</DialogDescription>
+        </DialogHeader>
+        <div className="grid min-h-0 gap-5 overflow-y-auto p-6">
+          <section className="grid gap-4" aria-labelledby="portal-task-notification-heading">
+            <div>
+              <h3 id="portal-task-notification-heading" className="text-sm font-semibold">Task updates</h3>
+              <p className="mt-1 text-xs text-muted-foreground">Played when a task changes.</p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="portal-task-notification-sound">Ding sound</Label>
+              <div className="flex items-center gap-2">
+                <Select value={draftTaskSoundKey} onValueChange={(value) => setDraftTaskSoundKey(normalizePortalTaskNotificationSoundKey(value))} disabled={saving}>
+                  <SelectTrigger id="portal-task-notification-sound" className="min-w-0 flex-1">
+                    <SelectValue placeholder="Choose a ding sound" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {portalTaskNotificationSoundOptions.map((sound) => <SelectItem key={sound.key} value={sound.key}>{sound.label}</SelectItem>)}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="outline" size="icon-sm" aria-label={`Preview ${selectedTaskSound.label}`} title={`Preview ${selectedTaskSound.label}`} onClick={previewSound} disabled={saving}>
+                  <Play />
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="portal-task-notification-volume">App volume</Label>
+                <span className="text-sm font-medium text-foreground">{selectedTaskVolume.label}</span>
+              </div>
+              <input id="portal-task-notification-volume" type="range" min="25" max="100" step="25" value={selectedTaskVolume.key} onChange={(event) => setDraftTaskVolumeKey(normalizePortalTaskNotificationVolumeKey(event.target.value))} disabled={saving} aria-label="Task notification volume" aria-valuetext={selectedTaskVolume.label} className="h-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50" />
+              <div className="flex justify-between text-xs text-muted-foreground" aria-hidden="true">
+                {portalTaskNotificationVolumeOptions.map((option) => <span key={option.key}>{option.label}</span>)}
+              </div>
+            </div>
+          </section>
+          <Separator />
+          <section className="grid gap-4" aria-labelledby="portal-messenger-notification-heading">
+            <div>
+              <h3 id="portal-messenger-notification-heading" className="text-sm font-semibold">Messenger messages</h3>
+              <p className="mt-1 text-xs text-muted-foreground">Played when a new message arrives.</p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="portal-messenger-notification-sound">Ding sound</Label>
+              <div className="flex items-center gap-2">
+                <Select value={draftMessengerSoundKey} onValueChange={(value) => setDraftMessengerSoundKey(normalizePortalTaskNotificationSoundKey(value))} disabled={saving}>
+                  <SelectTrigger id="portal-messenger-notification-sound" className="min-w-0 flex-1">
+                    <SelectValue placeholder="Choose a ding sound" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {portalTaskNotificationSoundOptions.map((sound) => <SelectItem key={sound.key} value={sound.key}>{sound.label}</SelectItem>)}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="outline" size="icon-sm" aria-label={`Preview ${selectedMessengerSound.label}`} title={`Preview ${selectedMessengerSound.label}`} onClick={previewMessengerSound} disabled={saving}>
+                  <Play />
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="portal-messenger-notification-volume">App volume</Label>
+                <span className="text-sm font-medium text-foreground">{selectedMessengerVolume.label}</span>
+              </div>
+              <input id="portal-messenger-notification-volume" type="range" min="25" max="100" step="25" value={selectedMessengerVolume.key} onChange={(event) => setDraftMessengerVolumeKey(normalizePortalTaskNotificationVolumeKey(event.target.value))} disabled={saving} aria-label="Messenger notification volume" aria-valuetext={selectedMessengerVolume.label} className="h-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50" />
+              <div className="flex justify-between text-xs text-muted-foreground" aria-hidden="true">
+                {portalTaskNotificationVolumeOptions.map((option) => <span key={option.key}>{option.label}</span>)}
+              </div>
+            </div>
+          </section>
+          {message !== '' ? <p className="text-xs text-muted-foreground" role="status" aria-live="polite">{message}</p> : null}
+        </div>
+        <DialogFooter className="m-0 shrink-0 flex-row justify-end gap-2 rounded-none border-t bg-popover px-6 py-4">
+          <Button type="button" onClick={() => void saveSound()} disabled={saving || (draftTaskSoundKey === taskSoundKey && draftTaskVolumeKey === taskVolumeKey && draftMessengerSoundKey === messengerSoundKey && draftMessengerVolumeKey === messengerVolumeKey)}>
+            {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
+            {saving ? 'Saving' : 'Save Preferences'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function HeaderControlSeparator() {
   return <Separator orientation="vertical" className="hidden data-vertical:h-4 sm:block" />
 }
 
 const messengerOpenStorageKey = 'builderx:messenger:open'
+const portalBedTaskChangedEvent = 'builderx:portal-bed-task-changed'
 const messengerSelectedGroupStorageKey = 'builderx:messenger:selectedProjectGroup'
 const messengerUnreadStorageKey = 'builderx:messenger:unread'
-const messengerLastSeenChatStorageKey = 'builderx:messenger:lastSeenChat'
+const messengerNotificationDedupeStorageKey = 'builderx:messenger:notificationSignatures'
 const messengerMessageReceivedEvent = 'builderx:messenger-message-received'
 const messengerPageSize = 20
 const messengerEmojiChoices = ['😀', '😂', '😍', '👍', '🙏', '❤️', '🔥', '🎉', '😮', '😢', '😡', '✅']
@@ -978,6 +1274,7 @@ type MessengerMessage = {
   message_type?: string
   message_status?: 'ACTIVE' | 'REMOVED' | string
   created_at?: string
+  updated_at?: string
   attachments?: MessengerAttachment[]
   reply?: {
     chat_key: string
@@ -1064,67 +1361,144 @@ function writeMessengerUnreadCount(count: number) {
   }
 }
 
-function readMessengerLastSeenChatKey(): string {
+function claimMessengerNotification(chatKey: string, signature: string): boolean {
+  if (typeof window === 'undefined' || chatKey === '' || signature === '') return false
   try {
-    if (typeof window === 'undefined') return ''
-    return window.localStorage.getItem(messengerLastSeenChatStorageKey) || ''
+    const raw = window.localStorage.getItem(messengerNotificationDedupeStorageKey)
+    const seen = raw ? JSON.parse(raw) as Record<string, string> : {}
+    if (seen[chatKey] === signature) return false
+    seen[chatKey] = signature
+    window.localStorage.setItem(messengerNotificationDedupeStorageKey, JSON.stringify(Object.fromEntries(Object.entries(seen).slice(-100))))
+    return true
   } catch {
-    return ''
+    return true
   }
 }
 
-function writeMessengerLastSeenChatKey(chatKey: string) {
-  try {
-    if (typeof window === 'undefined') return
-    if (chatKey) window.localStorage.setItem(messengerLastSeenChatStorageKey, chatKey)
-  } catch {
-    // Blocked storage should not break notification polling.
+let portalTaskUpdateAudio: HTMLAudioElement | null = null
+let portalTaskUpdateAudioKey = ''
+let portalTaskAudioUnlocked = false
+let portalMessengerUpdateAudio: HTMLAudioElement | null = null
+let portalMessengerUpdateAudioKey = ''
+let portalMessengerAudioUnlocked = false
+
+function getPortalTaskUpdateAudio(soundKey = defaultPortalTaskNotificationSoundKey, volumeKey = defaultPortalTaskNotificationVolumeKey): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null
+  const sound = portalTaskNotificationSoundOption(soundKey)
+  if (!portalTaskUpdateAudio) {
+    portalTaskUpdateAudio = new Audio(sound.url)
+    portalTaskUpdateAudio.preload = 'auto'
+    portalTaskUpdateAudioKey = sound.key
+  } else if (portalTaskUpdateAudioKey !== sound.key) {
+    portalTaskUpdateAudio.pause()
+    portalTaskUpdateAudio.src = sound.url
+    portalTaskUpdateAudio.load()
+    portalTaskUpdateAudioKey = sound.key
+    portalTaskAudioUnlocked = false
   }
+  portalTaskUpdateAudio.volume = portalTaskNotificationVolumeOption(volumeKey).volume
+  return portalTaskUpdateAudio
 }
 
-function playTemporaryMessengerDing() {
-  try {
-    if (typeof window === 'undefined') return
-    type BrowserAudioContextConstructor = new (contextOptions?: AudioContextOptions) => AudioContext
-    const audioWindow = window as unknown as {
-      AudioContext?: BrowserAudioContextConstructor
-      webkitAudioContext?: BrowserAudioContextConstructor
+function unlockPortalTaskAudio(soundKey = defaultPortalTaskNotificationSoundKey, volumeKey = defaultPortalTaskNotificationVolumeKey) {
+  if (portalTaskAudioUnlocked) return
+  const audio = getPortalTaskUpdateAudio(soundKey, volumeKey)
+  if (!audio) return
+  audio.muted = true
+  void audio.play().then(() => {
+    audio.pause()
+    audio.currentTime = 0
+    audio.muted = false
+    portalTaskAudioUnlocked = true
+  }).catch(() => {
+    audio.muted = false
+  })
+}
+
+function playPortalTaskDing(soundKey = defaultPortalTaskNotificationSoundKey, volumeKey = defaultPortalTaskNotificationVolumeKey) {
+  const audio = getPortalTaskUpdateAudio(soundKey, volumeKey)
+  if (!audio) return
+  audio.currentTime = 0
+  audio.muted = false
+  void audio.play().catch(() => {
+    // Audio can still be blocked until the user interacts with the page.
+  })
+}
+
+function getPortalMessengerUpdateAudio(soundKey = defaultPortalMessengerNotificationSoundKey, volumeKey = defaultPortalMessengerNotificationVolumeKey): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null
+  const sound = portalTaskNotificationSoundOption(soundKey)
+  if (!portalMessengerUpdateAudio) {
+    portalMessengerUpdateAudio = new Audio(sound.url)
+    portalMessengerUpdateAudio.preload = 'auto'
+    portalMessengerUpdateAudioKey = sound.key
+  } else if (portalMessengerUpdateAudioKey !== sound.key) {
+    portalMessengerUpdateAudio.src = sound.url
+    portalMessengerUpdateAudio.load()
+    portalMessengerUpdateAudioKey = sound.key
+  }
+  portalMessengerUpdateAudio.volume = portalTaskNotificationVolumeOption(volumeKey).volume
+  return portalMessengerUpdateAudio
+}
+
+function unlockPortalMessengerAudio(soundKey = defaultPortalMessengerNotificationSoundKey, volumeKey = defaultPortalMessengerNotificationVolumeKey) {
+  if (portalMessengerAudioUnlocked) return
+  const audio = getPortalMessengerUpdateAudio(soundKey, volumeKey)
+  if (!audio) return
+  audio.muted = true
+  void audio.play().then(() => {
+    audio.pause()
+    audio.currentTime = 0
+    audio.muted = false
+    portalMessengerAudioUnlocked = true
+  }).catch(() => {
+    audio.muted = false
+  })
+}
+
+function playPortalMessengerDing(soundKey = defaultPortalMessengerNotificationSoundKey, volumeKey = defaultPortalMessengerNotificationVolumeKey) {
+  const audio = getPortalMessengerUpdateAudio(soundKey, volumeKey)
+  if (!audio) return
+  audio.currentTime = 0
+  audio.muted = false
+  void audio.play().catch(() => {
+    // Audio can still be blocked until the user interacts with the page.
+  })
+}
+
+function requestPortalTaskNotificationPermission() {
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+  if (Notification.permission === 'default') void Notification.requestPermission().catch(() => {})
+}
+
+function showPortalTaskUpdateNotification(tasks: Array<Record<string, any>>) {
+  if (typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'granted') return
+  const taskLabels = tasks
+    .map((task) => String(task.task_title || task.task_code || 'Task request').trim())
+    .filter(Boolean)
+  const uniqueTaskLabels = Array.from(new Set(taskLabels))
+  const body = uniqueTaskLabels.length === 1
+    ? `${uniqueTaskLabels[0]} was updated.`
+    : `${uniqueTaskLabels.length} bed tasks were updated.`
+  const notification = new Notification('RBMS task update', {
+    body,
+    tag: 'rbmsv4-task-updates',
+  })
+  notification.onclick = () => {
+    window.focus()
+    notification.close()
+    if (readPortalView() !== 'bed-management') {
+      window.location.assign(portalViewHref('bed-management'))
     }
-    const AudioContextClass = audioWindow.AudioContext || audioWindow.webkitAudioContext
-    if (!AudioContextClass) return
-    const context = new AudioContextClass()
-    const gain = context.createGain()
-    const firstTone = context.createOscillator()
-    const secondTone = context.createOscillator()
-    const startAt = context.currentTime
-
-    gain.connect(context.destination)
-    gain.gain.setValueAtTime(0.0001, startAt)
-    gain.gain.exponentialRampToValueAtTime(0.06, startAt + 0.015)
-    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.42)
-
-    firstTone.type = 'sine'
-    firstTone.frequency.setValueAtTime(880, startAt)
-    firstTone.frequency.exponentialRampToValueAtTime(660, startAt + 0.18)
-    firstTone.connect(gain)
-    firstTone.start(startAt)
-    firstTone.stop(startAt + 0.2)
-
-    secondTone.type = 'sine'
-    secondTone.frequency.setValueAtTime(1174.66, startAt + 0.12)
-    secondTone.frequency.exponentialRampToValueAtTime(880, startAt + 0.34)
-    secondTone.connect(gain)
-    secondTone.start(startAt + 0.12)
-    secondTone.stop(startAt + 0.42)
-
-    window.setTimeout(() => void context.close().catch(() => {}), 700)
-  } catch {
-    // Notification sound is best-effort and can be blocked by browser policy.
   }
 }
 
-function useMessengerNotifications(messengerOpen: boolean, enabled = true) {
+function useMessengerNotifications(messengerOpen: boolean, enabled = true, soundKey = defaultPortalMessengerNotificationSoundKey, volumeKey = defaultPortalMessengerNotificationVolumeKey) {
   const [unreadCount, setUnreadCount] = React.useState(readMessengerUnreadCount)
+  const soundKeyRef = React.useRef(soundKey)
+  const volumeKeyRef = React.useRef(volumeKey)
+  soundKeyRef.current = soundKey
+  volumeKeyRef.current = volumeKey
 
   const clearUnread = React.useCallback(() => {
     writeMessengerUnreadCount(0)
@@ -1132,14 +1506,25 @@ function useMessengerNotifications(messengerOpen: boolean, enabled = true) {
   }, [])
 
   const handleReceived = React.useCallback(() => {
-    playTemporaryMessengerDing()
     if (readMessengerOpenState()) return
     setUnreadCount((current) => {
       const nextCount = current + 1
       writeMessengerUnreadCount(nextCount)
       return nextCount
     })
+    playPortalMessengerDing(soundKeyRef.current, volumeKeyRef.current)
   }, [])
+
+  React.useEffect(() => {
+    if (!enabled) return
+    const prepareMessengerNotifications = () => unlockPortalMessengerAudio(soundKeyRef.current, volumeKeyRef.current)
+    window.addEventListener('pointerdown', prepareMessengerNotifications, true)
+    window.addEventListener('keydown', prepareMessengerNotifications, true)
+    return () => {
+      window.removeEventListener('pointerdown', prepareMessengerNotifications, true)
+      window.removeEventListener('keydown', prepareMessengerNotifications, true)
+    }
+  }, [enabled])
 
   React.useEffect(() => {
     if (!enabled) {
@@ -1150,88 +1535,67 @@ function useMessengerNotifications(messengerOpen: boolean, enabled = true) {
   }, [clearUnread, enabled, messengerOpen])
 
   React.useEffect(() => {
-    if (!enabled || !messengerOpen) return
-    const projectGroups = Array.isArray(portalData?.projectGroups) ? portalData.projectGroups : []
-    const selectedGroupKey = readMessengerSelectedGroupKey() || String(projectGroups[0]?.group_key || '')
-    if (!selectedGroupKey) return
-
-    const body = new FormData()
-    body.append('csrf', messengerCsrfToken())
-    body.append('action', 'messenger_load_messages')
-    body.append('group_key', selectedGroupKey)
-    void fetch(messengerEndpoint(), {
-      method: 'POST',
-      body,
-      headers: { Accept: 'application/json' },
-    })
-      .then((response) => response.ok ? response.json() : null)
-      .then((payload) => {
-        const payloadMessages = payload?.data?.messages || payload?.messages || []
-        if (!Array.isArray(payloadMessages) || payloadMessages.length === 0) return
-        const latestMessage = payloadMessages[payloadMessages.length - 1]
-        writeMessengerLastSeenChatKey(String(latestMessage?.chat_key || ''))
-      })
-      .catch(() => {})
-  }, [enabled, messengerOpen])
-
-  React.useEffect(() => {
-    if (!enabled) return
-    window.addEventListener(messengerMessageReceivedEvent, handleReceived)
-    return () => window.removeEventListener(messengerMessageReceivedEvent, handleReceived)
-  }, [enabled, handleReceived])
-
-  React.useEffect(() => {
     if (!enabled) return
     let cancelled = false
+    let unsubscribeListeners: Array<() => void> = []
 
-    async function pollForReceivedMessages() {
-      if (cancelled || messengerOpen) return
+    void portalBedTaskFirestore().then((firebase) => {
+      if (cancelled || !firebase) return
       const projectGroups = Array.isArray(portalData?.projectGroups) ? portalData.projectGroups : []
-      const selectedGroupKey = readMessengerSelectedGroupKey() || String(projectGroups[0]?.group_key || '')
-      if (!selectedGroupKey) return
-
-      try {
-        const body = new FormData()
-        body.append('csrf', messengerCsrfToken())
-        body.append('action', 'messenger_load_messages')
-        body.append('group_key', selectedGroupKey)
-        const response = await fetch(messengerEndpoint(), {
-          method: 'POST',
-          body,
-          headers: { Accept: 'application/json' },
-        })
-        const payload = await response.json()
-        if (!response.ok || !payload?.ok) return
-        const payloadMessages = payload?.data?.messages || payload?.messages || []
-        if (!Array.isArray(payloadMessages) || payloadMessages.length === 0) return
-        const latestMessage = payloadMessages[payloadMessages.length - 1]
-        const latestChatKey = String(latestMessage?.chat_key || '')
-        if (!latestChatKey) return
-
-        const lastSeenChatKey = readMessengerLastSeenChatKey()
-        if (!lastSeenChatKey) {
-          writeMessengerLastSeenChatKey(latestChatKey)
-          return
-        }
-
-        if (latestChatKey !== lastSeenChatKey) {
-          writeMessengerLastSeenChatKey(latestChatKey)
-          if (String(latestMessage?.sender_user_key || '') !== messengerSenderKey()) {
-            handleReceived()
-          }
-        }
-      } catch {
-        // Header notifications are best-effort until a Firebase listener is connected.
+      const groupScopes = projectGroups
+        .map((group) => ({
+          groupKey: String(group.group_key || group.group_name || ''),
+          projectKey: String(group.project_key || ''),
+        }))
+        .filter((scope) => scope.groupKey !== '' && (firebase.groupKeys.length === 0 || firebase.groupKeys.includes(scope.groupKey)))
+        .slice(0, 30)
+      for (const scope of groupScopes) {
+        const groupKey = scope.groupKey
+        let initialSnapshot = true
+        const constraints = scope.projectKey !== ''
+          ? [where('project_key', '==', scope.projectKey), where('group_key', '==', groupKey), where('conversation_type', '==', 'group'), orderBy('updated_at', 'desc'), limit(20)]
+          : [where('group_key', '==', groupKey), where('conversation_type', '==', 'group'), orderBy('updated_at', 'desc'), limit(20)]
+        const unsubscribe = onSnapshot(
+          query(collection(firebase.db, 'project_messenger_chat'), ...constraints),
+          (snapshot) => {
+            if (cancelled) return
+            const changedMessages: Array<Record<string, any>> = []
+            for (const change of snapshot.docChanges()) {
+              if (change.type === 'removed') continue
+              const raw = { ...change.doc.data(), chat_key: change.doc.id }
+              const message = normalizeMessengerMessage(raw)
+              const chatKey = String(message.chat_key || '')
+              if (chatKey === '') continue
+              const signature = [
+                message.message_status,
+                message.text,
+                message.created_at,
+                String((raw as any).updated_at || (raw as any).mysql_updated_at || ''),
+              ].join('\u001f')
+              changedMessages.push(message)
+              if (!initialSnapshot && String(message.sender_user_key || '') !== messengerSenderKey() && claimMessengerNotification(chatKey, signature)) {
+                handleReceived()
+              }
+            }
+            if (changedMessages.length > 0) {
+              window.dispatchEvent(new CustomEvent(messengerMessageReceivedEvent, { detail: { messages: changedMessages } }))
+            }
+            initialSnapshot = false
+          },
+          (error) => console.warn(`Messenger Firestore listener unavailable for ${groupKey}.`, error),
+        )
+        unsubscribeListeners.push(unsubscribe)
       }
-    }
+    }).catch((error) => {
+      if (!cancelled) console.warn('Messenger Firestore authentication unavailable.', error)
+    })
 
-    void pollForReceivedMessages()
-    const interval = window.setInterval(() => void pollForReceivedMessages(), 15000)
     return () => {
       cancelled = true
-      window.clearInterval(interval)
+      unsubscribeListeners.forEach((unsubscribe) => unsubscribe())
+      unsubscribeListeners = []
     }
-  }, [enabled, handleReceived, messengerOpen])
+  }, [enabled, handleReceived])
 
   return { unreadCount, clearUnread }
 }
@@ -1280,8 +1644,7 @@ function usePersistentMessengerOpen(canRestore = true) {
 function messengerGroupImageUrl(group?: Record<string, any> | null, sizeTokens = 'XS'): string {
   const rawImageUrl = groupImageSourceUrl(group || undefined)
   if (rawImageUrl === '') return ''
-  const viewerImageUrl = rawImageUrl.replace(/^http:\/\/localhost\/rbms\.com\//i, 'https://localhost/rbms.com/')
-  return uploadedImageViewerUrl(viewerImageUrl, sizeTokens)
+  return uploadedImageViewerUrl(rawImageUrl, sizeTokens)
 }
 
 function messengerClientId(): string {
@@ -1302,8 +1665,8 @@ function normalizeMessengerStreamStatus(value: any): MessengerStreamServiceStatu
     return {
       running: null,
       status: 'checking',
-      label: 'Checking Firebase stream',
-      detail: 'Checking Firebase-to-MySQL stream service.',
+      label: 'Checking Firebase sync worker',
+      detail: 'Checking the Firebase sync queue worker.',
     }
   }
 
@@ -1312,7 +1675,7 @@ function normalizeMessengerStreamStatus(value: any): MessengerStreamServiceStatu
   return {
     running,
     status: String(value.status || (running ? 'running' : running === false ? 'stopped' : 'unknown')),
-    label: String(value.label || (running ? 'Firebase stream running' : running === false ? 'Firebase stream stopped' : 'Firebase stream unknown')),
+    label: String(value.label || (running ? 'Firebase sync worker running' : running === false ? 'Firebase sync worker stopped' : 'Firebase sync worker unknown')),
     detail: String(value.detail || ''),
     service: value.service ? String(value.service) : undefined,
     configured: typeof value.configured === 'boolean' ? value.configured : undefined,
@@ -1444,7 +1807,8 @@ function normalizeMessengerMessage(raw: Record<string, any>): MessengerMessage {
     text: removed ? 'Message has been removed' : String(raw.message_text || ''),
     message_type: String(raw.message_type || 'text'),
     message_status: String(raw.message_status || 'ACTIVE'),
-    created_at: String(raw.created_at || ''),
+    created_at: String(portalRealtimeDateText(raw.created_at) || raw.created_at || ''),
+    updated_at: String(portalRealtimeDateText(raw.updated_at || raw.mysql_updated_at) || raw.updated_at || ''),
     attachments,
     reply: raw.reply && typeof raw.reply === 'object' ? {
       chat_key: String(raw.reply.chat_key || ''),
@@ -1459,8 +1823,7 @@ function normalizeMessengerMessage(raw: Record<string, any>): MessengerMessage {
 }
 
 function messengerImageViewerUrl(uploadedUrl: string, sizeToken = 'XS'): string {
-  const imageUrl = String(uploadedUrl || '').replace(/^http:\/\/localhost\/rbms\.com\//i, 'https://localhost/rbms.com/')
-  return uploadedImageViewerUrl(imageUrl, sizeToken)
+  return uploadedImageViewerUrl(String(uploadedUrl || ''), sizeToken)
 }
 
 function messengerFirebaseOptions(): FirebaseOptions | null {
@@ -1480,82 +1843,688 @@ function messengerFirebaseOptions(): FirebaseOptions | null {
   }
 }
 
-function messengerFirestore(): Firestore | null {
-  try {
+type PortalBedTaskFirebase = { db: Firestore; groupKeys: string[]; projectKeys: string[]; tenantKey: string }
+
+let portalBedTaskFirestorePromise: Promise<PortalBedTaskFirebase | null> | null = null
+
+async function portalBedTaskFirestore(): Promise<PortalBedTaskFirebase | null> {
+  if (portalBedTaskFirestorePromise) return portalBedTaskFirestorePromise
+
+  portalBedTaskFirestorePromise = (async () => {
     const options = messengerFirebaseOptions()
-    if (!options?.projectId) return null
+    const userKey = String(portalData?.currentUser?.user_key || '').trim()
+    if (!options?.projectId || userKey === '') return null
+
     const app = getApps().find((item) => item.name === 'rbmsv4-messenger') || initializeApp(options, 'rbmsv4-messenger')
-    return getFirestore(app)
-  } catch {
-    return null
+    const auth = getAuth(app)
+    if (auth.currentUser && auth.currentUser.uid !== userKey) await auth.signOut()
+
+    const body = new URLSearchParams()
+    body.set('csrf', String(portalData?.csrf || ''))
+    body.set('action', 'portal_firebase_custom_token')
+    const response = await fetch(portalHref(''), {
+      method: 'POST',
+      credentials: 'same-origin',
+      body,
+      headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    const payload = await response.json().catch(() => ({}))
+    const token = String(payload?.data?.custom_token || '').trim()
+    if (!response.ok || payload?.ok !== true || token === '') throw new Error('Firebase portal authentication failed.')
+
+    await signInWithCustomToken(auth, token)
+    const tokenResult = await auth.currentUser?.getIdTokenResult()
+    const groupKeys = Array.isArray(tokenResult?.claims?.groups)
+      ? portalUniqueStrings(tokenResult.claims.groups as any[])
+      : []
+    const projectKeys = Array.isArray(tokenResult?.claims?.projects)
+      ? portalUniqueStrings(tokenResult.claims.projects as any[])
+      : []
+    const tenantKey = String(tokenResult?.claims?.tenant_key || options.projectId).trim()
+    return { db: getFirestore(app), groupKeys, projectKeys, tenantKey }
+  })().catch((error) => {
+    portalBedTaskFirestorePromise = null
+    throw error
+  })
+
+  return portalBedTaskFirestorePromise
+}
+
+function dispatchPortalBedTaskChanged(tasks: Array<Record<string, any>> = []): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(portalBedTaskChangedEvent, { detail: { tasks } }))
   }
 }
 
-function firebaseMessengerPayload(message: MessengerMessage): Record<string, any> {
+const portalTaskRealtimeContentFields = [
+  'bed_task_key',
+  'task_status',
+  'current_task_stage_key',
+  'current_stage_label',
+  'current_stage_color_hex',
+  'task_stage_key',
+  'task_stage_response_key',
+  'response_label',
+  'response_description',
+  'response_color_hex',
+  'assigned_user_key',
+  'assigned_user_fullname',
+  'actor_user_key',
+  'actor_fullname',
+  'remarks',
+] as const
+
+function portalTaskRealtimeValue(value: any): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value?.toMillis === 'function') return String(value.toMillis())
+  if (typeof value?.toDate === 'function') return String(value.toDate().getTime())
+  if (Array.isArray(value)) return value.map((item) => portalTaskRealtimeValue(item)).join(',')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function portalTaskRealtimeContentSignature(data: Record<string, any>): string {
+  const task = portalRealtimeTaskRow(data)
+  return portalTaskRealtimeContentFields
+    .map((field) => `${field}=${portalTaskRealtimeValue(task[field])}`)
+    .join('\u001f')
+}
+
+function portalRealtimeDateText(value: any): any {
+  const date = typeof value?.toDate === 'function' ? value.toDate() : null
+  if (!date || !Number.isFinite(date.getTime())) return value
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function portalRealtimeTaskRow(data: Record<string, any>): Record<string, any> {
+  const updatedAt = portalRealtimeDateText(data.task_updated_at || data.updated_at || data.mysql_updated_at || data.created_at)
+  const stageLabel = data.stage_label || data.current_stage_label || data.task_status || 'Pending'
+  const stageColorHex = data.stage_color_hex || data.current_stage_color_hex || ''
   return {
-    chat_key: message.chat_key || message.id,
-    project_key: String((message as any).project_key || ''),
-    group_key: String((message as any).group_key || ''),
-    conversation_type: String((message as any).conversation_type || 'group'),
-    direct_recipient_user_key: String((message as any).direct_recipient_user_key || ''),
-    reply_to_chat_key: message.reply_to_chat_key || '',
-    sender_user_key: message.sender_user_key || '',
-    sender_name: message.sender_name || 'Portal User',
-    message_text: message.message_status === 'REMOVED' ? '' : message.text,
-    message_type: message.message_type || ((message.attachments || []).length > 0 ? 'image' : 'text'),
-    message_status: message.message_status || 'ACTIVE',
-    firebase_collection: 'project_messenger_chat',
-    firebase_sync_status: 'SYNCED',
-    created_at: message.created_at || new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    client_synced_at: serverTimestamp(),
+    ...data,
+    bed_task_key: String(data.bed_task_key || '').trim(),
+    bed_key: String(data.bed_key || '').trim(),
+    task_title: data.task_title || data.task_code || 'Task request',
+    current_stage_label: stageLabel,
+    current_stage_color_hex: stageColorHex,
+    task_stage_key: data.task_stage_key || data.current_task_stage_key || '',
+    stage_label: stageLabel,
+    stage_color_hex: stageColorHex,
+    task_updated_at: updatedAt,
+    updated_at: data.updated_at ? portalRealtimeDateText(data.updated_at) : updatedAt,
   }
 }
 
-async function mirrorMessengerMessageToFirestore(rawMessage: Record<string, any>) {
-  const db = messengerFirestore()
-  const chatKey = String(rawMessage.chat_key || '')
-  if (!db || chatKey === '') return false
-  if (portalData?.firebaseConfig?.clientWriteEnabled !== true) return false
-
-  const message = normalizeMessengerMessage(rawMessage)
-  await setDoc(doc(db, 'project_messenger_chat', chatKey), {
-    ...firebaseMessengerPayload({ ...message, ...(rawMessage as any) }),
-    project_key: String(rawMessage.project_key || ''),
-    group_key: String(rawMessage.group_key || ''),
-    removed_at: String(rawMessage.removed_at || ''),
-  }, { merge: true })
-
-  const attachments = Array.isArray(rawMessage.attachments) ? rawMessage.attachments : []
-  await Promise.all(attachments.map(async (attachment: Record<string, any>) => {
-    const attachmentKey = String(attachment.attachment_key || '')
-    if (attachmentKey === '') return
-    await setDoc(doc(db, 'project_messenger_chat_attachment', attachmentKey), {
-      attachment_key: attachmentKey,
-      chat_key: chatKey,
-      project_key: String(attachment.project_key || rawMessage.project_key || ''),
-      group_key: String(attachment.group_key || rawMessage.group_key || ''),
-      uploaded_image_url: String(attachment.uploaded_image_url || ''),
-      image_original_name: String(attachment.image_original_name || ''),
-      image_mime_type: String(attachment.image_mime_type || ''),
-      image_byte_size: Number(attachment.image_byte_size || 0),
-      image_sha256: String(attachment.image_sha256 || ''),
-      sort_order: Number(attachment.sort_order || 0),
-      attachment_status: String(attachment.attachment_status || 'ACTIVE'),
-      firebase_collection: 'project_messenger_chat_attachment',
-      firebase_sync_status: 'SYNCED',
-      created_at: String(attachment.created_at || ''),
-      client_synced_at: serverTimestamp(),
-    }, { merge: true })
-  }))
-
-  return true
+function portalMergeRealtimeTaskRows(
+  taskMap: Record<string, Array<Record<string, any>>>,
+  tasks: Array<Record<string, any>>,
+): Record<string, Array<Record<string, any>>> {
+  const nextTaskMap = { ...taskMap }
+  for (const rawTask of tasks) {
+    const task = portalRealtimeTaskRow(rawTask)
+    const bedKey = String(task.bed_key || '').trim()
+    const bedTaskKey = String(task.bed_task_key || '').trim()
+    if (bedKey === '' || bedTaskKey === '') continue
+    const rows = Array.isArray(nextTaskMap[bedKey]) ? [...nextTaskMap[bedKey]] : []
+    const taskIndex = rows.findIndex((row) => String(row.bed_task_key || '').trim() === bedTaskKey)
+    if (taskIndex < 0) {
+      rows.push(task)
+      nextTaskMap[bedKey] = rows
+      continue
+    }
+    rows[taskIndex] = { ...rows[taskIndex], ...task }
+    nextTaskMap[bedKey] = rows
+  }
+  return nextTaskMap
 }
 
-function normalizeFirestoreMessengerMessages(docs: Array<{ id: string; data: () => Record<string, any> }>): MessengerMessage[] {
-  return docs
-    .map((snapshot) => normalizeMessengerMessage({ ...snapshot.data(), chat_key: snapshot.data().chat_key || snapshot.id }))
-    .sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || '')))
+function portalOverlayRealtimeTaskOverrides(
+  taskMap: Record<string, Array<Record<string, any>>>,
+  overrides: Record<string, { task: Record<string, any>; contentSignature: string }>,
+): { taskMap: Record<string, Array<Record<string, any>>>; syncedKeys: string[] } {
+  const nextTaskMap = { ...taskMap }
+  const syncedKeys: string[] = []
+  for (const [bedTaskKey, override] of Object.entries(overrides)) {
+    const bedKey = String(override.task.bed_key || '').trim()
+    const rows = Array.isArray(nextTaskMap[bedKey]) ? [...nextTaskMap[bedKey]] : []
+    const taskIndex = rows.findIndex((row) => String(row.bed_task_key || '').trim() === bedTaskKey)
+    if (taskIndex < 0) continue
+    const fetchedTask = portalRealtimeTaskRow(rows[taskIndex])
+    if (portalTaskRealtimeContentSignature(fetchedTask) === override.contentSignature) {
+      syncedKeys.push(bedTaskKey)
+      continue
+    }
+    rows[taskIndex] = { ...rows[taskIndex], ...override.task }
+    nextTaskMap[bedKey] = rows
+  }
+  return { taskMap: nextTaskMap, syncedKeys }
+}
+
+function portalTaskStringList(value: any): string[] {
+  if (Array.isArray(value)) return portalUniqueStrings(value)
+  const text = String(value || '').trim()
+  if (text === '') return []
+  try {
+    const parsed = JSON.parse(text)
+    return Array.isArray(parsed) ? portalUniqueStrings(parsed) : []
+  } catch {
+    return portalUniqueStrings(text.split(','))
+  }
+}
+
+async function loadPortalBedTaskSnapshot(
+  firebase: PortalBedTaskFirebase,
+  bedKeys: string[],
+): Promise<{ projectBedTasks: Record<string, Array<Record<string, any>>>; projectBedTaskLogs: Record<string, Array<Record<string, any>>> }> {
+  const projectKey = String(firebase.projectKeys[0] || '').trim()
+  const groupKeys = firebase.groupKeys.slice(0, 30)
+  const taskMap: Record<string, Array<Record<string, any>>> = {}
+  const logMap: Record<string, Array<Record<string, any>>> = {}
+  if (projectKey === '' || groupKeys.length === 0 || bedKeys.length === 0) {
+    return { projectBedTasks: taskMap, projectBedTaskLogs: logMap }
+  }
+
+  const allowedBedKeys = new Set(bedKeys.map((key) => String(key || '').trim()).filter(Boolean))
+  const taskSnapshot = await getDocs(query(
+    collection(firebase.db, 'project_bed_task'),
+    where('tenant_key', '==', firebase.tenantKey),
+    where('project_key', '==', projectKey),
+    where('task_group_keys', 'array-contains-any', groupKeys),
+  ))
+  const taskKeys: string[] = []
+  taskSnapshot.docs.forEach((taskDocument) => {
+    const task = portalRealtimeTaskRow({ ...taskDocument.data(), bed_task_key: taskDocument.id })
+    const taskBedKey = String(task.bed_key || '').trim()
+    const bedTaskKey = String(task.bed_task_key || '').trim()
+    if (!allowedBedKeys.has(taskBedKey) || bedTaskKey === '') return
+    taskMap[taskBedKey] = [...(taskMap[taskBedKey] || []), task]
+    taskKeys.push(bedTaskKey)
+  })
+
+  const uniqueTaskKeys = portalUniqueStrings(taskKeys)
+  for (let index = 0; index < uniqueTaskKeys.length; index += 30) {
+    const keyChunk = uniqueTaskKeys.slice(index, index + 30)
+    const logSnapshot = await getDocs(query(
+      collection(firebase.db, 'project_bed_task_log'),
+      where('bed_task_key', 'in', keyChunk),
+    ))
+    logSnapshot.docs.forEach((logDocument) => {
+      const log: Record<string, any> = { ...logDocument.data(), bed_task_log_key: logDocument.id }
+      const logTaskKey = String(log.bed_task_key || '').trim()
+      if (!uniqueTaskKeys.includes(logTaskKey)) return
+      logMap[logTaskKey] = [...(logMap[logTaskKey] || []), log]
+    })
+  }
+
+  Object.values(taskMap).forEach((tasks) => tasks.sort((left, right) => String(right.task_updated_at || '').localeCompare(String(left.task_updated_at || ''))))
+  Object.values(logMap).forEach((logs) => logs.sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || ''))))
+  return { projectBedTasks: taskMap, projectBedTaskLogs: logMap }
+}
+
+function portalBedTaskIsUnfinished(taskData: Record<string, any>): boolean {
+  const taskStatus = String(taskData.task_status || '').trim().toUpperCase()
+  const deletedAt = taskData.mysql_deleted_at
+  if (deletedAt !== null && deletedAt !== undefined && String(deletedAt).trim() !== '') return false
+  return !['COMPLETED', 'COMPLETE', 'DONE', 'CANCELLED', 'CANCELED', 'DELETED', 'ARCHIVED'].includes(taskStatus)
+}
+
+async function createPortalBedTaskInFirebase({
+  row,
+  task,
+  roomClass,
+  bedTreatmentKey,
+  bedTreatmentName,
+  bedSourceKey,
+  bedSourceName,
+  remarks,
+}: {
+  row: Record<string, any>
+  task: Record<string, any>
+  roomClass: string
+  bedTreatmentKey: string
+  bedTreatmentName: string
+  bedSourceKey: string
+  bedSourceName: string
+  remarks: string
+}): Promise<{ bedTaskKey: string }> {
+  const firebase = await portalBedTaskFirestore()
+  if (!firebase || firebase.projectKeys.length < 1 || firebase.groupKeys.length < 1) {
+    throw new Error('Task requests are unavailable for this authorized workspace.')
+  }
+  if (portalData?.firebaseConfig?.clientWriteEnabled !== true) throw new Error('Task requests are currently unavailable.')
+  const projectKey = String(firebase.projectKeys[0] || '').trim()
+  const bedKey = String(row.bed_key || '').trim()
+  const taskKey = String(task.task_key || '').trim()
+  const taskType = String(task.task_type || '').trim().toUpperCase()
+  const sourceStatus = String(row.source_bed_status || '').trim()
+  const sourceStatusKey = sourceStatus.toLowerCase()
+  const taskGroups = portalTaskStringList(task.task_group_keys)
+  const authorizedTaskGroups = taskGroups.filter((groupKey) => firebase.groupKeys.includes(groupKey))
+  if (!/^[A-Za-z0-9]{20,40}$/.test(bedKey) || !/^[A-Za-z0-9]{20,40}$/.test(taskKey)) throw new Error('The selected bed or task is invalid.')
+  if (String(row.managed_status || 'ACTIVE').trim().toUpperCase() !== 'ACTIVE') throw new Error('Only active managed beds can receive task requests.')
+  if (!['PRIMARY', 'SECONDARY'].includes(taskType) || String(task.task_status || '').trim().toUpperCase() !== 'ACTIVE' || !portalBooleanFlag(task.task_can_run_manually, false)) throw new Error('The selected task is not available for manual requests.')
+  if (sourceStatusKey === 'occupied' && !portalBooleanFlag(task.task_can_run_if_bed_occupied, true)) throw new Error('This task is not allowed for occupied beds.')
+  if (['available', 'vacant'].includes(sourceStatusKey) && !portalBooleanFlag(task.task_can_run_if_bed_vacant, true)) throw new Error('This task is not allowed for vacant beds.')
+  if (!['occupied', 'available', 'vacant'].includes(sourceStatusKey) || authorizedTaskGroups.length < 1) throw new Error('This task is not authorized for the current workspace.')
+  if (roomClass.trim() === '') throw new Error('Bed class is required.')
+  if (portalBooleanFlag(task.task_requires_bed_treatment, true) && bedTreatmentKey.trim() === '') throw new Error('Bed treatment is required.')
+  if (portalBooleanFlag(task.task_requires_admission_source, true) && bedSourceKey.trim() === '') throw new Error('Bed source is required.')
+
+  const currentTaskStageKey = String(task.current_task_stage_key || '').trim()
+  const currentStageLabel = String(task.current_stage_label || '').trim()
+  if (currentTaskStageKey === '' || currentStageLabel === '') throw new Error('The selected task has no active first stage.')
+  for (let index = 0; index < authorizedTaskGroups.length; index += 30) {
+    const authorizedTaskGroupChunk = authorizedTaskGroups.slice(index, index + 30)
+    const duplicateSnapshot = await getDocs(query(
+      collection(firebase.db, 'project_bed_task'),
+      where('tenant_key', '==', firebase.tenantKey),
+      where('project_key', '==', projectKey),
+      where('bed_key', '==', bedKey),
+      where('task_key', '==', taskKey),
+      where('task_group_keys', 'array-contains-any', authorizedTaskGroupChunk),
+    ))
+    if (duplicateSnapshot.docs.some((taskDocument) => portalBedTaskIsUnfinished(taskDocument.data()))) {
+      throw new Error('This bed already has an unfinished request for the selected task.')
+    }
+  }
+  const bedTaskDocument = doc(collection(firebase.db, 'project_bed_task'))
+  const bedTaskLogDocument = doc(collection(firebase.db, 'project_bed_task_log'))
+  const bedTaskKey = bedTaskDocument.id
+  const bedTaskLogKey = bedTaskLogDocument.id
+  const now = new Date().toISOString()
+  const user = portalData?.currentUser || {}
+  const requesterUserKey = String(user.user_key || '').trim()
+  const requesterFullname = String(user.user_name || 'Portal User').trim() || 'Portal User'
+  const currentStageColorHex = String(task.current_stage_color_hex || '#00000000').trim()
+  const taskData: Record<string, any> = {
+    tenant_key: firebase.tenantKey,
+    project_key: projectKey,
+    bed_task_key: bedTaskKey,
+    bed_key: bedKey,
+    bed_source_key: String(row.bed_source_key || ''),
+    source_pk_psbeds: String(row.source_pk_psbeds || ''),
+    bed_no: String(row.bed_no || ''),
+    branch_key: String(row.branch_key || ''),
+    branch_name: String(row.branch_name || ''),
+    building_key: String(row.building_key || ''),
+    building_name: String(row.building_name || ''),
+    floor_key: String(row.floor_key || ''),
+    floor_name: String(row.floor_name || ''),
+    nurse_station_key: String(row.nurse_station_key || ''),
+    nurse_station_name: String(row.nurse_station_name || ''),
+    room_key: String(row.room_key || ''),
+    room_class_key: String(row.room_class_key || ''),
+    room_class: roomClass.trim(),
+    source_bed_status_key: String(row.source_bed_status_key || ''),
+    source_bed_status: sourceStatus,
+    task_key: taskKey,
+    task_code: String(task.task_code || ''),
+    task_title: String(task.task_title || task.task_code || 'Task request'),
+    task_type: taskType,
+    task_color_hex: String(task.task_color_hex || '#00000000').trim(),
+    task_sort_order: Number(task.task_sort_order || 0),
+    task_group_keys: authorizedTaskGroups,
+    task_status: 'PENDING',
+    current_task_stage_key: currentTaskStageKey,
+    current_stage_label: currentStageLabel,
+    current_stage_color_hex: currentStageColorHex,
+    task_stage_key: currentTaskStageKey,
+    stage_label: currentStageLabel,
+    stage_color_hex: currentStageColorHex,
+    task_stage_response_key: '',
+    response_label: '',
+    response_description: '',
+    response_color_hex: '#00000000',
+    bed_status_at_request: sourceStatus,
+    bed_class: roomClass.trim(),
+    bed_treatment_key: bedTreatmentKey.trim(),
+    bed_treatment_name: bedTreatmentName.trim(),
+    bed_source_option_key: bedSourceKey.trim(),
+    bed_source_option_name: bedSourceName.trim(),
+    remarks: remarks.trim().slice(0, 4000),
+    requester_user_key: requesterUserKey,
+    requester_fullname: requesterFullname,
+    firebase_collection: 'project_bed_task',
+    mysql_sync_status: 'PENDING',
+    mysql_created_at: now,
+    mysql_updated_at: now,
+    mysql_synced_at: null,
+    mysql_deleted_at: null,
+    created_at: now,
+    updated_at: now,
+  }
+  const logData = {
+    ...taskData,
+    bed_task_log_key: bedTaskLogKey,
+    firebase_collection: 'project_bed_task_log',
+    event_type: 'CREATED',
+    status_from: '',
+    status_to: 'PENDING',
+    actor_user_key: requesterUserKey,
+    actor_fullname: requesterFullname,
+  }
+  const batch = writeBatch(firebase.db)
+  batch.set(bedTaskDocument, taskData)
+  batch.set(bedTaskLogDocument, logData)
+  await batch.commit()
+  return { bedTaskKey }
+}
+
+function usePortalTaskUpdates(enabled = true, soundKey = defaultPortalTaskNotificationSoundKey, volumeKey = defaultPortalTaskNotificationVolumeKey) {
+  const [updateCount, setUpdateCount] = React.useState(0)
+  const clearUpdates = React.useCallback(() => setUpdateCount(0), [])
+  const soundKeyRef = React.useRef(soundKey)
+  const volumeKeyRef = React.useRef(volumeKey)
+  soundKeyRef.current = soundKey
+  volumeKeyRef.current = volumeKey
+
+  React.useEffect(() => {
+    if (!enabled) return
+
+    let cancelled = false
+    const cleanupUnsubscribe: Array<() => void> = []
+    const prepareTaskNotifications = () => {
+      requestPortalTaskNotificationPermission()
+      unlockPortalTaskAudio(soundKeyRef.current, volumeKeyRef.current)
+    }
+    window.addEventListener('pointerdown', prepareTaskNotifications, true)
+    window.addEventListener('keydown', prepareTaskNotifications, true)
+
+    void portalBedTaskFirestore().then((firebase) => {
+      if (cancelled || !firebase) return
+
+      const projectKeys = portalUniqueStrings(firebase.projectKeys)
+      const groupKeys = portalUniqueStrings(firebase.groupKeys)
+      const groupKeyChunks = Array.from({ length: Math.ceil(groupKeys.length / 30) }, (_, index) => groupKeys.slice(index * 30, index * 30 + 30))
+      const querySpecs = projectKeys.flatMap((projectKey) => groupKeyChunks.map((groupKeyChunk) => ({ projectKey, groupKeyChunk })))
+      if (querySpecs.length === 0) return
+
+      let initialSnapshot = true
+      const initialQueryKeys = new Set(querySpecs.map((_, index) => String(index)))
+      const taskDocsByQuery = new Map<string, Map<string, { data: Record<string, any>; signature: string }>>()
+      querySpecs.forEach((_, index) => taskDocsByQuery.set(String(index), new Map()))
+      const visibleTaskDocument = (taskKey: string) => {
+        for (const taskDocuments of taskDocsByQuery.values()) {
+          const taskDocument = taskDocuments.get(taskKey)
+          if (taskDocument) return taskDocument
+        }
+        return null
+      }
+
+      querySpecs.forEach(({ projectKey, groupKeyChunk }, queryIndex) => {
+        const queryKey = String(queryIndex)
+        const unsubscribe = onSnapshot(
+          query(
+            collection(firebase.db, 'project_bed_task'),
+            where('tenant_key', '==', firebase.tenantKey),
+            where('project_key', '==', projectKey),
+            where('task_group_keys', 'array-contains-any', groupKeyChunk),
+          ),
+          (snapshot) => {
+            if (cancelled) return
+
+            const suppressChanges = initialSnapshot
+            const taskDocuments = taskDocsByQuery.get(queryKey)
+            if (!taskDocuments) return
+            const updatedTaskKeys = new Set<string>()
+            const updatedTasks = new Map<string, Record<string, any>>()
+            for (const change of snapshot.docChanges()) {
+              const taskKey = String(change.doc.id || change.doc.data()?.bed_task_key || '').trim()
+              if (taskKey === '') continue
+              const previousTask = visibleTaskDocument(taskKey)
+              if (change.type === 'removed') {
+                taskDocuments.delete(taskKey)
+              } else {
+                const data = change.doc.data() || {}
+                taskDocuments.set(taskKey, {
+                  data,
+                  signature: portalTaskRealtimeContentSignature(data),
+                })
+              }
+              const nextTask = visibleTaskDocument(taskKey)
+              if (suppressChanges || !nextTask) {
+                if (!suppressChanges && previousTask && !nextTask) {
+                  updatedTaskKeys.add(taskKey)
+                  updatedTasks.set(taskKey, { bed_task_key: taskKey, _removed: true })
+                }
+                continue
+              }
+              if (!previousTask || previousTask.signature !== nextTask.signature) {
+                updatedTaskKeys.add(taskKey)
+                updatedTasks.set(taskKey, portalRealtimeTaskRow({
+                  ...nextTask.data,
+                  bed_task_key: taskKey,
+                }))
+              }
+            }
+
+            if (initialQueryKeys.has(queryKey)) {
+              if (!snapshot.metadata.fromCache) initialQueryKeys.delete(queryKey)
+              if (initialQueryKeys.size === 0) initialSnapshot = false
+            }
+            if (initialSnapshot || updatedTaskKeys.size === 0) return
+
+            const updatedTaskCount = updatedTaskKeys.size
+            dispatchPortalBedTaskChanged(Array.from(updatedTasks.values()))
+            setUpdateCount((current) => Math.min(current + updatedTaskCount, 99))
+            playPortalTaskDing(soundKeyRef.current, volumeKeyRef.current)
+            showPortalTaskUpdateNotification(Array.from(updatedTasks.values()))
+          },
+          (error) => {
+            initialQueryKeys.delete(queryKey)
+            if (initialQueryKeys.size === 0) initialSnapshot = false
+            console.warn('Portal Firestore bed-task listener unavailable.', error)
+          },
+        )
+        if (cancelled) unsubscribe()
+        else cleanupUnsubscribe.push(unsubscribe)
+      })
+    }).catch((error) => {
+      if (!cancelled) console.warn('Portal Firestore authentication unavailable.', error)
+    })
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('pointerdown', prepareTaskNotifications, true)
+      window.removeEventListener('keydown', prepareTaskNotifications, true)
+      cleanupUnsubscribe.forEach((unsubscribe) => unsubscribe())
+    }
+  }, [enabled])
+
+  return { updateCount, clearUpdates }
+}
+
+async function loadMessengerMessagesFromFirestore({
+  projectKey,
+  groupKey,
+  directUserKey,
+  beforeChatKey,
+  pageSize = messengerPageSize,
+}: {
+  projectKey: string
+  groupKey: string
+  directUserKey: string
+  beforeChatKey: string
+  pageSize?: number
+}): Promise<{ messages: MessengerMessage[]; hasMore: boolean }> {
+  const firebase = await portalBedTaskFirestore()
+  if (!firebase) throw new Error('Messenger is unavailable until Firebase authentication is ready.')
+  const senderKey = messengerSenderKey()
+  if (senderKey === '') throw new Error('Sign in before opening Messenger.')
+
+  const cursor = beforeChatKey !== '' ? await getDoc(doc(firebase.db, 'project_messenger_chat', beforeChatKey)) : null
+  if (cursor && !cursor.exists()) throw new Error('Messenger page cursor was not found.')
+  const baseConstraints: any[] = [where('group_key', '==', groupKey)]
+  if (projectKey !== '') baseConstraints.unshift(where('project_key', '==', projectKey))
+  const queryFor = (extra: any[]) => query(
+    collection(firebase.db, 'project_messenger_chat'),
+    ...baseConstraints,
+    ...extra,
+    orderBy('updated_at', 'desc'),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(pageSize + 1),
+  )
+
+  const snapshots = directUserKey === ''
+    ? [await getDocs(queryFor([where('conversation_type', '==', 'group')]))]
+    : await Promise.all([
+        getDocs(queryFor([
+          where('conversation_type', '==', 'direct'),
+          where('sender_user_key', '==', senderKey),
+          where('direct_recipient_user_key', '==', directUserKey),
+        ])),
+        getDocs(queryFor([
+          where('conversation_type', '==', 'direct'),
+          where('sender_user_key', '==', directUserKey),
+          where('direct_recipient_user_key', '==', senderKey),
+        ])),
+      ])
+
+  const rawMessages = new Map<string, Record<string, any>>()
+  snapshots.forEach((snapshot) => snapshot.docs.forEach((messageDoc) => {
+    rawMessages.set(messageDoc.id, { ...messageDoc.data(), chat_key: messageDoc.id })
+  }))
+  const orderedRawMessages = Array.from(rawMessages.values()).sort((left, right) => {
+    const rightDate = String(portalRealtimeDateText(right.updated_at || right.created_at) || right.updated_at || right.created_at || '')
+    const leftDate = String(portalRealtimeDateText(left.updated_at || left.created_at) || left.updated_at || left.created_at || '')
+    return rightDate.localeCompare(leftDate)
+  })
+  const pageRawMessages = orderedRawMessages.slice(0, pageSize)
+  const chatKeys = pageRawMessages.map((message) => String(message.chat_key || '')).filter(Boolean)
+
+  if (chatKeys.length > 0) {
+    const [attachmentSnapshot, reactionSnapshot] = await Promise.all([
+      getDocs(query(
+        collection(firebase.db, 'project_messenger_chat_attachment'),
+        where('chat_key', 'in', chatKeys),
+        limit(200),
+      )),
+      getDocs(query(
+        collection(firebase.db, 'project_messenger_chat_reaction'),
+        where('chat_key', 'in', chatKeys),
+        limit(500),
+      )),
+    ])
+    const attachmentsByChat = new Map<string, Record<string, any>[]>()
+    attachmentSnapshot.docs.forEach((attachmentDoc) => {
+      const attachment: Record<string, any> = { ...attachmentDoc.data(), attachment_key: attachmentDoc.id }
+      const chatKey = String(attachment.chat_key || '')
+      if (chatKey === '' || attachment.attachment_status === 'REMOVED') return
+      attachmentsByChat.set(chatKey, [...(attachmentsByChat.get(chatKey) || []), attachment])
+    })
+    const reactionsByChat = new Map<string, Record<string, any>[]>()
+    reactionSnapshot.docs.forEach((reactionDoc) => {
+      const reaction: Record<string, any> = { ...reactionDoc.data(), reaction_key: reactionDoc.id }
+      const chatKey = String(reaction.chat_key || '')
+      if (chatKey === '' || reaction.reaction_status !== 'ACTIVE') return
+      reactionsByChat.set(chatKey, [...(reactionsByChat.get(chatKey) || []), reaction])
+    })
+    pageRawMessages.forEach((message) => {
+      const chatKey = String(message.chat_key || '')
+      message.attachments = (attachmentsByChat.get(chatKey) || []).sort((left, right) => Number(left.sort_order || 0) - Number(right.sort_order || 0))
+      const reactionRows = reactionsByChat.get(chatKey) || []
+      const reactionCounts = new Map<string, { count: number; mine: boolean }>()
+      reactionRows.forEach((reaction) => {
+        const value = String(reaction.reaction_value || '')
+        if (value === '') return
+        const current = reactionCounts.get(value) || { count: 0, mine: false }
+        current.count += 1
+        current.mine = current.mine || String(reaction.user_key || '') === senderKey
+        reactionCounts.set(value, current)
+      })
+      message.reactions = Array.from(reactionCounts.entries()).map(([reaction_value, value]) => ({
+        reaction_value,
+        reaction_count: value.count,
+        reacted_by_me: value.mine,
+      }))
+    })
+  }
+
+  return {
+    messages: pageRawMessages.map(normalizeMessengerMessage),
+    hasMore: orderedRawMessages.length > pageSize,
+  }
+}
+
+async function sendMessengerMessageDirectToFirestore({
+  group,
+  groupKey,
+  directUserKey,
+  text,
+  replyToChatKey,
+  attachments,
+}: {
+  group: Record<string, any> | null
+  groupKey: string
+  directUserKey: string
+  text: string
+  replyToChatKey: string
+  attachments: Array<Record<string, any>>
+}): Promise<MessengerMessage> {
+  const firebase = await portalBedTaskFirestore()
+  if (!firebase) throw new Error('Firebase direct write is unavailable.')
+  const user = portalData?.currentUser || {}
+  const chatRef = doc(collection(firebase.db, 'project_messenger_chat'))
+  const chatKey = chatRef.id
+  const now = new Date().toISOString()
+  const rawMessage: Record<string, any> = {
+    chat_key: chatKey,
+    project_key: String(group?.project_key || ''),
+    group_key: groupKey,
+    conversation_type: directUserKey !== '' ? 'direct' : 'group',
+    direct_recipient_user_key: directUserKey,
+    reply_to_chat_key: replyToChatKey,
+    sender_user_key: messengerSenderKey(),
+    sender_name: String(user.user_chat_name || user.user_name || user.user_login || 'Portal User'),
+    message_text: text,
+    message_type: attachments.length > 0 ? (text !== '' ? 'mixed' : 'image') : 'text',
+    message_status: 'ACTIVE',
+    firebase_collection: 'project_messenger_chat',
+    mysql_sync_status: 'PENDING',
+    mysql_created_at: now,
+    mysql_updated_at: now,
+    mysql_synced_at: null,
+    mysql_deleted_at: null,
+    removed_at: null,
+    removed_by_user_key: '',
+    created_at: now,
+    updated_at: now,
+  }
+  const batch = writeBatch(firebase.db)
+  batch.set(chatRef, rawMessage)
+  const committedAttachments: Array<Record<string, any>> = []
+  attachments.forEach((attachment, index) => {
+    const attachmentRef = doc(collection(firebase.db, 'project_messenger_chat_attachment'))
+    const committedAttachment: Record<string, any> = {
+      ...attachment,
+      attachment_key: attachmentRef.id,
+    }
+    committedAttachments.push(committedAttachment)
+    batch.set(attachmentRef, {
+      attachment_key: attachmentRef.id,
+      chat_key: chatKey,
+      project_key: rawMessage.project_key,
+      group_key: groupKey,
+      uploaded_image_url: String(committedAttachment.uploaded_image_url || ''),
+      image_original_name: String(committedAttachment.image_original_name || ''),
+      image_mime_type: String(committedAttachment.image_mime_type || ''),
+      image_byte_size: Number(committedAttachment.image_byte_size || 0),
+      image_sha256: String(committedAttachment.image_sha256 || ''),
+      sort_order: index,
+      attachment_status: 'ACTIVE',
+      firebase_collection: 'project_messenger_chat_attachment',
+      mysql_sync_status: 'PENDING',
+      mysql_created_at: now,
+      mysql_updated_at: now,
+      mysql_synced_at: null,
+      mysql_deleted_at: null,
+      created_at: now,
+      updated_at: now,
+    })
+  })
+  await batch.commit()
+  return normalizeMessengerMessage({ ...rawMessage, attachments: committedAttachments })
 }
 
 function MessengerGroupAvatar({
@@ -1625,9 +2594,9 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
   const selectedGroupName = String(selectedGroup?.group_name || 'Select a group')
   const selectedGroupProject = String(selectedGroup?.project_name || selectedGroup?.project_code || 'Current project')
   const [groupLastMessageAt, setGroupLastMessageAt] = React.useState<Record<string, string>>(() => Object.fromEntries(
-    projectGroups.map((group) => [String(group.group_key || group.group_name || ''), String(group.latest_message_at || '')]),
+    projectGroups.map((group) => [String(group.group_key || group.group_name || ''), '']),
   ))
-  const [relativeTimeNow, setRelativeTimeNow] = React.useState(() => Date.now())
+  const relativeTimeNow = Date.now()
   const [draft, setDraft] = React.useState('')
   const [messages, setMessages] = React.useState<MessengerMessage[]>([])
   const [groupMembers, setGroupMembers] = React.useState<MessengerGroupMember[]>([])
@@ -1645,6 +2614,9 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
   const [imageViewerAttachment, setImageViewerAttachment] = React.useState<MessengerAttachment | null>(null)
   const [imageViewerSize, setImageViewerSize] = React.useState<'XS' | 'S' | 'M' | 'L' | 'XL'>('M')
   const [deleteTarget, setDeleteTarget] = React.useState<MessengerMessage | null>(null)
+  const [editingMessageKey, setEditingMessageKey] = React.useState('')
+  const [editingDraft, setEditingDraft] = React.useState('')
+  const [editingSaving, setEditingSaving] = React.useState(false)
   const [emojiPickerOpen, setEmojiPickerOpen] = React.useState(false)
   const [reactionPickerMessageKey, setReactionPickerMessageKey] = React.useState('')
   const [reactingMessageKey, setReactingMessageKey] = React.useState('')
@@ -1684,27 +2656,27 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
     }
     if (prepend) setOlderMessagesLoading(true)
     try {
+      const firebaseMessagesPromise = loadMessengerMessagesFromFirestore({
+        projectKey: String(selectedGroup?.project_key || ''),
+        groupKey: selectedGroupKey,
+        directUserKey: selectedDirectUserKey,
+        beforeChatKey,
+        pageSize: messengerPageSize,
+      })
       const body = new FormData()
       body.append('csrf', messengerCsrfToken())
-      body.append('action', 'messenger_load_messages')
+      body.append('action', 'messenger_load_members')
       body.append('group_key', selectedGroupKey)
-      body.append('limit', String(messengerPageSize))
-      if (selectedDirectUserKey !== '') body.append('direct_user_key', selectedDirectUserKey)
-      if (beforeChatKey !== '') body.append('before_chat_key', beforeChatKey)
-      const response = await fetch(messengerEndpoint(), {
+      const [firebasePage, memberResponse] = await Promise.all([firebaseMessagesPromise, fetch(messengerEndpoint(), {
         method: 'POST',
         body,
         headers: { Accept: 'application/json' },
-      })
-      const payload = await response.json()
-      if (!response.ok || !payload?.ok) {
-        throw new Error(String(payload?.message || 'Messenger messages could not be loaded.'))
+      })])
+      const memberPayload = await memberResponse.json().catch(() => ({}))
+      if (!memberResponse.ok || !memberPayload?.ok) {
+        throw new Error(String(memberPayload?.message || 'Messenger members could not be loaded.'))
       }
-      const payloadMessages = payload?.data?.messages || payload?.messages || []
-      const payloadMembers = payload?.data?.members || payload?.members || []
-      const pagination = payload?.data?.pagination || payload?.pagination || {}
-      const serverMessage = String(payload?.data?.message || payload?.message || '').trim()
-      const normalizedMessages = Array.isArray(payloadMessages) ? payloadMessages.map(normalizeMessengerMessage) : []
+      const normalizedMessages = firebasePage.messages
       setMessages((current) => {
         if (prepend) {
           const currentKeys = new Set(current.map((message) => String(message.chat_key || message.id)))
@@ -1712,15 +2684,15 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
         }
         return silent && current.length > 0 ? mergeMessengerMessages(current, normalizedMessages) : normalizedMessages
       })
+      const payloadMembers = memberPayload?.data?.members || memberPayload?.members || []
       setGroupMembers(Array.isArray(payloadMembers) ? payloadMembers.map(normalizeMessengerGroupMember) : [])
-      setHasOlderMessages(Boolean(pagination.has_more))
+      setHasOlderMessages(firebasePage.hasMore)
       if (!prepend) {
         setGroupLastMessageAt((current) => ({
           ...current,
           [selectedGroupKey]: latestMessengerMessageAt(normalizedMessages),
         }))
       }
-      if (serverMessage !== '') setMessageStatus(serverMessage)
       if (prepend && scrollElement) {
         suppressNextMessageScrollRef.current = true
         window.requestAnimationFrame(() => {
@@ -1740,7 +2712,7 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
       }
       if (prepend) setOlderMessagesLoading(false)
     }
-  }, [selectedDirectUserKey, selectedGroupKey])
+  }, [selectedDirectUserKey, selectedGroup, selectedGroupKey])
 
   const loadOlderMessages = React.useCallback(() => {
     if (!hasOlderMessages || olderMessagesLoading || messagesLoading) return
@@ -1768,8 +2740,8 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
       setStreamServiceStatus({
         running: false,
         status: 'unavailable',
-        label: 'Firebase stream unavailable',
-        detail: error instanceof Error ? error.message : 'Stream service status could not be loaded.',
+        label: 'Firebase sync worker unavailable',
+        detail: error instanceof Error ? error.message : 'Sync worker status could not be loaded.',
       })
     }
   }, [])
@@ -1779,63 +2751,51 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
   }, [refreshMessages])
 
   React.useEffect(() => {
-    const interval = window.setInterval(() => void refreshMessages({ silent: true }), 8000)
-    return () => window.clearInterval(interval)
-  }, [refreshMessages])
-
-  React.useEffect(() => {
-    const interval = window.setInterval(() => setRelativeTimeNow(Date.now()), 60000)
-    return () => window.clearInterval(interval)
-  }, [])
+    const handleRealtimeMessages = (event: Event) => {
+      const messagesFromEvent = (event as CustomEvent<{ messages?: Record<string, any>[] }>).detail?.messages
+      if (!Array.isArray(messagesFromEvent) || messagesFromEvent.length === 0) return
+      const incoming = messagesFromEvent
+        .map(normalizeMessengerMessage)
+        .filter((message) => {
+          if (String(message.group_key || '') !== selectedGroupKey) return false
+          if (selectedDirectUserKey === '') return String(message.conversation_type || 'group') !== 'direct'
+          if (String(message.conversation_type || '') !== 'direct') return false
+          return String(message.direct_recipient_user_key || '') === selectedDirectUserKey
+            || String(message.sender_user_key || '') === selectedDirectUserKey
+        })
+      const latestByGroup = new Map<string, string>()
+      messagesFromEvent.forEach((rawMessage) => {
+        const groupKey = String(rawMessage.group_key || '')
+        const createdAt = String(portalRealtimeDateText(rawMessage.created_at || rawMessage.updated_at) || rawMessage.created_at || rawMessage.updated_at || '')
+        if (groupKey !== '' && createdAt !== '') latestByGroup.set(groupKey, createdAt)
+      })
+      if (latestByGroup.size > 0) {
+        setGroupLastMessageAt((current) => {
+          const next = { ...current }
+          latestByGroup.forEach((value, groupKey) => {
+            if (!next[groupKey] || value > next[groupKey]) next[groupKey] = value
+          })
+          return next
+        })
+      }
+      if (incoming.length === 0) return
+      setMessages((current) => mergeMessengerMessages(current, incoming))
+      setGroupLastMessageAt((current) => ({
+        ...current,
+        [selectedGroupKey]: latestMessengerMessageAt(incoming) || current[selectedGroupKey] || '',
+      }))
+    }
+    window.addEventListener(messengerMessageReceivedEvent, handleRealtimeMessages)
+    return () => window.removeEventListener(messengerMessageReceivedEvent, handleRealtimeMessages)
+  }, [selectedDirectUserKey, selectedGroupKey])
 
   React.useEffect(() => {
     void refreshStreamServiceStatus()
-    const interval = window.setInterval(() => void refreshStreamServiceStatus(), 15000)
-    return () => window.clearInterval(interval)
   }, [refreshStreamServiceStatus])
 
   React.useEffect(() => {
-    const db = messengerFirestore()
-    if (!db || !selectedGroupKey) {
-      setFirebaseStreamStatus('Server sync ready')
-      return
-    }
-
-    let unsubscribe: (() => void) | undefined
-    let cancelled = false
-    setFirebaseStreamStatus('Firebase connecting')
-    unsubscribe = onSnapshot(
-      query(collection(db, 'project_messenger_chat'), where('group_key', '==', selectedGroupKey)),
-      (snapshot) => {
-        if (cancelled) return
-      const streamMessages = normalizeFirestoreMessengerMessages(snapshot.docs).filter((message) => {
-        if (selectedDirectUserKey === '') return String(message.conversation_type || 'group') !== 'direct'
-        if (String(message.conversation_type || 'group') !== 'direct') return false
-        const senderKey = String(message.sender_user_key || '')
-        const recipientKey = String(message.direct_recipient_user_key || '')
-        return (senderKey === messengerSenderKey() && recipientKey === selectedDirectUserKey)
-          || (senderKey === selectedDirectUserKey && recipientKey === messengerSenderKey())
-      })
-        window.setTimeout(() => {
-          if (!cancelled) void refreshMessages({ silent: true })
-        }, 800)
-        if (streamMessages.length > 0) {
-          setMessages((current) => current.length > 0 ? mergeMessengerMessages(current, streamMessages) : streamMessages)
-          setFirebaseStreamStatus('Firebase read stream')
-        } else {
-          setFirebaseStreamStatus('Firebase read stream, waiting for rows')
-        }
-      },
-      (error) => {
-        if (!cancelled) setFirebaseStreamStatus(`Firebase read blocked: ${error.message}`)
-      },
-    )
-
-    return () => {
-      cancelled = true
-      unsubscribe?.()
-    }
-  }, [refreshMessages, selectedDirectUserKey, selectedGroupKey])
+    setFirebaseStreamStatus(streamServiceStatus.running === true ? 'Server queue sync' : 'Server sync ready')
+  }, [streamServiceStatus.running])
 
   React.useEffect(() => {
     if (suppressNextMessageScrollRef.current) {
@@ -1944,58 +2904,43 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
     setSending(true)
     setMessageStatus('')
     try {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        throw new Error('You are offline. Your message is still in the composer.')
+      }
+      if (replyTarget && String(replyTarget.group_key || '') !== selectedGroupKey) {
+        throw new Error('The selected reply is outside this conversation.')
+      }
+      if (replyTarget && selectedDirectUserKey !== '') {
+        const replyIsDirect = String(replyTarget.conversation_type || '') === 'direct'
+        const replyMatchesDirect = String(replyTarget.sender_user_key || '') === selectedDirectUserKey
+          || String(replyTarget.direct_recipient_user_key || '') === selectedDirectUserKey
+        if (!replyIsDirect || !replyMatchesDirect) throw new Error('The selected reply is outside this conversation.')
+      }
       const uploadedAttachments = []
       for (const attachment of pendingAttachments) {
         uploadedAttachments.push(await uploadMessengerAttachment(attachment))
       }
 
-      const body = new FormData()
-      body.append('csrf', messengerCsrfToken())
-      body.append('action', 'messenger_send_message')
-      body.append('group_key', selectedGroupKey)
-      if (selectedDirectUserKey !== '') body.append('direct_user_key', selectedDirectUserKey)
-      body.append('message_text', text)
-      body.append('reply_to_chat_key', replyTarget?.chat_key || '')
-      body.append('attachments_json', JSON.stringify(uploadedAttachments))
-      const response = await fetch(messengerEndpoint(), {
-        method: 'POST',
-        body,
-        headers: { Accept: 'application/json' },
+      const savedMessage = await sendMessengerMessageDirectToFirestore({
+        group: selectedGroup,
+        groupKey: selectedGroupKey,
+        directUserKey: selectedDirectUserKey,
+        text,
+        replyToChatKey: replyTarget?.chat_key || '',
+        attachments: uploadedAttachments,
       })
-      const payload = await response.json()
-      if (!response.ok || !payload?.ok) {
-        throw new Error(String(payload?.message || 'Message could not be sent.'))
-      }
-
-      const savedMessage = payload?.data?.message || payload?.message
-      const serverSync = payload?.data?.firebase_sync
-      if (serverSync?.ok === true) {
-        setFirebaseStreamStatus('Firebase server synced')
-      } else if (serverSync?.skipped) {
-        setFirebaseStreamStatus('Firebase server sync disabled')
-      } else if (serverSync?.message) {
-        setFirebaseStreamStatus(`Firebase server sync failed: ${serverSync.message}`)
-      }
-      if (portalData?.firebaseConfig?.clientWriteEnabled === true && savedMessage && typeof savedMessage === 'object') {
-        void mirrorMessengerMessageToFirestore(savedMessage)
-          .then((synced) => {
-            if (synced) setFirebaseStreamStatus('Firebase client mirrored')
-          })
-          .catch((error) => setFirebaseStreamStatus(`Firebase mirror failed: ${error instanceof Error ? error.message : 'write rejected'}`))
-      }
+      setMessages((current) => mergeMessengerMessages(current, [savedMessage]))
+      setGroupLastMessageAt((current) => ({
+        ...current,
+        [selectedGroupKey]: savedMessage.created_at || current[selectedGroupKey] || '',
+      }))
+      setFirebaseStreamStatus('Message sent')
       pendingAttachments.forEach((attachment) => {
         if (attachment.previewUrl.startsWith('blob:')) {
           URL.revokeObjectURL(attachment.previewUrl)
           pendingAttachmentUrlsRef.current.delete(attachment.previewUrl)
         }
       })
-      const payloadMessages = payload?.data?.messages || payload?.messages || []
-      const normalizedMessages = Array.isArray(payloadMessages) ? payloadMessages.map(normalizeMessengerMessage) : []
-      setMessages(normalizedMessages)
-      setGroupLastMessageAt((current) => ({
-        ...current,
-        [selectedGroupKey]: latestMessengerMessageAt(normalizedMessages),
-      }))
       setDraft('')
       setReplyTarget(null)
       setPendingAttachments([])
@@ -2013,42 +2958,48 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
     setSending(true)
     setMessageStatus('')
     try {
-      const body = new FormData()
-      body.append('csrf', messengerCsrfToken())
-      body.append('action', 'messenger_remove_message')
-      body.append('chat_key', message.chat_key)
-      if (selectedDirectUserKey !== '') body.append('direct_user_key', selectedDirectUserKey)
-      const response = await fetch(messengerEndpoint(), {
-        method: 'POST',
-        body,
-        headers: { Accept: 'application/json' },
+      if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('You are offline. The message was not removed.')
+      const firebase = await portalBedTaskFirestore()
+      if (!firebase) throw new Error('Messenger is unavailable until Firebase authentication is ready.')
+      const messageRef = doc(firebase.db, 'project_messenger_chat', message.chat_key)
+      const currentSnapshot = await getDoc(messageRef)
+      if (!currentSnapshot.exists()) throw new Error('The message could not be found.')
+      const current = currentSnapshot.data()
+      if (String(current.sender_user_key || '') !== messengerSenderKey()) throw new Error('Only the message sender can remove this message.')
+      if (String(current.message_status || 'ACTIVE') === 'REMOVED') {
+        setDeleteTarget(null)
+        return
+      }
+      const now = new Date().toISOString()
+      const batch = writeBatch(firebase.db)
+      batch.update(messageRef, {
+        message_text: '',
+        message_status: 'REMOVED',
+        removed_at: now,
+        removed_by_user_key: messengerSenderKey(),
+        mysql_updated_at: now,
+        mysql_deleted_at: now,
+        mysql_sync_status: 'PENDING',
+        updated_at: now,
       })
-      const payload = await response.json()
-      if (!response.ok || !payload?.ok) {
-        throw new Error(String(payload?.message || 'Message could not be removed.'))
-      }
-      const savedMessage = payload?.data?.message || payload?.message
-      const serverSync = payload?.data?.firebase_sync
-      if (serverSync?.ok === true) {
-        setFirebaseStreamStatus('Firebase server synced')
-      } else if (serverSync?.skipped) {
-        setFirebaseStreamStatus('Firebase server sync disabled')
-      } else if (serverSync?.message) {
-        setFirebaseStreamStatus(`Firebase server sync failed: ${serverSync.message}`)
-      }
-      if (portalData?.firebaseConfig?.clientWriteEnabled === true && savedMessage && typeof savedMessage === 'object') {
-        void mirrorMessengerMessageToFirestore(savedMessage)
-          .then((synced) => {
-            if (synced) setFirebaseStreamStatus('Firebase client mirrored')
-          })
-          .catch((error) => setFirebaseStreamStatus(`Firebase mirror failed: ${error instanceof Error ? error.message : 'write rejected'}`))
-      }
-      const payloadMessages = payload?.data?.messages || payload?.messages || []
-      const normalizedMessages = Array.isArray(payloadMessages) ? payloadMessages.map(normalizeMessengerMessage) : []
-      setMessages(normalizedMessages)
+      ;(message.attachments || []).forEach((attachment) => {
+        if (!attachment.id) return
+        batch.update(doc(firebase.db, 'project_messenger_chat_attachment', attachment.id), {
+          attachment_status: 'REMOVED',
+          mysql_updated_at: now,
+          mysql_deleted_at: now,
+          mysql_sync_status: 'PENDING',
+          updated_at: now,
+        })
+      })
+      await batch.commit()
+      setFirebaseStreamStatus('Message removed')
+      setMessages((currentMessages) => currentMessages.map((item) => String(item.chat_key || '') === message.chat_key
+        ? { ...item, text: 'Message has been removed', message_status: 'REMOVED', attachments: [], reactions: [], updated_at: now }
+        : item))
       setGroupLastMessageAt((current) => ({
         ...current,
-        [String(message.group_key || selectedGroupKey)]: latestMessengerMessageAt(normalizedMessages),
+        [String(message.group_key || selectedGroupKey)]: current[String(message.group_key || selectedGroupKey)] || '',
       }))
       if (replyTarget?.chat_key === message.chat_key) setReplyTarget(null)
       setDeleteTarget(null)
@@ -2059,30 +3010,122 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function saveEditedMessage(message: MessengerMessage) {
+    const chatKey = String(message.chat_key || '')
+    const text = editingDraft.trim()
+    if (chatKey === '' || text === '' || editingSaving) return
+    setEditingSaving(true)
+    setMessageStatus('')
+    try {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('You are offline. Your edit was not saved.')
+      const firebase = await portalBedTaskFirestore()
+      if (!firebase) throw new Error('Messenger is unavailable until Firebase authentication is ready.')
+      const messageRef = doc(firebase.db, 'project_messenger_chat', chatKey)
+      const currentSnapshot = await getDoc(messageRef)
+      if (!currentSnapshot.exists()) throw new Error('The message could not be found.')
+      const current = currentSnapshot.data()
+      if (String(current.sender_user_key || '') !== messengerSenderKey()) throw new Error('Only the message sender can edit this message.')
+      if (String(current.message_status || 'ACTIVE') === 'REMOVED') throw new Error('Removed messages cannot be edited.')
+      const now = new Date().toISOString()
+      await updateDoc(messageRef, {
+        message_text: text,
+        message_type: (message.attachments || []).length > 0 ? 'mixed' : 'text',
+        mysql_updated_at: now,
+        mysql_sync_status: 'PENDING',
+        updated_at: now,
+      })
+      setMessages((currentMessages) => currentMessages.map((item) => String(item.chat_key || '') === chatKey
+        ? { ...item, text, message_type: (item.attachments || []).length > 0 ? 'mixed' : 'text', updated_at: now }
+        : item))
+      setEditingMessageKey('')
+      setEditingDraft('')
+      setFirebaseStreamStatus('Message updated')
+    } catch (error) {
+      setMessageStatus(error instanceof Error ? error.message : 'Message could not be updated.')
+    } finally {
+      setEditingSaving(false)
+    }
+  }
+
   async function toggleReaction(message: MessengerMessage, reactionValue: string) {
     if (!message.chat_key || reactingMessageKey) return
     setReactingMessageKey(message.chat_key)
     setMessageStatus('')
     try {
-      const body = new FormData()
-      body.append('csrf', messengerCsrfToken())
-      body.append('action', 'messenger_toggle_reaction')
-      body.append('chat_key', message.chat_key)
-      body.append('reaction_value', reactionValue)
-      const response = await fetch(messengerEndpoint(), {
-        method: 'POST',
-        body,
-        headers: { Accept: 'application/json' },
+      if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('You are offline. The reaction was not saved.')
+      const firebase = await portalBedTaskFirestore()
+      if (!firebase) throw new Error('Messenger is unavailable until Firebase authentication is ready.')
+      const now = new Date().toISOString()
+      const reactionCollection = collection(firebase.db, 'project_messenger_chat_reaction')
+      const existingSnapshot = await getDocs(query(
+        reactionCollection,
+        where('chat_key', '==', message.chat_key),
+        where('user_key', '==', messengerSenderKey()),
+      ))
+      const existingReactions = existingSnapshot.docs
+        .map((reactionDoc) => ({ ref: reactionDoc.ref, id: reactionDoc.id, data: reactionDoc.data() }))
+        .sort((left, right) => left.id.localeCompare(right.id))
+      const canonicalReaction = existingReactions[0] || null
+      const reactionRef = canonicalReaction?.ref || doc(reactionCollection)
+      const reactionKey = reactionRef.id
+      const sameActiveReaction = existingReactions.some(({ data }) => data.reaction_status === 'ACTIVE' && data.reaction_value === reactionValue)
+      const batch = writeBatch(firebase.db)
+      if (canonicalReaction) {
+        batch.update(reactionRef, {
+          reaction_value: reactionValue,
+          reaction_status: sameActiveReaction ? 'REMOVED' : 'ACTIVE',
+          mysql_updated_at: now,
+          mysql_deleted_at: sameActiveReaction ? now : null,
+          mysql_sync_status: 'PENDING',
+          updated_at: now,
+        })
+      } else {
+        batch.set(reactionRef, {
+          reaction_key: reactionKey,
+          chat_key: message.chat_key,
+          project_key: String(message.project_key || selectedGroup?.project_key || ''),
+          group_key: String(message.group_key || selectedGroupKey),
+          user_key: messengerSenderKey(),
+          reaction_value: reactionValue,
+          reaction_status: 'ACTIVE',
+          firebase_collection: 'project_messenger_chat_reaction',
+          mysql_created_at: now,
+          mysql_updated_at: now,
+          mysql_synced_at: null,
+          mysql_deleted_at: null,
+          mysql_sync_status: 'PENDING',
+          created_at: now,
+          updated_at: now,
+        })
+      }
+      // Older MySQL-first records can contain more than one reaction for a user.
+      // Keep the lexicographically first document and soft-remove the rest in this write.
+      existingReactions.slice(1).forEach(({ ref }) => {
+        batch.update(ref, {
+          reaction_status: 'REMOVED',
+          mysql_updated_at: now,
+          mysql_deleted_at: now,
+          mysql_sync_status: 'PENDING',
+          updated_at: now,
+        })
       })
-      const payload = await response.json()
-      if (!response.ok || !payload?.ok) {
-        throw new Error(String(payload?.message || 'Reaction could not be saved.'))
-      }
-
-      const savedMessage = normalizeMessengerMessage(payload?.data?.message || payload?.message || {})
-      if (savedMessage.chat_key) {
-        setMessages((current) => current.map((item) => String(item.chat_key || '') === savedMessage.chat_key ? savedMessage : item))
-      }
+      await batch.commit()
+      setMessages((current) => current.map((item) => {
+        if (String(item.chat_key || '') !== message.chat_key) return item
+        const reactions = new Map((item.reactions || []).map((reaction) => [reaction.reaction_value, { ...reaction }]))
+        const previousMine = Array.from(reactions.values()).find((reaction) => reaction.reacted_by_me)
+        if (previousMine && (sameActiveReaction || previousMine.reaction_value !== reactionValue)) {
+          previousMine.reaction_count = Math.max(0, previousMine.reaction_count - 1)
+          previousMine.reacted_by_me = false
+        }
+        if (!sameActiveReaction) {
+          const next = reactions.get(reactionValue) || { reaction_value: reactionValue, reaction_count: 0, reacted_by_me: false }
+          next.reaction_count += 1
+          next.reacted_by_me = true
+          reactions.set(reactionValue, next)
+        }
+        return { ...item, reactions: Array.from(reactions.values()).filter((reaction) => reaction.reaction_count > 0) }
+      }))
       setReactionPickerMessageKey('')
     } catch (error) {
       setMessageStatus(error instanceof Error ? error.message : 'Reaction could not be saved.')
@@ -2174,7 +3217,7 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
               const groupName = String(group.group_name || 'Unnamed group')
               const projectName = String(group.project_name || group.project_code || 'Current project')
               const active = selectedGroup ? groupKey === String(selectedGroup.group_key || selectedGroup.group_name || '') : false
-              const lastMessageLabel = messengerRelativeTime(groupLastMessageAt[groupKey] || String(group.latest_message_at || ''), relativeTimeNow)
+              const lastMessageLabel = messengerRelativeTime(groupLastMessageAt[groupKey] || '', relativeTimeNow)
               return (
               <button key={groupKey || groupName} type="button" className={cn('grid w-full grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md p-2 text-left hover:bg-muted/70', active && 'bg-muted')} onClick={() => {
                 if (active && selectedDirectUserKey === '') return
@@ -2260,10 +3303,12 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
                 </div>
               ) : messages.map((message) => {
                 const removed = message.message_status === 'REMOVED'
+                const messageKey = String(message.chat_key || message.id)
+                const editing = editingMessageKey === messageKey
                 const messageAttachments = removed ? [] : (message.attachments || []).filter((attachment) => attachment.uploaded_image_url)
                 const photoCount = messageAttachments.length
                 const messageReactions = (message.reactions || []).filter((reaction) => reaction.reaction_count > 0)
-                const reactionPickerOpen = reactionPickerMessageKey !== '' && reactionPickerMessageKey === String(message.chat_key || message.id)
+                const reactionPickerOpen = reactionPickerMessageKey !== '' && reactionPickerMessageKey === messageKey
                 return (
                   <div key={message.id} className={cn('group flex items-end gap-2', message.side === 'me' ? 'justify-end' : 'justify-start')}>
                     {message.side !== 'me' ? <MessengerGroupAvatar group={selectedGroup} groupName={selectedGroupName} className="size-7" iconClassName="size-3.5" /> : null}
@@ -2284,6 +3329,21 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
                             onClick={() => setReactionPickerMessageKey((current) => current === String(message.chat_key || message.id) ? '' : String(message.chat_key || message.id))}
                           >
                             <Smile />
+                          </Button>
+                        ) : null}
+                        {!removed && message.side === 'me' ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Edit message"
+                            onClick={() => {
+                              setEditingMessageKey(messageKey)
+                              setEditingDraft(message.text === 'Message has been removed' ? '' : message.text)
+                              setReactionPickerMessageKey('')
+                            }}
+                          >
+                            <Pencil />
                           </Button>
                         ) : null}
                         {!removed && message.side === 'me' ? (
@@ -2325,7 +3385,33 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
                               <span className="line-clamp-2">{message.reply.message_status === 'REMOVED' ? 'Original message removed' : message.reply.message_text}</span>
                             </button>
                           ) : null}
-                          {message.text ? (
+                          {editing ? (
+                            <form className="grid gap-2" onSubmit={(event) => {
+                              event.preventDefault()
+                              void saveEditedMessage(message)
+                            }}>
+                              <Textarea
+                                aria-label="Edit message"
+                                value={editingDraft}
+                                onChange={(event) => setEditingDraft(event.target.value)}
+                                maxLength={8000}
+                                rows={2}
+                                autoFocus
+                                disabled={editingSaving}
+                                className="min-h-16 resize-none bg-background text-foreground"
+                              />
+                              <div className="flex justify-end gap-1">
+                                <Button type="button" variant="ghost" size="sm" disabled={editingSaving} onClick={() => {
+                                  setEditingMessageKey('')
+                                  setEditingDraft('')
+                                }}>Cancel</Button>
+                                <Button type="submit" size="sm" disabled={editingSaving || editingDraft.trim() === ''}>
+                                  {editingSaving ? <LoaderCircle className="animate-spin" /> : null}
+                                  Save
+                                </Button>
+                              </div>
+                            </form>
+                          ) : message.text ? (
                             <p className={cn('whitespace-pre-wrap', removed && 'italic')}>{message.text}</p>
                           ) : null}
                         </div>
@@ -2381,7 +3467,7 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          <form onSubmit={(event) => void sendMessage(event)} data-skip-submit-confirmation="true" className="grid gap-2 border-t bg-card p-3">
+          <form onSubmit={(event) => void sendMessage(event)} data-skip-submit-confirmation="true" data-skip-shell-loading="true" className="grid gap-2 border-t bg-card p-3">
             <input
               ref={fileInputRef}
               type="file"
@@ -2542,6 +3628,8 @@ function MessengerWorkspace({ onClose }: { onClose: () => void }) {
   )
 }
 
+const ShellNetworkLoadingContext = React.createContext(false)
+
 function Shell({
   children,
   activeView,
@@ -2562,6 +3650,7 @@ function Shell({
   onThemeToggle: () => void
 }) {
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  const { loading: adminNetworkLoading } = useShellNetworkLoading({ lockSubmissions: true })
   const [messengerOpen, setMessengerOpen] = usePersistentMessengerOpen()
   const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen)
   const defaultSidebarOpen = React.useMemo(
@@ -2612,6 +3701,7 @@ function Shell({
               </div>
             </div>
             <nav className="ml-auto flex min-w-0 items-center justify-end gap-2" aria-label="Display controls">
+              <HeaderLoadingIndicator active={adminNetworkLoading && activeView !== 'bed-lookup'} />
               <MessengerHeaderButton onOpen={openMessenger} unreadCount={unreadCount} />
               <HeaderControlSeparator />
               <Tooltip>
@@ -2625,25 +3715,172 @@ function Shell({
                 <TooltipContent>{nextThemeLabel}</TooltipContent>
               </Tooltip>
             </nav>
+            <SampleShellProgressBar active={adminNetworkLoading && activeView !== 'bed-lookup'} className="absolute inset-x-0 bottom-0 z-30" />
           </header>
 
           <main className={cn(
             'flex w-full flex-1 flex-col',
             'gap-4 p-4',
-            (activeView === 'bed-lookup' || activeView === 'health' || messengerOpen) && 'min-h-0 overflow-hidden'
+            (activeView === 'bed-lookup' || activeView === 'health' || activeView === 'traverse' || messengerOpen) && 'min-h-0 overflow-hidden'
           )}>
-            {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><FlashMessage />{children}</>}
+            {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><FlashMessage /><ShellNetworkLoadingContext.Provider value={adminNetworkLoading}>{children}</ShellNetworkLoadingContext.Provider></>}
           </main>
 
           <AdminDebugBar activeView={activeView} buildTarget={buildTarget} title={title} />
 
-          <footer className="sticky bottom-0 z-20 flex min-h-12 items-center justify-between gap-3 border-t bg-background px-4 text-xs text-muted-foreground">
-            <span>{data.softwareName} Phase 1 Foundation</span>
-            <span>Build Target {buildTarget}</span>
+          <footer className="sticky bottom-0 z-20 grid min-h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-t bg-background px-4 text-xs text-muted-foreground">
+            <span className="min-w-0 truncate">{data.softwareName} Phase 1 Foundation</span>
+            <SampleFooterLoadingIndicator active={adminNetworkLoading && activeView !== 'bed-lookup'} />
+            <span className="min-w-0 justify-self-end truncate text-right">Mode: Preview · Build Target {buildTarget}</span>
           </footer>
         </SidebarInset>
       </SidebarProvider>
     </TooltipProvider>
+  )
+}
+
+function useShellNetworkLoading({ lockSubmissions = false }: { lockSubmissions?: boolean } = {}): { loading: boolean; submitLocked: boolean } {
+  const [loading, setLoading] = React.useState(false)
+  const [submitLocked, setSubmitLocked] = React.useState(false)
+  const submitLockedRef = React.useRef(false)
+  const activeRequestCountRef = React.useRef(0)
+  const mountedRef = React.useRef(false)
+
+  React.useEffect(() => {
+    mountedRef.current = true
+    const syncLoading = () => {
+      if (mountedRef.current) setLoading(activeRequestCountRef.current > 0 || submitLockedRef.current)
+    }
+    const beginRequest = () => {
+      activeRequestCountRef.current += 1
+      syncLoading()
+    }
+    const finishRequest = () => {
+      activeRequestCountRef.current = Math.max(0, activeRequestCountRef.current - 1)
+      syncLoading()
+    }
+    const handleSubmit = (event: Event) => {
+      const form = event.target
+      if (!lockSubmissions || !(form instanceof HTMLFormElement) || form.dataset.skipShellLoading === 'true') return
+      if (form.dataset.skipSubmitConfirmation === 'true' && form.dataset.taskBuilderConfirmedSubmit !== 'true') return
+      if (submitLockedRef.current) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+      submitLockedRef.current = true
+      setSubmitLocked(true)
+      syncLoading()
+    }
+    const clearLoading = () => {
+      submitLockedRef.current = false
+      setSubmitLocked(false)
+      syncLoading()
+    }
+
+    document.addEventListener('submit', handleSubmit, true)
+    window.addEventListener('builderx:admin-form-submit-complete', clearLoading)
+    window.addEventListener('pageshow', clearLoading)
+
+    const originalFetch = window.fetch
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      beginRequest()
+      let request: Promise<Response>
+      try {
+        request = originalFetch.call(window, input, init)
+      } catch (error) {
+        finishRequest()
+        throw error
+      }
+      return request.finally(finishRequest)
+    }) as typeof window.fetch
+
+    const xhrPrototype = window.XMLHttpRequest.prototype
+    const originalXhrSend = xhrPrototype.send
+    const trackedXhrs = new WeakSet<XMLHttpRequest>()
+    xhrPrototype.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+      beginRequest()
+      trackedXhrs.add(this)
+      const finishXhrRequest = () => {
+        if (!trackedXhrs.has(this)) return
+        trackedXhrs.delete(this)
+        finishRequest()
+      }
+      this.addEventListener('loadend', finishXhrRequest, { once: true })
+      try {
+        return originalXhrSend.call(this, body)
+      } catch (error) {
+        finishXhrRequest()
+        throw error
+      }
+    }
+
+    return () => {
+      mountedRef.current = false
+      document.removeEventListener('submit', handleSubmit, true)
+      window.removeEventListener('builderx:admin-form-submit-complete', clearLoading)
+      window.removeEventListener('pageshow', clearLoading)
+      window.fetch = originalFetch
+      xhrPrototype.send = originalXhrSend
+    }
+  }, [lockSubmissions])
+
+  React.useEffect(() => {
+    const submitControls = document.querySelectorAll<HTMLButtonElement | HTMLInputElement>(
+      'form button, form input[type="submit"], form input[type="image"]',
+    )
+
+    if (submitLocked) {
+      submitControls.forEach((control) => {
+        if (control.disabled) return
+        control.disabled = true
+        control.dataset.builderxSubmitLoadingDisabled = 'true'
+      })
+      return
+    }
+
+    document.querySelectorAll<HTMLButtonElement | HTMLInputElement>('[data-builderx-submit-loading-disabled="true"]').forEach((control) => {
+      control.disabled = false
+      delete control.dataset.builderxSubmitLoadingDisabled
+    })
+  }, [submitLocked])
+
+  return { loading, submitLocked }
+}
+
+function SampleShellProgressBar({ active = true, className }: { active?: boolean; className?: string }) {
+  return (
+    <div
+      className={cn('relative h-0.5 w-full shrink-0 overflow-hidden bg-muted/60 transition-opacity', active ? 'opacity-100' : 'opacity-0', className)}
+      role={active ? 'progressbar' : undefined}
+      aria-label={active ? 'Loading workspace' : undefined}
+      aria-hidden={!active}
+    >
+      {active ? <div className="absolute inset-y-0 left-0 w-1/3 bg-primary motion-safe:animate-[builderx-progress-slide_1.35s_ease-in-out_infinite]" /> : null}
+    </div>
+  )
+}
+
+function HeaderLoadingIndicator({ active }: { active: boolean }) {
+  if (!active) return null
+  return <span role="status" aria-live="polite" aria-label="Working" className="inline-flex items-center gap-1.5 text-xs text-primary"><LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />Working…</span>
+}
+
+function TaskBuilderModalHeaderLoading({ active }: { active: boolean }) {
+  if (!active) return null
+  return <><span role="status" aria-live="polite" aria-label="Working" className="absolute bottom-3 right-4 inline-flex items-center gap-1.5 text-xs text-primary"><LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />Working…</span><SampleShellProgressBar active className="absolute inset-x-0 bottom-0" /></>
+}
+
+function SampleFooterLoadingIndicator({ active = true }: { active?: boolean }) {
+  if (!active) return null
+
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] uppercase tracking-[0.08em]" role="status" aria-label="Loading preview">
+      <span>Loading:</span>
+      <span className="relative h-1 w-12 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+        <span className="absolute inset-y-0 left-0 w-1/2 rounded-full bg-primary motion-safe:animate-[builderx-progress-slide_1.35s_ease-in-out_infinite]" />
+      </span>
+    </span>
   )
 }
 
@@ -2850,7 +4087,7 @@ function NavMain({
             return (
               <SidebarMenuItem key={item.key}>
                 <SidebarMenuButton tooltip={item.label} isActive={isActive} onClick={() => onViewChange(item.key)}>
-                  <Icon />
+                  <Icon className={cn(item.key === 'floor-management' && 'text-sky-500 dark:text-sky-300')} />
                   <span>{item.label}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -2867,7 +4104,7 @@ function NavMain({
               <CollapsibleContent>
                 <SidebarMenuSub>
                   {item.items.map((subItem) => {
-                    const SubIcon = subItem.icon
+                    const SubIcon = 'icon' in subItem ? subItem.icon : undefined
 
                     return (
                       <SidebarMenuSubItem key={subItem.key}>
@@ -2921,11 +4158,28 @@ function NavMain({
 
 function NavUser() {
   const { isMobile } = useSidebar()
+  const logoutFormRef = React.useRef<HTMLFormElement>(null)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = React.useState(false)
+  const [logoutBusy, setLogoutBusy] = React.useState(false)
   const initials = (data.user?.name || 'System Superadmin').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
+
+  async function confirmLogout() {
+    if (logoutBusy) return
+    setLogoutBusy(true)
+    try {
+      await Promise.allSettled(getApps().map((app) => signOut(getAuth(app))))
+    } finally {
+      logoutFormRef.current?.requestSubmit()
+    }
+  }
 
   return (
     <SidebarMenu>
       <SidebarMenuItem>
+        <form ref={logoutFormRef} method="post" action="./" data-skip-submit-confirmation="true" className="hidden" aria-hidden="true">
+          <input type="hidden" name="csrf" value={data.csrf} />
+          <input type="hidden" name="action" value="logout" />
+        </form>
         <DropdownMenu>
           <DropdownMenuTrigger render={<SidebarMenuButton size="lg" className="aria-expanded:bg-muted" />}>
             <Avatar>
@@ -2954,22 +4208,50 @@ function NavUser() {
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             {data.isSignedIn && (
-              <form method="post">
-                <input type="hidden" name="csrf" value={data.csrf} />
-                <input type="hidden" name="action" value="logout" />
-                <DropdownMenuItem render={<button type="submit" className="w-full" />}>
-                  Logout
-                </DropdownMenuItem>
-              </form>
+              <DropdownMenuItem render={<button type="button" className="w-full text-left" onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setLogoutConfirmOpen(true)
+                }} />}>
+                Logout
+              </DropdownMenuItem>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
+        <AlertDialog open={logoutConfirmOpen} onOpenChange={(open) => {
+          if (!open && logoutBusy) return
+          setLogoutConfirmOpen(open)
+        }}>
+          <AlertDialogContent aria-busy={logoutBusy}>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Log out of Administrator?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {logoutBusy ? 'Signing out securely… Please wait.' : 'Your current Administrator session will be ended on this device.'}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={logoutBusy}>Cancel</AlertDialogCancel>
+              <AlertDialogAction disabled={logoutBusy} onClick={(event) => {
+                event.preventDefault()
+                void confirmLogout()
+              }}>
+                {logoutBusy ? <><LoaderCircle data-icon="inline-start" className="animate-spin" />Logging out…</> : 'Log out'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SidebarMenuItem>
     </SidebarMenu>
   )
 }
 
 function AuthCard() {
+  const [login, setLogin] = React.useState('')
+  const [password, setPassword] = React.useState('')
+  const [showPassword, setShowPassword] = React.useState(false)
+  const [loginState, setLoginState] = React.useState<'idle' | 'loading' | 'error'>('idle')
+  const [loginError, setLoginError] = React.useState('')
+
   if (!data.hasUsers) {
     const initialAdmin = (data.initialState?.initialAdmin || {}) as Record<string, string>
 
@@ -3010,6 +4292,95 @@ function AuthCard() {
     )
   }
 
+  function administratorFirebaseAuth() {
+    const config = data.firebaseConfig && typeof data.firebaseConfig === 'object' ? data.firebaseConfig : null
+    if (!config || String(config.apiKey || '').trim() === '' || String(config.projectId || '').trim() === '') {
+      throw new Error('Administrator Firebase sign-in is not configured.')
+    }
+    const existingApp = getApps().find((app) => app.name === 'administrator-auth')
+    const app = existingApp || initializeApp(config as FirebaseOptions, 'administrator-auth')
+    return getAuth(app)
+  }
+
+  async function submitAdministratorLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    if (!form.reportValidity() || loginState === 'loading') return
+
+    setLoginState('loading')
+    setLoginError('')
+    let auth: ReturnType<typeof getAuth> | null = null
+    try {
+      auth = administratorFirebaseAuth()
+      const identityResponse = await fetch(form.getAttribute('action') || window.location.href, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({ csrf: data.csrf, action: 'resolve_admin_login', login: login.trim() }),
+      })
+      const identityPayload = await identityResponse.json().catch(() => ({}))
+      if (!identityResponse.ok || identityPayload.ok !== true) {
+        const identityError = new Error(String(identityPayload.message || 'Administrator identity could not be resolved.')) as Error & { code?: string }
+        identityError.code = `server/${String(identityPayload.code || `http_${identityResponse.status}`)}`
+        throw identityError
+      }
+      const email = String(identityPayload.data?.firebase_identifier || '').trim().toLowerCase()
+      if (!email.includes('@')) throw new Error('firebase_auth_identity_missing')
+      const credential = await signInWithEmailAndPassword(auth, email, password)
+      const firebaseIdToken = await credential.user.getIdToken(true)
+      const handoff = await fetch(form.getAttribute('action') || window.location.href, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({
+          csrf: data.csrf,
+          action: 'firebase_login',
+          firebase_id_token: firebaseIdToken,
+        }),
+      })
+      let payload: Record<string, any> = {}
+      let handoffJson = true
+      try {
+        payload = await handoff.json()
+      } catch {
+        handoffJson = false
+      }
+      if (!handoffJson) {
+        const responseError = new Error('Administrator sign-in returned a non-JSON response.') as Error & { code?: string }
+        responseError.code = `server/non_json_response_${handoff.status}`
+        throw responseError
+      }
+      if (!handoff.ok || payload.ok !== true) {
+        const handoffError = new Error(String(payload.message || 'Administrator sign-in could not be completed.')) as Error & { code?: string }
+        const handoffCode = String(payload.code || '').trim()
+        handoffError.code = `server/${handoffCode || `http_${handoff.status}`}`
+        throw handoffError
+      }
+      window.location.assign('./')
+    } catch (error) {
+      if (auth) await signOut(auth).catch(() => undefined)
+      setPassword('')
+      const code = String((error as { code?: string })?.code || '').trim()
+        || (error instanceof Error ? (error.message.match(/\bauth\/[a-z-]+\b/)?.[0] || '') : '')
+      const message = error instanceof Error ? error.message : ''
+      if (code.startsWith('auth/')) {
+        void fetch(form.getAttribute('action') || window.location.href, { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: new URLSearchParams({ csrf: data.csrf, action: 'record_admin_login_failure', login: login.trim(), reason: code }) }).catch(() => undefined)
+      }
+      const safeDetail = message
+        .replace(/\b(accessToken|idToken|token|password|secret)=\S+/gi, '$1=[REDACTED]')
+        .replace(/https?:\/\/\S+/gi, '[REDACTED_URL]')
+        .slice(0, 160)
+      setLoginError(code.startsWith('auth/')
+        ? `Firebase error: ${code}`
+        : code.startsWith('server/')
+          ? `Server error: ${code.slice('server/'.length)}`
+            : message === 'Administrator Firebase sign-in is not configured.'
+              ? message
+            : `Client error: ${safeDetail || 'firebase_unknown_error'}`)
+      setLoginState('error')
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -3017,18 +4388,35 @@ function AuthCard() {
         <CardDescription>{loginSettingValue('form_description', 'Administrator role is required to access this portal.')}</CardDescription>
       </CardHeader>
       <CardContent>
-        <form method="post" className="grid gap-3">
+        <form method="post" className="grid gap-3" data-skip-submit-confirmation="true" onSubmit={(event) => void submitAdministratorLogin(event)}>
           <input type="hidden" name="csrf" value={data.csrf} />
-          <input type="hidden" name="action" value="login" />
+          <input type="hidden" name="action" value="firebase_login" />
           <div className="grid gap-2">
             <Label htmlFor="login">{loginSettingValue('username_label', 'Username or Email')}</Label>
-            <Input id="login" name="login" autoComplete="username" required />
+            <Input id="login" name="login" value={login} onChange={(event) => setLogin(event.target.value)} autoComplete="username" required disabled={loginState === 'loading'} aria-invalid={loginError !== ''} aria-describedby={loginError !== '' ? 'administrator-login-error' : undefined} />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="password">{loginSettingValue('password_label', 'Password')}</Label>
-            <Input id="password" name="password" type="password" autoComplete="current-password" required />
+            <div className="relative">
+              <Input id="password" name="password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required disabled={loginState === 'loading'} aria-invalid={loginError !== ''} aria-describedby={loginError !== '' ? 'administrator-login-error' : undefined} className="pr-10" />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2"
+                onClick={() => setShowPassword((visible) => !visible)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                title={showPassword ? 'Hide password' : 'Show password'}
+                disabled={loginState === 'loading'}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
-          <Button type="submit" className="mt-5 w-full">{loginSettingValue('submit_label', 'Login')}</Button>
+          {loginError ? <p id="administrator-login-error" className="text-sm text-destructive" role="alert" aria-live="assertive">{loginError}</p> : null}
+          <Button type="submit" className="mt-5 w-full" disabled={loginState === 'loading'} aria-busy={loginState === 'loading'}>
+            {loginState === 'loading' ? <><LoaderCircle data-icon="inline-start" className="animate-spin" />Signing in…</> : loginSettingValue('submit_label', 'Login')}
+          </Button>
         </form>
       </CardContent>
     </Card>
@@ -3206,11 +4594,11 @@ function ConfirmationModal({ confirmation, onClose }: { confirmation: Confirmati
           <Button
             type="button"
 	            variant={confirmation.destructive ? 'destructive' : 'default'}
-	            onClick={() => {
-	              const onConfirm = confirmation.onConfirm
-	              onConfirm()
-	              window.setTimeout(onClose, 0)
-	            }}
+            onClick={() => {
+              const onConfirm = confirmation.onConfirm
+              onConfirm()
+              window.setTimeout(onClose, 0)
+            }}
           >
             {confirmation.confirmLabel}
           </Button>
@@ -3787,6 +5175,17 @@ function csvToArray(value: string | undefined): string[] {
   return (value || '').split(',').map((item) => item.trim()).filter(Boolean)
 }
 
+function csvKeyValueMap(value: string | undefined): Record<string, string> {
+  return csvToArray(value).reduce<Record<string, string>>((result, item) => {
+    const separator = item.indexOf('=')
+    if (separator <= 0) return result
+    const key = item.slice(0, separator).trim()
+    const mappedValue = item.slice(separator + 1).trim()
+    if (key !== '' && mappedValue !== '') result[key] = mappedValue
+    return result
+  }, {})
+}
+
 function jsonStringArray(value: string | undefined): string[] {
   const source = (value || '').trim()
   if (source === '') return []
@@ -4096,6 +5495,8 @@ function AssignmentCheckboxGrid({
   descriptionKey,
   defaultValues,
   emptyText,
+  positionOptions,
+  positionValues,
 }: {
   name: string
   options: Array<Record<string, string>>
@@ -4104,8 +5505,11 @@ function AssignmentCheckboxGrid({
   descriptionKey?: string
   defaultValues: string[]
   emptyText: string
+  positionOptions?: Array<Record<string, string>>
+  positionValues?: Record<string, string>
 }) {
   const [query, setQuery] = React.useState('')
+  const [selectedKeys, setSelectedKeys] = React.useState(() => new Set(defaultValues))
   const filteredOptions = options.filter((option) => {
     const searchText = `${option[labelKey] || ''} ${descriptionKey ? option[descriptionKey] || '' : ''}`.toLowerCase()
     return searchText.includes(query.toLowerCase())
@@ -4114,20 +5518,42 @@ function AssignmentCheckboxGrid({
   return (
     <div className="grid gap-2">
       <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search assignments" />
-      <div className="grid max-h-[28rem] gap-2 overflow-y-auto rounded-md border border-input bg-background p-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid min-h-[24rem] max-h-[48rem] gap-2 overflow-y-auto rounded-md border border-input bg-background p-3 sm:grid-cols-2 xl:grid-cols-3">
         {filteredOptions.length === 0 && <p className="text-sm text-muted-foreground">{emptyText}</p>}
         {filteredOptions.map((option) => (
-          <label key={option[valueKey]} className="flex min-h-16 items-start gap-2 rounded-md border border-border bg-card p-3 text-sm hover:bg-muted">
+          <label key={option[valueKey]} className="flex min-h-16 items-center gap-3 rounded-md border border-border bg-card p-3 text-sm hover:bg-muted">
             <input
               type="checkbox"
               name={name}
               value={option[valueKey]}
-              defaultChecked={defaultValues.includes(option[valueKey])}
-              className="mt-1 h-4 w-4 rounded border-input"
+              checked={selectedKeys.has(option[valueKey])}
+              onChange={(event) => setSelectedKeys((current) => {
+                const next = new Set(current)
+                if (event.target.checked) next.add(option[valueKey])
+                else next.delete(option[valueKey])
+                return next
+              })}
+              className="h-4 w-4 shrink-0 rounded border-input"
             />
+            <Avatar className="size-10 shrink-0 border bg-muted">
+              {userAvatarViewerUrl(option, 'XS') !== '' ? <AvatarImage src={userAvatarViewerUrl(option, 'XS')} alt="" className="size-full object-cover" /> : <AvatarImage src={emptyUserAvatarUrl} alt="" className="p-1.5 opacity-80" />}
+              <AvatarFallback className="text-xs">{userInitials(option)}</AvatarFallback>
+            </Avatar>
             <span className="min-w-0">
               <span className="block font-semibold">{option[labelKey]}</span>
               {descriptionKey && <span className="block truncate text-xs text-muted-foreground">{option[descriptionKey] || ''}</span>}
+              {positionOptions ? (
+                <select
+                  name={`member_position_keys[${option[valueKey]}]`}
+                  defaultValue={positionValues?.[option[valueKey]] || ''}
+                  disabled={!selectedKeys.has(option[valueKey])}
+                  aria-label={`Position for ${option[labelKey]}`}
+                  className="mt-2 min-h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="">Select position</option>
+                  {positionOptions.map((position) => <option key={position.position_key} value={position.position_key}>{position.position_name}</option>)}
+                </select>
+              ) : null}
             </span>
           </label>
         ))}
@@ -4140,6 +5566,7 @@ function UserPositionCrudView({ embedded = false, scopedGroupKey = '' }: { embed
   const [editingPositionKey, setEditingPositionKey] = React.useState('')
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
   const positionFormRef = React.useRef<HTMLFormElement>(null)
+  const positionSubmitBypassRef = React.useRef(false)
   const scopedGroup = scopedGroupKey ? data.groups.find((group) => group.group_key === scopedGroupKey) : undefined
   const scopedPositions = scopedGroupKey ? data.positions.filter((position) => position.group_key === scopedGroupKey) : data.positions
   const visiblePositions = scopedPositions.filter((position) => position.position_status !== 'DELETED')
@@ -4150,6 +5577,17 @@ function UserPositionCrudView({ embedded = false, scopedGroupKey = '' }: { embed
   const positionProjectValue = editingPosition?.project_key || scopedGroup?.project_key || activeProjects[0]?.project_key || ''
   const inactivePositionActionReason = 'Deactivated positions only allow restore or delete.'
   const activePositionRestoreReason = 'Position is already active.'
+  const requestPositionSave = () => setConfirmation({
+    title: editingPosition ? 'Confirm position update' : 'Confirm position creation',
+    message: editingPosition
+      ? `Update position ${editingPosition.position_code}?`
+      : 'Create this user position?',
+    confirmLabel: 'Save Position',
+    onConfirm: () => {
+      positionSubmitBypassRef.current = true
+      positionFormRef.current?.requestSubmit()
+    },
+  })
 
   return (
     <>
@@ -4171,7 +5609,14 @@ function UserPositionCrudView({ embedded = false, scopedGroupKey = '' }: { embed
 	        <div className={embedded ? 'order-2 lg:col-span-4' : 'lg:col-span-4'}>
 	          <DashboardPanel title="Position Form" description="Each position belongs to one group. Users with this position must also be assigned to that group.">
             <div className="p-4">
-              <form key={editingPosition?.position_key || 'new-position'} ref={positionFormRef} method="post" data-skip-submit-confirmation="true" className="grid gap-4">
+              <form id={embedded ? 'embedded-position-form' : undefined} key={editingPosition?.position_key || 'new-position'} ref={positionFormRef} method="post" autoComplete="off" data-skip-submit-confirmation="true" onSubmit={(event) => {
+                if (positionSubmitBypassRef.current) {
+                  positionSubmitBypassRef.current = false
+                  return
+                }
+                event.preventDefault()
+                requestPositionSave()
+              }} className="grid gap-4">
                 <input type="hidden" name="csrf" value={data.csrf} />
                 <input type="hidden" name="action" value="save_user_position" />
                 <input type="hidden" name="position_key" value={editingPosition?.position_key || ''} />
@@ -4179,11 +5624,11 @@ function UserPositionCrudView({ embedded = false, scopedGroupKey = '' }: { embed
                 {scopedGroup ? <input type="hidden" name="project_key" value={positionProjectValue} /> : null}
                 <div className="grid gap-2">
                   <Label htmlFor="position_code">Code</Label>
-                  <Input id="position_code" name="position_code" defaultValue={editingPosition?.position_code || ''} placeholder="NURSE" required />
+                  <Input id="position_code" name="position_code" autoComplete="off" defaultValue={editingPosition?.position_code || ''} required />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="position_name">Name</Label>
-                  <Input id="position_name" name="position_name" defaultValue={editingPosition?.position_name || ''} placeholder="Nurse" required />
+                  <Input id="position_name" name="position_name" autoComplete="off" defaultValue={editingPosition?.position_name || ''} required />
                 </div>
                 {!scopedGroup ? (
                   <div className="grid gap-2">
@@ -4238,21 +5683,13 @@ function UserPositionCrudView({ embedded = false, scopedGroupKey = '' }: { embed
                   <Label htmlFor="position_description">Description</Label>
                   <Textarea id="position_description" name="position_description" defaultValue={editingPosition?.position_description || ''} rows={4} />
                 </div>
-	                <div className="flex flex-wrap justify-end gap-2">
-	                  <Button
-	                    type="button"
-	                    onClick={() => setConfirmation({
-	                      title: editingPosition ? 'Confirm position update' : 'Confirm position creation',
-	                      message: editingPosition
-	                        ? `Update position ${editingPosition.position_code}?`
-	                        : 'Create this user position?',
-	                      confirmLabel: 'Save Position',
-	                      onConfirm: () => positionFormRef.current?.requestSubmit(),
-	                    })}
-	                  >
-	                    <Save className="h-4 w-4" aria-hidden="true" />
-	                    Save Position
-	                  </Button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  {!embedded ? (
+                    <Button type="submit">
+                      <Save className="h-4 w-4" aria-hidden="true" />
+                      Save Position
+                    </Button>
+                  ) : null}
                   {editingPosition ? (
                     <button type="button" className={buttonClassName({ variant: 'outline' })} onClick={() => setEditingPositionKey('')}>
                       Clear
@@ -4414,7 +5851,7 @@ function adminSettingValue(settingName: string): string {
 }
 
 function mediaImageViewerBaseUrl(): string {
-  return adminSettingValue('media_image_viewer_url') || String(portalData?.mediaImageViewerUrl || '').trim() || 'http://localhost/rbms.com/view.php'
+  return adminSettingValue('media_image_viewer_url') || String(portalData?.mediaImageViewerUrl || '').trim()
 }
 
 function uploadedImageSourceUrl(uploadedImageUrl: string): string {
@@ -4458,6 +5895,84 @@ function userAvatarViewerUrl(user?: Record<string, string>, sizeTokens = 'M'): s
 }
 
 const groupImageViewerSizes = ['XS', 'S', 'M', 'L', 'XL'] as const
+
+function groupAvatarInitials(group?: Record<string, any>): string {
+  const source = String(group?.group_name || 'Group')
+  return source
+    .trim()
+    .split(/[\s._@-]+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'G'
+}
+
+function TaskGroupAvatarStack({
+  groups,
+  bypassGroupKeys,
+  limit = 5,
+  size = 'md',
+  tone = 'panel',
+  label = 'Task group avatars',
+  className,
+}: {
+  groups: Array<Record<string, any>>
+  bypassGroupKeys: Set<string>
+  limit?: number
+  size?: 'sm' | 'md'
+  tone?: 'canvas' | 'panel'
+  label?: string
+  className?: string
+}) {
+  if (groups.length === 0) return null
+
+  const visibleGroups = groups.slice(0, limit)
+  const sizeClass = size === 'sm' ? 'size-6 text-[10px]' : 'size-8 text-[11px]'
+  const countSizeClass = size === 'sm' ? 'size-6 text-[9px]' : 'size-8 text-[10px]'
+  const canvasTone = tone === 'canvas'
+  const rootClass = canvasTone
+    ? 'border-white/20 bg-slate-900 text-white/75'
+    : 'border-border bg-background text-foreground'
+  const fallbackClass = canvasTone
+    ? 'bg-slate-900 text-white/75'
+    : 'bg-muted text-foreground'
+  const countClass = canvasTone
+    ? 'border-white/20 bg-white/10 text-white/75'
+    : 'border-border bg-muted text-muted-foreground'
+
+  return (
+    <div data-task-avatar-stack className={cn('flex shrink-0 -space-x-2', className)} aria-label={label}>
+      {visibleGroups.map((group, index) => {
+        const groupKey = String(group.group_key || index)
+        const groupName = String(group.group_name || 'Group')
+        const groupIconUrl = groupImageViewerUrl(group as Record<string, string>, 'XS')
+        const canBypass = bypassGroupKeys.has(groupKey)
+        return (
+          <Avatar
+            key={groupKey}
+            className={cn(
+              sizeClass,
+              'border shadow-sm',
+              rootClass,
+              canBypass ? 'ring-1 ring-emerald-400/70' : canvasTone ? 'ring-1 ring-black/30' : 'ring-1 ring-background',
+            )}
+            title={canBypass ? `${groupName} - can bypass stages` : groupName}
+            aria-label={canBypass ? `${groupName}, can bypass stages` : groupName}
+          >
+            {groupIconUrl !== '' ? <AvatarImage src={groupIconUrl} alt="" /> : null}
+            <AvatarFallback className={cn('font-semibold', fallbackClass)}>{groupAvatarInitials(group)}</AvatarFallback>
+          </Avatar>
+        )
+      })}
+      {groups.length > limit ? (
+        <span className={cn('grid shrink-0 place-items-center rounded-full border font-semibold shadow-sm', countSizeClass, countClass)}>
+          +{groups.length - limit}
+        </span>
+      ) : null}
+    </div>
+  )
+}
 
 const mediaUploadMaxLongSide = 1024
 
@@ -4773,6 +6288,19 @@ function userInitials(user: Record<string, string>): string {
     .toUpperCase() || 'U'
 }
 
+function imageFileFromClipboardData(clipboardData: DataTransfer, fallbackName: string): File | null {
+  const directFile = Array.from(clipboardData.files || []).find((file) => file.type.startsWith('image/'))
+  if (directFile) return directFile
+
+  const imageItem = Array.from(clipboardData.items || []).find((item) => item.kind === 'file' && item.type.startsWith('image/'))
+  const imageFile = imageItem?.getAsFile() || null
+  if (!imageFile) return null
+  if (imageFile.name) return imageFile
+
+  const extension = imageFile.type.split('/')[1] || 'png'
+  return new File([imageFile], `${fallbackName}-${Date.now()}.${extension}`, { type: imageFile.type })
+}
+
 function UserAvatarUploadField({ user, onViewAvatar }: { user?: Record<string, string>; onViewAvatar?: () => void }) {
   const [pendingFile, setPendingFile] = React.useState<File | null>(null)
   const [uploadedUrl, setUploadedUrl] = React.useState(String(user?.user_avatar_path || ''))
@@ -4891,39 +6419,18 @@ function UserAvatarUploadField({ user, onViewAvatar }: { user?: Record<string, s
     void uploadImage(file)
   }
 
-  async function pasteFromClipboard() {
-    if (navigator.clipboard && 'read' in navigator.clipboard) {
-      try {
-        const items = await navigator.clipboard.read()
-        for (const item of items) {
-          const imageType = item.types.find((type) => type.startsWith('image/'))
-          if (!imageType) continue
-          const blob = await item.getType(imageType)
-          const extension = imageType.split('/')[1] || 'png'
-          acceptImage(new File([blob], `user-avatar-${Date.now()}.${extension}`, { type: imageType }))
-          return
-        }
-        setStatusText('No image was found in the clipboard.')
-      } catch {
-        setStatusText('Clipboard access was blocked. Click the paste area, then press Ctrl+V.')
-      }
-    } else {
-      setStatusText('Click the paste area, then press Ctrl+V to paste an image.')
-    }
-    pasteRef.current?.focus()
-  }
-
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
-    const files = Array.from(event.clipboardData.files || [])
-    const image = files.find((file) => file.type.startsWith('image/'))
+    const image = imageFileFromClipboardData(event.clipboardData, 'user-avatar')
     if (image) {
       event.preventDefault()
       acceptImage(image)
+    } else {
+      setStatusText('No image was found in the clipboard.')
     }
   }
 
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-3" onPaste={handlePaste}>
       <Label>User Avatar</Label>
       <input type="hidden" name="user_avatar_url" value={uploadedUrl} />
       <input type="hidden" name="user_avatar_original_name" value={uploadedMeta.originalName} />
@@ -4938,7 +6445,7 @@ function UserAvatarUploadField({ user, onViewAvatar }: { user?: Record<string, s
         disabled={uploadDisabled}
         onChange={(event) => acceptImage(event.currentTarget.files?.[0])}
       />
-      <div className="grid gap-3 rounded-md bg-muted/20 p-4">
+      <div className="grid gap-3 rounded-md bg-muted/20 p-4" onClick={() => pasteRef.current?.focus()}>
         <div className="grid justify-items-center gap-3 text-center">
           <div className="grid size-24 shrink-0 place-items-center overflow-hidden rounded-full bg-background">
             {previewUrl !== '' ? (
@@ -4960,9 +6467,6 @@ function UserAvatarUploadField({ user, onViewAvatar }: { user?: Record<string, s
           <Button type="button" variant="outline" size="sm" disabled={uploadDisabled} onClick={() => inputRef.current?.click()}>
             {uploading ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : <Upload data-icon="inline-start" />}Upload Avatar
           </Button>
-          <Button type="button" variant="outline" size="sm" disabled={uploadDisabled} onClick={pasteFromClipboard}>
-            <ClipboardList data-icon="inline-start" />Paste Avatar
-          </Button>
           {uploadedUrl !== '' && !pendingFile && onViewAvatar ? (
             <Button type="button" variant="outline" size="sm" onClick={onViewAvatar}>
               <Eye data-icon="inline-start" />View Avatar
@@ -4973,7 +6477,6 @@ function UserAvatarUploadField({ user, onViewAvatar }: { user?: Record<string, s
           ref={pasteRef}
           role="button"
           tabIndex={0}
-          onPaste={handlePaste}
           className="rounded-md bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground outline-none focus:ring-2 focus:ring-ring/25"
         >
           {mediaUploaderTargetUrl === ''
@@ -5014,6 +6517,20 @@ function normalizeProjectMobileNumberInput(value: string): string {
   return `+${digits}`
 }
 
+function normalizeProjectUsernameInput(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9_.-]/g, '').slice(0, 80)
+}
+
+function projectUsernameValidationMessage(value: string): string {
+  if (value === '') return ''
+  if (value.length < 3) return 'Use at least 3 characters.'
+  if (!/^[a-z0-9]/.test(value)) return 'Start with a letter or number.'
+  if (!/[a-z0-9]$/.test(value)) return 'End with a letter or number.'
+  if (!/^[a-z0-9._-]+$/.test(value)) return 'Use lowercase letters, numbers, dot, underscore, or hyphen only.'
+  if (/[._-]{2,}/.test(value)) return 'Do not use repeated separators.'
+  return ''
+}
+
 function UserCrudView() {
   const [userDialogMode, setUserDialogMode] = React.useState<'create' | 'edit' | null>(null)
   const [editingUserKey, setEditingUserKey] = React.useState('')
@@ -5022,26 +6539,22 @@ function UserCrudView() {
   const [historyUserKey, setHistoryUserKey] = React.useState('')
   const [avatarViewerUserKey, setAvatarViewerUserKey] = React.useState('')
   const [avatarViewerSize, setAvatarViewerSize] = React.useState<(typeof groupImageViewerSizes)[number]>('M')
-  const [userFormGroupKey, setUserFormGroupKey] = React.useState('')
-  const [userFormPositionKey, setUserFormPositionKey] = React.useState('')
   const [userFormMobileNumber, setUserFormMobileNumber] = React.useState('+63')
+  const [userFormLogin, setUserFormLogin] = React.useState('')
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const [modalSaveState, setModalSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [modalSaveMessage, setModalSaveMessage] = React.useState('')
+  const [, forceUserPayloadRefresh] = React.useReducer((value) => value + 1, 0)
   const userFormRef = React.useRef<HTMLFormElement>(null)
   const assignmentFormRef = React.useRef<HTMLFormElement>(null)
   const resetFormRef = React.useRef<HTMLFormElement>(null)
   const editingUser = userDialogMode === 'edit' ? data.users.find((user) => user.user_key === editingUserKey) : undefined
   const assignmentUser = data.users.find((user) => user.user_key === assignmentUserKey)
-  const resetUser = data.users.find((user) => user.user_key === resetUserKey)
   const historyUser = data.users.find((user) => user.user_key === historyUserKey)
   const avatarViewerUser = data.users.find((user) => user.user_key === avatarViewerUserKey)
-  const activePositions = data.positions.filter((position) => position.position_status !== 'DELETED')
   const activeGroups = data.groups.filter((group) => group.group_status !== 'DELETED')
   const activeProjects = data.projects.filter((project) => project.project_status !== 'DELETED')
-  const selectedUserFormGroupKey = userDialogMode !== null ? userFormGroupKey : editingUser?.group_key || ''
-  const visibleUserFormPositions = activePositions.filter((position) => selectedUserFormGroupKey && position.group_key === selectedUserFormGroupKey)
-  const selectedUserFormPositionKey = visibleUserFormPositions.some((position) => position.position_key === userFormPositionKey)
-    ? userFormPositionKey
-    : ''
+  const userFormLoginError = projectUsernameValidationMessage(userFormLogin)
   const loginHistory = historyUser
     ? data.loginHistory.filter((entry) => entry.user_key === historyUser.user_key)
     : data.loginHistory.slice(0, 12)
@@ -5052,14 +6565,71 @@ function UserCrudView() {
     setAvatarViewerSize(size)
   }
 
+  function closeUserForm() {
+    setUserDialogMode(null)
+    setEditingUserKey('')
+    setUserFormMobileNumber('+63')
+  }
+
+  async function refreshUserPayload() {
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', 'users')
+    url.searchParams.set('format', 'json')
+    const response = await fetch(url.toString(), {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      cache: 'no-store',
+    })
+    const payload = await response.json()
+    if (!response.ok || payload.ok !== true || !payload.data) {
+      throw new Error(String(payload.message || 'User read-back failed.'))
+    }
+    Object.assign(data, payload.data)
+    forceUserPayloadRefresh()
+  }
+
+  async function submitModalForm(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    if (!form.reportValidity()) return
+    setModalSaveState('saving')
+    setModalSaveMessage('Saving and reading back the user...')
+    try {
+      const response = await fetch(form.getAttribute('action') || window.location.href, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new FormData(form),
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.ok !== true) {
+        throw new Error(String(payload.message || 'User save failed.'))
+      }
+      await refreshUserPayload()
+      setModalSaveState('saved')
+      setModalSaveMessage(String(payload.message || 'User saved and read back.'))
+      closeUserForm()
+    } catch (error) {
+      setModalSaveState('error')
+      setModalSaveMessage(error instanceof Error ? error.message : 'User save failed.')
+    } finally {
+      window.dispatchEvent(new Event('builderx:admin-form-submit-complete'))
+    }
+  }
+
   return (
     <>
       <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+      <form ref={resetFormRef} method="post" data-skip-submit-confirmation="true" className="hidden" aria-hidden="true">
+        <input type="hidden" name="csrf" value={data.csrf} />
+        <input type="hidden" name="action" value="reset_user_password" />
+        <input type="hidden" name="user_key" value={resetUserKey} />
+      </form>
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-normal">Users</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Create project users, assign project group and position, manage status, reset passwords, and inspect login history.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Create project user profiles, manage access assignments separately, change status, reset passwords, and inspect login history.</p>
         </div>
       </div>
 
@@ -5069,23 +6639,26 @@ function UserCrudView() {
           title="Users"
 	          description="Use modal actions for project user records, group and position assignment, password resets, and status changes."
           action={
-            <Button
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              className="rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.18)] hover:bg-emerald-500/20 hover:text-emerald-300"
-              aria-label="Add user"
-              title="Add user"
-              onClick={() => {
-                setEditingUserKey('')
-                setUserFormGroupKey('')
-                setUserFormPositionKey('')
-                setUserFormMobileNumber('+63')
-                setUserDialogMode('create')
-              }}
-            >
-              <UserPlus className="h-4 w-4" aria-hidden="true" />
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                className="rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.18)] hover:bg-emerald-500/20 hover:text-emerald-300"
+                aria-label="Add user"
+                title="Add user"
+                onClick={() => {
+                  setEditingUserKey('')
+                  setUserFormMobileNumber('+63')
+                  setUserFormLogin('')
+                  setModalSaveState('idle')
+                  setModalSaveMessage('')
+                  setUserDialogMode('create')
+                }}
+              >
+                <UserPlus className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
           }
         >
           <div className="overflow-auto">
@@ -5129,6 +6702,8 @@ function UserCrudView() {
                       <div className="min-w-0">
                         <strong className="block truncate">{user.user_name}</strong>
                         <p className="truncate text-muted-foreground">{user.user_login} - {user.user_mobile_number || 'No mobile number'}</p>
+                        <p className="truncate text-xs text-muted-foreground">Last login: {user.user_last_login_at || 'None'}{user.user_last_login_ip_address ? ` · ${user.user_last_login_ip_address}` : ''}{user.user_last_login_device ? ` · ${user.user_last_login_device}` : ''}</p>
+                        <p className="truncate text-xs text-muted-foreground">Last logout: {user.user_last_logout_at || 'None'}{user.user_last_logout_ip_address ? ` · ${user.user_last_logout_ip_address}` : ''}{user.user_last_logout_device ? ` · ${user.user_last_logout_device}` : ''}</p>
                       </div>
                     </div>
                   </TableCell>
@@ -5139,19 +6714,19 @@ function UserCrudView() {
                     )}
                   </TableCell>
                   <TableCell>
-	                    <p><strong>Project:</strong> {user.project_codes || 'None'}</p>
-	                    <p className="text-muted-foreground">Group: {user.group_names || 'None'}</p>
-	                    <p className="text-muted-foreground">Position: {user.position_name ? `${user.position_code} - ${user.position_name}${user.position_group_name ? ` (${user.position_group_name})` : ''}` : 'None'}</p>
+                    <p><strong>Project:</strong> {user.project_codes || 'None'}</p>
+                    <p className="text-muted-foreground">Group: {user.group_names || 'None'}</p>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap justify-end gap-1.5">
                       <Tooltip>
                         <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-blue-500/60 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300 dark:hover:text-blue-200" aria-label={`Edit ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'Edit User'} disabled={userRestricted} onClick={() => {
                           setEditingUserKey(user.user_key)
-                          setUserFormGroupKey(user.group_key || '')
-                          setUserFormPositionKey(user.position_key || '')
                           setUserFormMobileNumber(normalizeProjectMobileNumberInput(user.user_mobile_number || '+63'))
+                          setUserFormLogin(normalizeProjectUsernameInput(user.user_login || ''))
                           setHistoryUserKey(user.user_key)
+                          setModalSaveState('idle')
+                          setModalSaveMessage('')
                           setUserDialogMode('edit')
                         }} />}>
                           <Pencil className="h-4 w-4" aria-hidden="true" />
@@ -5159,18 +6734,16 @@ function UserCrudView() {
                         <TooltipContent>{userRestricted ? userRestrictedReason : 'Edit User'}</TooltipContent>
                       </Tooltip>
                       <Tooltip>
-                        <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-emerald-500/60 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300 dark:hover:text-emerald-200" aria-label={`Manage access for ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'Manage Access'} disabled={userRestricted} onClick={() => {
-                          setAssignmentUserKey(user.user_key)
-                          setHistoryUserKey(user.user_key)
-                        }} />}>
-                          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                        </TooltipTrigger>
-                        <TooltipContent>{userRestricted ? userRestrictedReason : 'Manage Access'}</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
                         <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-amber-500/60 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-300 dark:hover:text-amber-200" aria-label={`Reset password for ${user.user_login}`} title={userRestricted ? userRestrictedReason : 'Reset Password'} disabled={userRestricted} onClick={() => {
                           setResetUserKey(user.user_key)
                           setHistoryUserKey(user.user_key)
+                          setConfirmation({
+                            title: 'Confirm password reset',
+                            message: `Reset ${user.user_login} to the automatic default password and clear failed login attempts?`,
+                            confirmLabel: 'Reset Password',
+                            destructive: true,
+                            onConfirm: () => resetFormRef.current?.requestSubmit(),
+                          })
                         }} />}>
                           <KeyRound className="h-4 w-4" aria-hidden="true" />
                         </TooltipTrigger>
@@ -5199,13 +6772,15 @@ function UserCrudView() {
         <div className="xl:col-span-4">
         <DashboardPanel title="Login History" description={historyUser ? `Recent activity for ${historyUser.user_login}.` : 'Select History on a user row to focus this table.'}>
           <div className="overflow-auto">
-            <FoundationTable headers={['Time', 'Login', 'Status', 'IP', 'Reason']}>
+            <FoundationTable headers={['Time', 'Login', 'Action', 'Status', 'IP', 'Device', 'Reason']}>
               {loginHistory.map((entry) => (
                 <TableRow key={entry.login_key || `${entry.created_at}-${entry.user_login}`}>
                   <TableCell className="whitespace-nowrap">{formatLoginHistoryDate(entry.created_at)}</TableCell>
                   <TableCell>{entry.user_login || ''}</TableCell>
+                  <TableCell>{entry.user_action || ''}</TableCell>
                   <TableCell><Badge>{entry.login_status || ''}</Badge></TableCell>
                   <TableCell>{entry.ip_address || ''}</TableCell>
+                  <TableCell>{entry.user_device || ''}</TableCell>
                   <TableCell>{entry.failure_reason || ''}</TableCell>
                 </TableRow>
               ))}
@@ -5222,7 +6797,7 @@ function UserCrudView() {
         }
       }}>
         <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
-          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+          <DialogHeader className="relative shrink-0 border-b bg-popover px-6 py-5 pr-14">
             <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close avatar viewer" title="Close avatar viewer" />}>
               <X />
             </DialogClose>
@@ -5262,13 +6837,7 @@ function UserCrudView() {
       <Dialog
         open={userDialogMode !== null}
         onOpenChange={(open) => {
-          if (!open) {
-            setUserDialogMode(null)
-            setEditingUserKey('')
-            setUserFormGroupKey('')
-            setUserFormPositionKey('')
-            setUserFormMobileNumber('+63')
-          }
+          if (!open) closeUserForm()
         }}
       >
         <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
@@ -5280,9 +6849,9 @@ function UserCrudView() {
               {editingUser ? <Pencil className="size-4 text-muted-foreground" /> : <Plus className="size-4 text-muted-foreground" />}
               {editingUser ? 'Edit User' : 'Create User'}
             </DialogTitle>
-	            <DialogDescription>Save the project user profile and project-level assignments after reviewing the confirmation prompt.</DialogDescription>
+          <DialogDescription>Save the project user profile. Manage group and position assignments separately through Manage Access.</DialogDescription>
           </DialogHeader>
-          <form key={editingUser?.user_key || 'new-user'} ref={userFormRef} method="post" encType="multipart/form-data" className="flex min-h-0 flex-1 flex-col">
+          <form key={editingUser?.user_key || 'new-user'} ref={userFormRef} method="post" encType="multipart/form-data" data-skip-submit-confirmation="true" onSubmit={(event) => void submitModalForm(event)} className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <div className="grid items-start gap-6 lg:grid-cols-12">
                 <input type="hidden" name="csrf" value={data.csrf} />
@@ -5296,19 +6865,41 @@ function UserCrudView() {
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   <div className="grid gap-2">
                     <Label htmlFor="user_login">Username</Label>
-                    <Input id="user_login" name="user_login" defaultValue={editingUser?.user_login || ''} required />
+                    <Input
+                      id="user_login"
+                      name="user_login"
+                      value={userFormLogin}
+                      onChange={(event) => {
+                        const normalized = normalizeProjectUsernameInput(event.target.value)
+                        event.currentTarget.setCustomValidity(projectUsernameValidationMessage(normalized))
+                        setUserFormLogin(normalized)
+                      }}
+                      onInvalid={(event) => {
+                        event.currentTarget.setCustomValidity(userFormLoginError || 'Enter a valid lowercase username.')
+                      }}
+                      onInput={(event) => {
+                        event.currentTarget.setCustomValidity(projectUsernameValidationMessage(event.currentTarget.value))
+                      }}
+                      minLength={3}
+                      maxLength={80}
+                      pattern="[a-z0-9](?:[a-z0-9._-]{1,78}[a-z0-9])?"
+                      placeholder="admin"
+                      autoComplete="username"
+                      title="Lowercase only. No spaces. Start and end with a letter or number. Dot, underscore, and hyphen are allowed in the middle."
+                      aria-invalid={userFormLoginError !== ''}
+                      aria-describedby="user_login_help"
+                      required
+                    />
+                    {userFormLoginError ? (
+                      <p id="user_login_help" className="text-xs text-destructive">
+                        {userFormLoginError}
+                      </p>
+                    ) : (
+                      <span id="user_login_help" className="sr-only">
+                        Lowercase, no spaces. Example: admin or ward_nurse1.
+                      </span>
+                    )}
                   </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="password">{editingUser ? 'New Password' : 'Password'}</Label>
-                    <Input id="password" name="password" type="password" minLength={8} defaultValue={editingUser ? '' : 'RBMS2026'} required={!editingUser} autoComplete="new-password" />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="password_confirm">Confirm Password</Label>
-                    <Input id="password_confirm" name="password_confirm" type="password" minLength={8} defaultValue={editingUser ? '' : 'RBMS2026'} required={!editingUser} autoComplete="new-password" />
-                  </div>
-                </div>
-                <Separator />
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
 	                  <div className="grid gap-2">
 	                    <Label htmlFor="user_name">Full Name</Label>
 	                    <Input id="user_name" name="user_name" defaultValue={editingUser?.user_name || ''} required />
@@ -5332,43 +6923,8 @@ function UserCrudView() {
 		                  </div>
 		                </div>
                 <Separator />
-		                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-		                  <div className="grid gap-2">
-		                    <Label htmlFor="group_keys">Group</Label>
-		                    <select
-                        id="group_keys"
-                        name="group_keys[]"
-                        value={selectedUserFormGroupKey}
-                        onChange={(event) => {
-                          setUserFormGroupKey(event.target.value)
-                          setUserFormPositionKey('')
-                        }}
-                        className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
-                      >
-	                      <option value="">No group</option>
-	                      {activeGroups.map((group) => (
-	                        <option key={group.group_key} value={group.group_key}>{group.group_name}</option>
-	                      ))}
-	                    </select>
-	                  </div>
-	                  <div className="grid gap-2">
-	                    <Label htmlFor="position_key">Position</Label>
-	                    <select
-	                      id="position_key"
-	                      name="position_key"
-	                      value={selectedUserFormPositionKey}
-                        onChange={(event) => setUserFormPositionKey(event.target.value)}
-	                      className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
-	                    >
-	                      <option value="">{selectedUserFormGroupKey ? 'No position' : 'Select group first'}</option>
-	                      {visibleUserFormPositions.map((position) => (
-	                        <option key={position.position_key} value={position.position_key}>
-	                          {position.position_code} - {position.position_name}
-	                        </option>
-	                      ))}
-	                    </select>
-	                  </div>
-                    <div className="grid gap-2">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid gap-2">
                       <Label htmlFor="user_status">Status</Label>
                       <select
                         id="user_status"
@@ -5388,17 +6944,23 @@ function UserCrudView() {
 	            </div>
             </div>
             <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
-              <span className="text-xs text-muted-foreground">User changes are verified server-side before success is reported.</span>
+              <span className={cn('text-xs', modalSaveState === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
+                {modalSaveMessage || 'User changes are verified server-side before success is reported.'}
+              </span>
               <div className="flex items-center gap-2">
                 <Button
                   type="button"
+                  disabled={modalSaveState === 'saving'}
                   onClick={() => setConfirmation({
                     title: editingUser ? 'Confirm user update' : 'Confirm user creation',
                     message: editingUser
-                      ? `Update user ${editingUser.user_login} and replace selected assignments?`
-                      : 'Create this user with the selected assignments?',
+                      ? `Update user ${editingUser.user_login} profile?`
+                      : 'Create this user profile?',
                     confirmLabel: editingUser ? 'Update User' : 'Create User',
-                    onConfirm: () => userFormRef.current?.requestSubmit(),
+                    onConfirm: () => {
+                      const form = userFormRef.current
+                      if (form?.reportValidity()) form.requestSubmit()
+                    },
                   })}
                 >
                   <Save className="h-4 w-4" aria-hidden="true" />
@@ -5420,7 +6982,7 @@ function UserCrudView() {
 	            <DialogDescription>{assignmentUser ? `Replace project group assignment for ${assignmentUser.user_login}.` : 'Select a project user before assigning access.'}</DialogDescription>
           </DialogHeader>
           {assignmentUser ? (
-            <form key={assignmentUser.user_key} ref={assignmentFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+            <form key={assignmentUser.user_key} ref={assignmentFormRef} method="post" data-skip-submit-confirmation="true" onSubmit={(event) => void submitModalForm(event)} className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
                 <div className="grid gap-4">
                   <input type="hidden" name="csrf" value={data.csrf} />
@@ -5443,10 +7005,13 @@ function UserCrudView() {
                 </div>
               </div>
               <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
-                <span className="text-xs text-muted-foreground">Assignments are replaced as one verified user save.</span>
+                <span className={cn('text-xs', modalSaveState === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
+                  {modalSaveMessage || 'Assignments are replaced as one verified user save.'}
+                </span>
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
+                    disabled={modalSaveState === 'saving'}
                     onClick={() => setConfirmation({
                       title: 'Confirm user assignment update',
                       message: `Replace assignments for ${assignmentUser.user_login}?`,
@@ -5464,51 +7029,6 @@ function UserCrudView() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(resetUser)} onOpenChange={(open) => !open && setResetUserKey('')}>
-        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
-          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
-            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close password reset" title="Close password reset" />}>
-              <X />
-            </DialogClose>
-            <DialogTitle className="flex items-center gap-2"><KeyRound className="size-4 text-muted-foreground" />Reset Password</DialogTitle>
-            <DialogDescription>{resetUser ? `Set a temporary password for ${resetUser.user_login}.` : 'Select a user before resetting a password.'}</DialogDescription>
-          </DialogHeader>
-          {resetUser ? (
-            <form key={resetUser.user_key} ref={resetFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-                <div className="grid gap-4">
-                  <input type="hidden" name="csrf" value={data.csrf} />
-                  <input type="hidden" name="action" value="reset_user_password" />
-                  <input type="hidden" name="user_key" value={resetUser.user_key} />
-                  <div className="grid gap-2">
-                    <Label htmlFor="reset_password">New Password</Label>
-                    <Input id="reset_password" name="password" type="password" minLength={10} required />
-                  </div>
-                </div>
-              </div>
-              <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
-                <span className="text-xs text-muted-foreground">Share the new password securely outside the system.</span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setConfirmation({
-                      title: 'Confirm password reset',
-                      message: `Reset password for ${resetUser.user_login}? Share the new password securely outside the system.`,
-                      confirmLabel: 'Reset Password',
-                      destructive: true,
-                      onConfirm: () => resetFormRef.current?.requestSubmit(),
-                    })}
-                  >
-                    <KeyRound className="h-4 w-4" aria-hidden="true" />
-                    Reset Password
-                  </Button>
-                </div>
-              </DialogFooter>
-            </form>
-          ) : null}
-        </DialogContent>
-      </Dialog>
     </>
   )
 }
@@ -5589,20 +7109,30 @@ function GroupCrudView() {
   const groupFormRef = React.useRef<HTMLFormElement>(null)
   const assignmentFormRef = React.useRef<HTMLFormElement>(null)
   const visibleGroups = data.groups.filter((group) => group.group_status !== 'DELETED')
+  const activeProjects = data.projects.filter((project) => project.project_status !== 'DELETED')
   const editingGroup = groupDialogMode === 'edit' ? visibleGroups.find((group) => group.group_key === editingGroupKey) : undefined
   const assignmentGroup = visibleGroups.find((group) => group.group_key === assignmentGroupKey)
   const selectedGroup = visibleGroups.find((group) => group.group_key === activeGroupKey) || visibleGroups[0]
   const positionGroup = visibleGroups.find((group) => group.group_key === positionGroupKey)
   const imageViewerGroup = visibleGroups.find((group) => group.group_key === imageViewerGroupKey)
-  const groupProjectValue = editingGroup?.project_key || selectedGroup?.project_key || data.projects.find((project) => project.project_status !== 'DELETED')?.project_key || ''
+  const groupProjectValue = editingGroup?.project_key || selectedGroup?.project_key || activeProjects[0]?.project_key || ''
   const assignableUsers = data.users.filter((user) => user.user_status !== 'DELETED')
   const groupFormUsers = assignableUsers.filter((user) => !groupProjectValue || user.project_key === groupProjectValue)
   const groupAssignableUsers = assignableUsers.filter((user) => !assignmentGroup?.project_key || user.project_key === assignmentGroup.project_key)
+  const assignmentPositions = data.positions.filter((position) => (
+    position.position_status !== 'DELETED'
+    && (!assignmentGroup?.project_key || position.project_key === assignmentGroup.project_key)
+    && (!assignmentGroup?.group_key || position.group_key === assignmentGroup.group_key)
+  ))
+  const assignmentPositionValues = assignmentGroup
+    ? csvKeyValueMap(assignmentGroup.member_position_map)
+    : Object.fromEntries(groupAssignableUsers.map((user) => [user.user_key, user.position_key || '']))
   const selectedPositions = csvToArray(selectedGroup?.position_names)
   const selectedMembers = csvToArray(selectedGroup?.member_names)
   const selectedGroupDeactivated = selectedGroup?.group_status === 'INACTIVE'
   const deactivatedGroupActionReason = 'Deactivated groups only allow restore or delete.'
   const activeGroupRestoreReason = 'Group is already active.'
+  const disabledGroupActionClass = 'disabled:cursor-not-allowed disabled:border-border disabled:bg-muted/20 disabled:text-muted-foreground disabled:shadow-none disabled:opacity-35 disabled:hover:bg-muted/20 disabled:hover:text-muted-foreground'
 
   function openGroupImageViewer(group: Record<string, string>, size: (typeof groupImageViewerSizes)[number]) {
     if (groupImageViewerUrl(group, size) === '') return
@@ -5616,7 +7146,6 @@ function GroupCrudView() {
 
       <div className="mb-5">
         <div>
-          <Badge>Administrator Group CRUD</Badge>
           <h2 className="mt-2 text-2xl font-bold tracking-normal">Groups</h2>
           <p className="mt-1 text-sm text-muted-foreground">Create, edit, deactivate, restore, and soft-delete groups while managing user membership.</p>
         </div>
@@ -5628,7 +7157,7 @@ function GroupCrudView() {
             title="Groups"
             description="Use modal actions for group records, member assignment, and status changes."
             action={(
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <Tooltip>
                   <TooltipTrigger render={<Button
                     type="button"
@@ -5707,32 +7236,12 @@ function GroupCrudView() {
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap justify-end gap-1.5">
-                        <Tooltip>
-                          <TooltipTrigger render={<Button
-                            type="button"
-                            variant="outline"
-                            size="icon-sm"
-                            className={cn('rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.25)] hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200', groupDeactivated && 'shadow-none opacity-45')}
-                            aria-label={`Position Management for ${group.group_name}`}
-                            title={nonDeleteActionTitle || 'Position Management'}
-                            disabled={groupDeactivated}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              if (groupDeactivated) return
-                              setActiveGroupKey(group.group_key)
-                              setPositionGroupKey(group.group_key)
-                            }}
-                          />}>
-                            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                          </TooltipTrigger>
-                          <TooltipContent>{nonDeleteActionTitle || 'Position Management'}</TooltipContent>
-                        </Tooltip>
                         {!originalAdministratorsGroup ? <Tooltip>
                           <TooltipTrigger render={<Button
                             type="button"
                             variant="outline"
                             size="icon-sm"
-                            className={cn('rounded-full border-blue-500/60 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 hover:text-blue-600 dark:text-blue-300 dark:hover:text-blue-200', groupDeactivated && 'opacity-45')}
+                            className={cn('rounded-full border-blue-500/60 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 hover:text-blue-600 dark:text-blue-300 dark:hover:text-blue-200', disabledGroupActionClass)}
                             aria-label={`Edit ${group.group_name}`}
                             title={nonDeleteActionTitle || 'Edit Group'}
                             disabled={groupDeactivated}
@@ -5753,7 +7262,27 @@ function GroupCrudView() {
                             type="button"
                             variant="outline"
                             size="icon-sm"
-                            className={cn('rounded-full border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_12px_rgba(139,92,246,0.18)] hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200', groupDeactivated && 'shadow-none opacity-45')}
+                            className={cn('rounded-full border-emerald-500/70 bg-emerald-500/10 text-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.25)] hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200', disabledGroupActionClass)}
+                            aria-label={`Position Management for ${group.group_name}`}
+                            title={nonDeleteActionTitle || 'Position Management'}
+                            disabled={groupDeactivated}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              if (groupDeactivated) return
+                              setActiveGroupKey(group.group_key)
+                              setPositionGroupKey(group.group_key)
+                            }}
+                          />}>
+                            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                          </TooltipTrigger>
+                          <TooltipContent>{nonDeleteActionTitle || 'Position Management'}</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger render={<Button
+                            type="button"
+                            variant="outline"
+                            size="icon-sm"
+                            className={cn('rounded-full border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_12px_rgba(139,92,246,0.18)] hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200', disabledGroupActionClass)}
                             aria-label={`Manage members for ${group.group_name}`}
                             title={nonDeleteActionTitle || 'Manage Members'}
                             disabled={groupDeactivated}
@@ -6021,7 +7550,7 @@ function GroupCrudView() {
       <Dialog open={Boolean(positionGroup)} onOpenChange={(open) => {
         if (!open) setPositionGroupKey('')
       }}>
-        <DialogContent showCloseButton={false} className={cn('w-[calc(100vw-2rem)]', dialogSizeClass('XL'), 'flex min-h-0 flex-col gap-0 overflow-hidden p-0')}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[95vw]">
           <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
             <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close position management" title="Close position management" />}>
               <X />
@@ -6030,10 +7559,17 @@ function GroupCrudView() {
             <DialogDescription>{positionGroup ? `Positions are child records of ${positionGroup.group_name}.` : 'Select a group before managing positions.'}</DialogDescription>
           </DialogHeader>
           {positionGroup ? (
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 pb-16">
-              <UserPositionCrudView embedded scopedGroupKey={positionGroup.group_key} />
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 pb-16">
+                <UserPositionCrudView embedded scopedGroupKey={positionGroup.group_key} />
             </div>
           ) : null}
+          <DialogFooter className="m-0 w-full shrink-0 flex-row items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+            <span className="text-xs text-muted-foreground">Position Management · Firebase-first</span>
+            <Button type="submit" form="embedded-position-form" className="shrink-0">
+              <Save className="h-4 w-4" aria-hidden="true" />
+              Save Position
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -6071,12 +7607,22 @@ function GroupCrudView() {
                     ))}
                   </select>
                 </div>
-                <AssignmentCheckboxGrid name="member_user_keys[]" options={groupAssignableUsers} valueKey="user_key" labelKey="user_name" descriptionKey="user_login" defaultValues={csvToArray(assignmentGroup.member_user_keys)} emptyText="No users found." />
+                <AssignmentCheckboxGrid
+                  name="member_user_keys[]"
+                  options={groupAssignableUsers}
+                  valueKey="user_key"
+                  labelKey="user_name"
+                  descriptionKey="user_login"
+                  defaultValues={csvToArray(assignmentGroup.member_user_keys)}
+                  emptyText="No users found."
+                  positionOptions={assignmentPositions}
+                  positionValues={assignmentPositionValues}
+                />
               </div>
               <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
-                <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
                 <Button
                   type="button"
+                  className="ml-auto"
                   onClick={() => setConfirmation({
                     title: 'Confirm group membership update',
                     message: `Replace members for ${assignmentGroup.group_name}?`,
@@ -6132,7 +7678,10 @@ function GroupStatusButton({
           type="button"
           variant="outline"
           size="icon-sm"
-          className={cn('rounded-full', colorClass, disabled && 'shadow-none opacity-45')}
+          className={cn(
+            'rounded-full disabled:cursor-not-allowed disabled:border-border disabled:bg-muted/20 disabled:text-muted-foreground disabled:shadow-none disabled:opacity-35 disabled:hover:bg-muted/20 disabled:hover:text-muted-foreground',
+            colorClass,
+          )}
           aria-label={`${label} ${group.group_name}`}
           title={disabled ? disabledReason : label}
           disabled={disabled}
@@ -6705,8 +8254,15 @@ function SystemSettingsView() {
   function inputType(settingName: string): string {
     if (settingName.includes('email')) return 'email'
     if (settingName.includes('url')) return 'url'
-    if (['session_timeout_minutes', 'password_min_length', 'password_expiration_days', 'password_history_count', 'password_reset_token_minutes', 'debug_trace_retention_days', 'android_current_version_code', 'android_min_supported_version_code', 'android_offline_retry_interval_seconds', 'android_dashboard_refresh_seconds'].includes(settingName)) return 'number'
+    if (['session_timeout_minutes', 'password_min_length', 'password_expiration_days', 'password_history_count', 'password_reset_token_minutes', 'debug_trace_retention_days', 'android_current_version_code', 'android_min_supported_version_code', 'android_geofence_latitude', 'android_geofence_longitude', 'android_geofence_max_radius_meters', 'android_offline_retry_interval_seconds', 'android_dashboard_refresh_seconds'].includes(settingName)) return 'number'
     return 'text'
+  }
+
+  function numberInputProps(settingName: string): Record<string, string | number> {
+    if (settingName === 'android_geofence_latitude') return { min: -90, max: 90, step: 'any' }
+    if (settingName === 'android_geofence_longitude') return { min: -180, max: 180, step: 'any' }
+    if (settingName === 'android_geofence_max_radius_meters') return { min: 1, max: 1000000, step: 1 }
+    return inputType(settingName) === 'number' ? { min: 0 } : {}
   }
 
   function settingControl(setting: SettingRecord) {
@@ -6752,7 +8308,7 @@ function SystemSettingsView() {
         id={id}
         name={name}
         type={inputType(setting.setting_name)}
-        min={inputType(setting.setting_name) === 'number' ? 0 : undefined}
+        {...numberInputProps(setting.setting_name)}
         defaultValue={value}
       />
     )
@@ -6760,22 +8316,43 @@ function SystemSettingsView() {
 
   function settingHelpText(settingName: string): string {
     if (settingName === 'media_uploader_target_url') {
-      return 'All uploader controls post files to this client-scoped URL. For rbmsv4-vrp, use http://localhost/rbms.com/_Mobile/rbmsv4-vrp/upload-image.php.'
+      return 'All uploader controls post files to this configured project media endpoint. The endpoint must return a full uploaded image URL.'
     }
     if (settingName === 'media_image_viewer_url') {
-      return 'Use the client-scoped PHP viewer URL. The app appends d and url parameters, for example http://localhost/rbms.com/_Mobile/rbmsv4-vrp/view.php.'
+      return 'Use the configured PHP image viewer URL. The app appends the encoded uploaded image URL and requested size token.'
     }
     if (settingName === 'android_tenant_configuration_endpoint_url') {
       return 'The Android app posts the Hospital Code to this HTTPS endpoint before tenant-bound dashboard, Firebase, media, and offline state are enabled.'
     }
-    if (settingName === 'android_app_package_name') {
-      return 'Package identifier expected by release notes, mobile build metadata, and administrator support workflows.'
-    }
+	    if (settingName === 'android_app_package_name') {
+	      return 'Package identifier expected by release notes, mobile build metadata, and administrator support workflows.'
+	    }
+	    if (settingName === 'android_welcome_title') {
+	      return 'Primary welcome heading shown on the Android home header after tenant binding.'
+	    }
+	    if (settingName === 'android_welcome_description') {
+	      return 'Short Android welcome subtitle shown below the heading, for example the tenant name and Hospital Code.'
+	    }
     if (settingName === 'android_min_supported_version_code') {
       return 'Older Android builds below this version code should be blocked or prompted to update before syncing mutations.'
     }
+    if (settingName === 'android_geofence_latitude') {
+      return 'Optional center latitude for Android geofence checks. Leave blank when geofencing is disabled.'
+    }
+    if (settingName === 'android_geofence_longitude') {
+      return 'Optional center longitude for Android geofence checks. Leave blank when geofencing is disabled.'
+    }
+    if (settingName === 'android_geofence_max_radius_meters') {
+      return 'Maximum allowed radius in meters for Android location checks.'
+    }
     if (settingName === 'android_update_apk_download_path') {
       return 'Root-relative .apk path or HTTP(S) .apk URL used when Android update checks require a package download.'
+    }
+    if (settingName === 'android_banner_image_url') {
+      return 'Optional HTTP(S) banner image used by the Android app after tenant binding.'
+    }
+    if (settingName === 'android_login_background_image_url') {
+      return 'Optional HTTP(S) login background image used by the Android app sign-in screen.'
     }
     if (settingName.startsWith('android_splash_screen_image_url_')) {
       return 'Optional HTTP(S) image link shown on the newly installed Android app splash screen.'
@@ -6911,7 +8488,7 @@ function SystemSettingsView() {
         </div>
       </div>
 
-      <form ref={settingsFormRef} method="post" className="flex flex-col gap-4">
+      <form ref={settingsFormRef} method="post" data-skip-submit-confirmation="true" className="flex flex-col gap-4">
         <input type="hidden" name="csrf" value={data.csrf} />
         <input type="hidden" name="action" value="save_system_settings" />
         <input type="hidden" name="settings_group" value={activeSettingsGroup} />
@@ -6961,13 +8538,13 @@ function SystemSettingsView() {
                         <Button
                           type="button"
                           onClick={() => setConfirmation({
-                            title: 'Confirm system settings update',
-                            message: 'Save these system settings? Changes may affect localization, security defaults, URLs, paths, and contact information.',
-                            confirmLabel: 'Save Settings',
+                            title: 'Confirm system settings sync',
+                            message: 'Save these system settings and sync the public settings payload to Firebase? Secret settings are excluded from the Firebase document.',
+                            confirmLabel: 'Save & Sync',
                             onConfirm: () => settingsFormRef.current?.requestSubmit(),
                           })}
                         >
-                          Save Settings
+                          Save & Sync
                         </Button>
                       </CardFooter>
                     </Card>
@@ -7484,20 +9061,63 @@ function BedLookupResultCard({
   row,
   filters,
   csrf,
-  setConfirmation,
+  projectTasks,
+  bedTreatments,
+  bedSources,
 }: {
   row: Record<string, any>
   filters: Record<string, string>
   csrf: string
-  setConfirmation: React.Dispatch<React.SetStateAction<ConfirmationState>>
+  projectTasks: Array<Record<string, any>>
+  bedTreatments: Array<Record<string, any>>
+  bedSources: Array<Record<string, any>>
 }) {
   const formRef = React.useRef<HTMLFormElement>(null)
+  const [taskModalType, setTaskModalType] = React.useState<'PRIMARY' | 'SECONDARY' | null>(null)
+  const [selectedTaskForForm, setSelectedTaskForForm] = React.useState<Record<string, any> | null>(null)
+  const [taskSubmitting, setTaskSubmitting] = React.useState(false)
+  const [taskFormError, setTaskFormError] = React.useState('')
+  const [taskFormValues, setTaskFormValues] = React.useState({ roomClass: '', bedTreatmentKey: '', bedSourceKey: '' })
   const bedKey = String(row.bed_key || '')
   const bedLabel = String(row.bed_no || row.source_pk_psbeds || bedKey || 'Bed')
   const location = [row.branch_name, row.building_name, row.floor_name, row.nurse_station_name].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
   const room = [row.room_key, row.room_class].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
   const managedStatus = String(row.managed_status || 'ACTIVE')
   const sourceStatus = String(row.source_bed_status || 'Unspecified')
+  const modalTasks = projectTasks
+    .filter((task) => String(task.task_type || '').toUpperCase() === taskModalType)
+    .sort((left, right) => String(left.task_title || left.task_code || '').localeCompare(String(right.task_title || right.task_code || '')))
+  const currentRoomClass = String(row.room_class || '').trim()
+  const selectedTaskRequiresTreatment = selectedTaskForForm ? portalBooleanFlag(selectedTaskForForm.task_requires_bed_treatment, true) : true
+  const selectedTaskRequiresSource = selectedTaskForForm ? portalBooleanFlag(selectedTaskForForm.task_requires_admission_source, true) : true
+  const submitTaskForm = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = event.currentTarget
+    if (!HTMLFormElement.prototype.reportValidity.call(form) || !selectedTaskForForm || taskSubmitting) return
+    setTaskSubmitting(true)
+    setTaskFormError('')
+    try {
+      const formData = new FormData(form)
+      const treatment = bedTreatments.find((item) => String(item.bed_treatment_key || item.treatment_code || '') === taskFormValues.bedTreatmentKey)
+      const source = bedSources.find((item) => String(item.bed_source_key || item.bed_source_code || '') === taskFormValues.bedSourceKey)
+      await createPortalBedTaskInFirebase({
+        row,
+        task: selectedTaskForForm,
+        roomClass: taskFormValues.roomClass,
+        bedTreatmentKey: taskFormValues.bedTreatmentKey,
+        bedTreatmentName: String(treatment?.treatment_name || treatment?.treatment_code || ''),
+        bedSourceKey: taskFormValues.bedSourceKey,
+        bedSourceName: String(source?.bed_source_name || source?.bed_source_code || ''),
+        remarks: String(formData.get('remarks') || ''),
+      })
+      setSelectedTaskForForm(null)
+      setTaskFormValues({ roomClass: currentRoomClass, bedTreatmentKey: '', bedSourceKey: '' })
+    } catch (error) {
+      setTaskFormError(error instanceof Error ? error.message : 'The task request could not be saved.')
+    } finally {
+      setTaskSubmitting(false)
+    }
+  }
 
   return (
     <article className="grid gap-3 rounded-md bg-background/80 p-4 shadow-sm">
@@ -7515,7 +9135,8 @@ function BedLookupResultCard({
             <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{bedKey}</p>
           </div>
         </div>
-        <form ref={formRef} method="post" className="shrink-0">
+        <div className="flex shrink-0 flex-col items-center gap-1.5">
+          <form ref={formRef} method="post" className="shrink-0" data-skip-shell-loading="true">
           <input type="hidden" name="csrf" value={csrf} />
           <input type="hidden" name="action" value="resync_project_bed" />
           <input type="hidden" name="bed_key" value={bedKey} />
@@ -7525,21 +9146,17 @@ function BedLookupResultCard({
               type="button"
               variant="ghost"
               size="icon"
-              className="rounded-full text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300"
+              className="rounded-full border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300"
               aria-label={`Refresh bed ${bedLabel}`}
               title={`Refresh bed ${bedLabel}`}
-              onClick={() => setConfirmation({
-                title: 'Refresh this bed',
-                message: `Update bed ${bedLabel} with the latest bed details? Existing task links and history will be kept.`,
-                confirmLabel: 'Refresh Bed',
-                onConfirm: () => formRef.current?.requestSubmit(),
-              })}
+              onClick={() => formRef.current?.requestSubmit()}
             />}>
               <RotateCcw />
             </TooltipTrigger>
             <TooltipContent>Refresh this bed</TooltipContent>
           </Tooltip>
-        </form>
+          </form>
+        </div>
       </div>
       <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
         <div><span className="block font-medium text-foreground">Location</span>{location || 'Unspecified'}</div>
@@ -7547,6 +9164,58 @@ function BedLookupResultCard({
         <div><span className="block font-medium text-foreground">Source</span>{String(row.bed_source_key || 'Unspecified')}</div>
         <div><span className="block font-medium text-foreground">Last sync</span>{String(row.last_synced_at || 'Not synced')}</div>
       </div>
+      <Dialog open={taskModalType !== null} onOpenChange={(open) => { if (!open) setTaskModalType(null) }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close task list" title="Close task list" />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>{taskModalType === 'SECONDARY' ? 'Secondary' : 'Primary'} Tasks</DialogTitle>
+            <DialogDescription>Select a task for Bed {bedLabel} to open it in Task Builder.</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-6">
+            <div className="grid gap-2">
+              {modalTasks.length === 0 ? <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No {taskModalType === 'SECONDARY' ? 'secondary' : 'primary'} tasks found.</p> : modalTasks.map((task) => (
+                <button key={String(task.task_key || task.task_title)} type="button" className="grid gap-2 rounded-md border bg-muted/20 p-3 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { setTaskFormError(''); setTaskFormValues({ roomClass: currentRoomClass, bedTreatmentKey: '', bedSourceKey: '' }); setSelectedTaskForForm(task); setTaskModalType(null) }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="min-w-0 truncate text-sm font-medium">{String(task.task_title || task.task_code || 'Untitled task')}</span>
+                    <Badge variant={String(task.task_status || '').toUpperCase() === 'ACTIVE' ? 'default' : 'secondary'}>{String(task.task_status || 'UNKNOWN')}</Badge>
+                  </div>
+                  {String(task.task_code || '').trim() !== '' ? <span className="font-mono text-[11px] text-muted-foreground">{String(task.task_code)}</span> : null}
+                  {String(task.task_description || '').trim() !== '' ? <p className="text-xs leading-5 text-muted-foreground">{String(task.task_description)}</p> : null}
+                </button>
+              ))}
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 border-t bg-popover px-6 py-4">
+            <DialogClose render={<Button type="button" variant="outline">Close</Button>} />
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={selectedTaskForForm !== null} onOpenChange={(open) => { if (!open && !taskSubmitting) setSelectedTaskForForm(null) }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close task submission" title="Close task submission" disabled={taskSubmitting} />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>{String(selectedTaskForForm?.task_title || selectedTaskForForm?.task_code || 'Task')}</DialogTitle>
+            <DialogDescription>{String(selectedTaskForForm?.task_description || `Submit this task for Bed ${bedLabel}.`)}</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={submitTaskForm} className="min-h-0 flex-1 overflow-y-auto p-6">
+            <div className="grid gap-5">
+              <fieldset className="grid gap-4 rounded-md bg-muted/20 p-4">
+                <legend className="sr-only">Bed task options</legend>
+                <div className="grid gap-2"><Label htmlFor={`admin-task-room-class-${bedKey}`}>Room Class</Label><select id={`admin-task-room-class-${bedKey}`} name="room_class" value={taskFormValues.roomClass} required onChange={(event) => setTaskFormValues((current) => ({ ...current, roomClass: event.target.value }))} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="">Select Room Class</option>{currentRoomClass !== '' ? <option value={currentRoomClass}>{currentRoomClass}</option> : null}</select></div>
+                <div className="grid gap-2"><Label htmlFor={`admin-task-treatment-${bedKey}`}>Bed Treatment</Label><select id={`admin-task-treatment-${bedKey}`} name="bed_treatment_key" value={taskFormValues.bedTreatmentKey} required={selectedTaskRequiresTreatment} onChange={(event) => setTaskFormValues((current) => ({ ...current, bedTreatmentKey: event.target.value }))} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="">Select Bed Treatment</option>{bedTreatments.map((item) => { const value = String(item.bed_treatment_key || item.treatment_code || ''); return <option key={value} value={value}>{String(item.treatment_name || item.treatment_code || 'Treatment')}</option> })}</select></div>
+                <div className="grid gap-2"><Label htmlFor={`admin-task-source-${bedKey}`}>Admission Source</Label><select id={`admin-task-source-${bedKey}`} name="bed_source_key" value={taskFormValues.bedSourceKey} required={selectedTaskRequiresSource} onChange={(event) => setTaskFormValues((current) => ({ ...current, bedSourceKey: event.target.value }))} className="min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="">Select Admission Source</option>{bedSources.map((item) => { const value = String(item.bed_source_key || item.bed_source_code || ''); return <option key={value} value={value}>{String(item.bed_source_name || item.bed_source_code || 'Source')}</option> })}</select></div>
+              </fieldset>
+              <div className="grid gap-2"><Label htmlFor={`admin-task-remarks-${bedKey}`}>Remarks</Label><Textarea id={`admin-task-remarks-${bedKey}`} name="remarks" rows={5} placeholder="Remarks" className="resize-y" /></div>
+              {taskFormError !== '' ? <p className="text-sm text-destructive" role="alert">{taskFormError}</p> : null}
+            </div>
+            <DialogFooter className="mt-6 border-t pt-4 sm:justify-end"><Button type="submit" disabled={taskSubmitting}>{taskSubmitting ? 'Sending...' : 'Submit Task'}</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </article>
   )
 }
@@ -7605,15 +9274,12 @@ function BedLookupFilterSelect({
 }
 
 function BedLookupView() {
-  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
   const bedLookupFilters = data.bedLookupFilters || {}
   const bedLookupOptions = data.bedLookupOptions || {}
   const bedLookupRows: Array<Record<string, any>> = Array.isArray(data.bedLookupRows) ? data.bedLookupRows : []
 
   return (
     <>
-      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
-
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-normal">Bed Lookup</h2>
@@ -7628,7 +9294,7 @@ function BedLookupView() {
             <CardDescription>Dropdown values are loaded from the current bed list.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
-            <form method="get" action={projectUrl('administrator/')} className="grid gap-3">
+            <form method="get" action={projectUrl('administrator/')} data-skip-submit-confirmation="true" className="grid gap-3">
               <input type="hidden" name="tab" value="bed-lookup" />
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                 <div className="grid gap-2 sm:col-span-2 xl:col-span-1">
@@ -7663,7 +9329,7 @@ function BedLookupView() {
           <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {bedLookupRows.length > 0
-                ? bedLookupRows.map((row) => <BedLookupResultCard key={String(row.bed_key)} row={row} filters={bedLookupFilters} csrf={data.csrf} setConfirmation={setConfirmation} />)
+                ? bedLookupRows.map((row) => <BedLookupResultCard key={String(row.bed_key)} row={row} filters={bedLookupFilters} csrf={data.csrf} projectTasks={Array.isArray(data.projectTasks) ? data.projectTasks : []} bedTreatments={Array.isArray(data.bedTreatments) ? data.bedTreatments : []} bedSources={Array.isArray(data.bedSources) ? data.bedSources : []} />)
                 : <div className="col-span-full grid place-items-center gap-2 rounded-md bg-muted/20 px-4 py-12 text-center"><BedDouble className="size-8 text-muted-foreground" /><p className="text-sm font-medium">No beds matched the lookup.</p><p className="max-w-md text-xs text-muted-foreground">Adjust the filters or clear the search to see current beds.</p></div>}
             </div>
           </CardContent>
@@ -7722,7 +9388,6 @@ function BedReferenceCrudCard({
   rows,
   config,
   returnTab,
-  showMasterSyncAction = false,
   setConfirmation,
 }: {
   icon: React.ComponentType<{ className?: string }>
@@ -7731,17 +9396,18 @@ function BedReferenceCrudCard({
   rows: Array<Record<string, any>>
   config: BedReferenceCrudConfig
   returnTab: 'bed-management' | 'bed-treatment' | 'bed-source'
-  showMasterSyncAction?: boolean
   setConfirmation: React.Dispatch<React.SetStateAction<ConfirmationState>>
 }) {
   const [modalOpen, setModalOpen] = React.useState(false)
   const [editingRow, setEditingRow] = React.useState<Record<string, any> | null>(null)
   const [orderedRows, setOrderedRows] = React.useState<Array<Record<string, any>>>(rows)
   const [draggingKey, setDraggingKey] = React.useState('')
-  const [dropTargetKey, setDropTargetKey] = React.useState('')
+  const [dropIndicator, setDropIndicator] = React.useState<{ top: number } | null>(null)
   const [sortSaving, setSortSaving] = React.useState(false)
+  const [submitSaving, setSubmitSaving] = React.useState(false)
+  const [refreshing, setRefreshing] = React.useState(false)
   const formRef = React.useRef<HTMLFormElement>(null)
-  const masterSyncFormRef = React.useRef<HTMLFormElement>(null)
+  const referenceDragRef = React.useRef<{ rowKey: string; pointerId: number; targetIndex: number | null } | null>(null)
   const modalTitle = editingRow ? `Edit ${config.entityLabel}` : `Add ${config.entityLabel}`
   const submitLabel = editingRow ? `Update ${config.entityLabel}` : `Create ${config.entityLabel}`
   const rowText = (row: Record<string, any> | null, field: string, fallback = '') => String(row?.[field] ?? fallback)
@@ -7750,11 +9416,36 @@ function BedReferenceCrudCard({
   React.useEffect(() => {
     setOrderedRows(validRows(rows))
     setDraggingKey('')
-    setDropTargetKey('')
+    setDropIndicator(null)
   }, [rowsStateKey])
   const openModal = (row: Record<string, any> | null = null) => {
     setEditingRow(row)
     setModalOpen(true)
+  }
+  const handleSourceSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    if (config.referenceType !== 'source') return
+    event.preventDefault()
+    if (submitSaving) return
+    setSubmitSaving(true)
+    try {
+      const form = event.currentTarget
+      const response = await fetch(form.getAttribute('action') || './', {
+        method: 'POST',
+        body: new FormData(form),
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.ok !== true) throw new Error(String(payload.message || 'Bed Source was not saved.'))
+      const sourceKey = String(payload.bed_source_key || '')
+      if (!/^[A-Za-z0-9]{20}$/.test(sourceKey)) throw new Error('Firebase Bed Source document key was not returned.')
+      setModalOpen(false)
+      window.alert('Bed Source saved to Firebase. Use Refresh when you want to reload the list.')
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Bed Source synchronization did not finish.')
+    } finally {
+      setSubmitSaving(false)
+    }
   }
   const toneClasses = config.tone === 'green'
     ? {
@@ -7775,6 +9466,34 @@ function BedReferenceCrudCard({
         handle: 'text-sky-700 hover:bg-sky-500/10 hover:text-sky-800 dark:text-sky-300',
         sync: 'border-sky-500/30 bg-sky-500/10 text-sky-700 shadow-[0_0_14px_rgba(14,165,233,0.14)] hover:bg-sky-500/20 hover:text-sky-800 dark:text-sky-300 dark:shadow-[0_0_14px_rgba(56,189,248,0.14)] dark:hover:text-sky-200',
       }
+  const isSourceCanvas = config.referenceType === 'source'
+  const isReferenceCanvas = isSourceCanvas || config.referenceType === 'treatment'
+  const sourceAccentPalettes = [
+    {
+      row: 'bg-sky-500/10 ring-sky-500/20 hover:bg-sky-500/15',
+      bar: 'bg-sky-500',
+      icon: 'bg-sky-500/15 text-sky-600 ring-sky-500/25 dark:text-sky-300',
+      button: 'text-sky-600 hover:bg-sky-500/10 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200',
+    },
+    {
+      row: 'bg-emerald-500/10 ring-emerald-500/20 hover:bg-emerald-500/15',
+      bar: 'bg-emerald-500',
+      icon: 'bg-emerald-500/15 text-emerald-600 ring-emerald-500/25 dark:text-emerald-300',
+      button: 'text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200',
+    },
+    {
+      row: 'bg-amber-500/10 ring-amber-500/20 hover:bg-amber-500/15',
+      bar: 'bg-amber-500',
+      icon: 'bg-amber-500/15 text-amber-600 ring-amber-500/25 dark:text-amber-300',
+      button: 'text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-300 dark:hover:text-amber-200',
+    },
+    {
+      row: 'bg-violet-500/10 ring-violet-500/20 hover:bg-violet-500/15',
+      bar: 'bg-violet-500',
+      icon: 'bg-violet-500/15 text-violet-600 ring-violet-500/25 dark:text-violet-300',
+      button: 'text-violet-600 hover:bg-violet-500/10 hover:text-violet-700 dark:text-violet-300 dark:hover:text-violet-200',
+    },
+  ]
   const persistSortOrder = async (nextRows: Array<Record<string, any>>, previousRows: Array<Record<string, any>>) => {
     const body = new FormData()
     body.append('csrf', data.csrf)
@@ -7803,33 +9522,101 @@ function BedReferenceCrudCard({
       setSortSaving(false)
     }
   }
-  const handleDragStart = (event: React.DragEvent<HTMLElement>, key: string) => {
-    setDraggingKey(key)
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', key)
-  }
-  const handleDrop = (event: React.DragEvent<HTMLElement>, overKey: string) => {
-    event.preventDefault()
-    const activeKey = draggingKey || event.dataTransfer.getData('text/plain')
-    setDraggingKey('')
-    setDropTargetKey('')
-    if (activeKey === '' || activeKey === overKey || sortSaving) return
+  const displayRows = validRows(orderedRows)
 
+  const refreshReferenceRows = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      const tab = config.referenceType === 'treatment' ? 'bed-treatment' : 'bed-source'
+      const response = await fetch(`./?tab=${tab}&format=json`, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.ok !== true || !payload.data) throw new Error(String(payload.message || `${config.entityLabel} list could not be refreshed.`))
+      const nextRows = config.referenceType === 'treatment' ? payload.data.bedTreatments : payload.data.bedSources
+      if (!Array.isArray(nextRows)) throw new Error(`${config.entityLabel} refresh returned an invalid list.`)
+      if (config.referenceType === 'treatment') data.bedTreatments = nextRows
+      else data.bedSources = nextRows
+      setOrderedRows(validRows(nextRows))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : `${config.entityLabel} list could not be refreshed.`)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const beginReferenceDrag = (event: React.PointerEvent<HTMLButtonElement>, row: Record<string, any>) => {
+    if (sortSaving || event.button !== 0) return
+    const key = rowText(row, config.keyField)
+    const sourceIndex = displayRows.findIndex((item) => rowText(item, config.keyField) === key)
+    if (sourceIndex < 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    referenceDragRef.current = { rowKey: key, pointerId: event.pointerId, targetIndex: sourceIndex }
+    setDraggingKey(key)
+    const sourceNode = document.querySelector<HTMLElement>(`[data-reference-node="${CSS.escape(key)}"]`)
+    const sourceParent = sourceNode?.parentElement
+    const sourceTop = sourceNode && sourceParent ? Math.max(0, Math.round(sourceNode.getBoundingClientRect().top - sourceParent.getBoundingClientRect().top - 8)) : 0
+    setDropIndicator({ top: sourceTop })
+  }
+
+  const updateReferenceDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = referenceDragRef.current
+    if (!drag) return
+    const targetElement = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-reference-node]')
+    if (!targetElement) {
+      drag.targetIndex = null
+      setDropIndicator(null)
+      return
+    }
+    const targetKey = targetElement.dataset.referenceNode || ''
+    const targetIndex = displayRows.findIndex((row) => rowText(row, config.keyField) === targetKey)
+    if (targetIndex < 0) return
+    const targetRect = targetElement.getBoundingClientRect()
+    const insertionIndex = event.clientY < targetRect.top + targetRect.height / 2 ? targetIndex : targetIndex + 1
+    drag.targetIndex = Math.max(0, Math.min(displayRows.length, insertionIndex))
+    const targetParent = targetElement.parentElement
+    const indicatorTop = targetParent
+      ? Math.round((insertionIndex === targetIndex ? targetRect.top : targetRect.bottom) - targetParent.getBoundingClientRect().top - 8)
+      : 0
+    setDropIndicator((current) => current?.top === indicatorTop ? current : { top: indicatorTop })
+  }
+
+  const finishReferenceDrag = (event: React.PointerEvent<HTMLButtonElement>, cancelled = false) => {
+    const drag = referenceDragRef.current
+    if (!drag) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
     const sortableRows = validRows(orderedRows)
     const previousRows = sortableRows
-    const fromIndex = sortableRows.findIndex((row) => rowText(row, config.keyField) === activeKey)
-    const toIndex = sortableRows.findIndex((row) => rowText(row, config.keyField) === overKey)
-    if (fromIndex < 0 || toIndex < 0) return
+    const fromIndex = sortableRows.findIndex((row) => rowText(row, config.keyField) === drag.rowKey)
+    const insertionIndex = drag.targetIndex
+    referenceDragRef.current = null
+    setDraggingKey('')
+    setDropIndicator(null)
+    if (cancelled || fromIndex < 0 || insertionIndex === null || sortSaving) return
+    const toIndex = insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex
+    if (fromIndex === toIndex) return
     const movedRows = [...sortableRows]
     const [movedRow] = movedRows.splice(fromIndex, 1)
     movedRows.splice(toIndex, 0, movedRow)
     const nextRows = movedRows.map((row, index) => ({ ...row, [config.sortField]: index + 1 }))
-    if (nextRows === orderedRows) return
-
     setOrderedRows(nextRows)
     void persistSortOrder(nextRows, previousRows)
   }
-  const displayRows = validRows(orderedRows)
+
+  const moveReferenceRow = (key: string, direction: -1 | 1) => {
+    const fromIndex = displayRows.findIndex((item) => rowText(item, config.keyField) === key)
+    const targetIndex = fromIndex + direction
+    if (fromIndex < 0 || targetIndex < 0 || targetIndex >= displayRows.length || sortSaving) return
+    const previousRows = displayRows
+    const nextRows = [...displayRows]
+    const [movedRow] = nextRows.splice(fromIndex, 1)
+    nextRows.splice(targetIndex, 0, movedRow)
+    const normalizedRows = nextRows.map((item, itemIndex) => ({ ...item, [config.sortField]: itemIndex + 1 }))
+    setOrderedRows(normalizedRows)
+    void persistSortOrder(normalizedRows, previousRows)
+  }
 
   return (
     <>
@@ -7845,36 +9632,12 @@ function BedReferenceCrudCard({
           <div className="flex shrink-0 items-center gap-1.5">
             {sortSaving ? <Badge variant="secondary">Saving</Badge> : null}
             <Badge variant="outline">{displayRows.length}</Badge>
-            {showMasterSyncAction ? (
-              <>
-                <form ref={masterSyncFormRef} method="post" className="contents">
-                  <input type="hidden" name="csrf" value={data.csrf} />
-                  <input type="hidden" name="action" value="sync_bed_reference_firebase" />
-                  <input type="hidden" name="reference_type" value={config.referenceType} />
-                  <input type="hidden" name="return_tab" value={returnTab} />
-                  <Tooltip>
-                    <TooltipTrigger render={<Button
-                      type="button"
-                      variant="outline"
-                      size="icon-sm"
-                      className={cn('rounded-full', toneClasses.sync)}
-                      aria-label={`Sync ${config.entityLabel}`}
-                      title={`Sync ${config.entityLabel}`}
-                      onClick={() => setConfirmation({
-                        title: `Sync ${config.entityLabel}`,
-                        message: `Update the shared ${config.entityLabel.toLowerCase()} list for all connected users?`,
-                        confirmLabel: 'Sync Now',
-                        onConfirm: () => masterSyncFormRef.current?.requestSubmit(),
-                      })}
-                    />}>
-                      <RotateCcw />
-                    </TooltipTrigger>
-                    <TooltipContent>Sync {config.entityLabel}</TooltipContent>
-                  </Tooltip>
-                </form>
-                <span className="mx-0.5 h-6 w-px bg-border" aria-hidden="true" />
-              </>
-            ) : null}
+            {isReferenceCanvas ? <Tooltip>
+              <TooltipTrigger render={<Button type="button" variant="outline" size="icon" className="size-8 shrink-0 rounded-full p-0" aria-label={`Refresh ${config.entityLabel} list`} title={`Refresh ${config.entityLabel} list`} onClick={() => void refreshReferenceRows()} disabled={refreshing} aria-busy={refreshing} />}>
+                <RotateCcw className="size-4" />
+              </TooltipTrigger>
+              <TooltipContent>Refresh list</TooltipContent>
+            </Tooltip> : null}
             <Tooltip>
               <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label={`Add ${config.entityLabel}`} title={`Add ${config.entityLabel}`} onClick={() => openModal()} />}>
                 <Plus />
@@ -7884,7 +9647,12 @@ function BedReferenceCrudCard({
           </div>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 pb-12 [scrollbar-gutter:stable]">
-          <div className="grid gap-2">
+          <div data-reference-canvas={config.referenceType} className={cn('relative overflow-hidden rounded-xl p-3 md:p-4', isReferenceCanvas ? 'bg-background/30 md:p-5' : 'bg-muted/20')}>
+            <div className={cn('mb-3 flex items-center justify-between gap-3 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground', isReferenceCanvas && 'mb-4 justify-end')}>
+              {!isReferenceCanvas ? <span className="flex items-center gap-2"><Layers className={cn('size-3.5', toneClasses.icon)} aria-hidden="true" /> {config.entityLabel} canvas</span> : null}
+              <span aria-live="polite">{sortSaving ? 'Saving order…' : draggingKey !== '' ? 'Release at the “Drop here” marker' : isReferenceCanvas ? `Select or drag a ${isSourceCanvas ? 'bed source' : 'bed treatment'} symbol to move it` : 'Select or drag a symbol to move it'}</span>
+            </div>
+            <div className={cn('relative grid', isReferenceCanvas ? 'gap-3 md:before:absolute md:before:bottom-7 md:before:left-[-1.5rem] md:before:top-7 md:before:w-px md:before:bg-border/80' : 'gap-2')} role="list" aria-label={`${config.entityLabel} order`}>
             {displayRows.length > 0 ? displayRows.map((row) => {
               const key = rowText(row, config.keyField)
               const name = rowText(row, config.nameField, config.entityLabel)
@@ -7892,50 +9660,109 @@ function BedReferenceCrudCard({
               const status = rowText(row, config.statusField, 'ACTIVE')
               const descriptionText = rowText(row, config.descriptionField)
               const nextStatus = status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+              const index = displayRows.findIndex((item) => rowText(item, config.keyField) === key)
+              const sourceAccent = sourceAccentPalettes[index % sourceAccentPalettes.length]
+              const referenceStatusFormId = `reference-status-${config.referenceType}-${key}`
 
               return (
                 <article
                   key={key || `${title}-${code}`}
+                  data-reference-node={key}
+                  role="listitem"
                   className={cn(
-                    'relative grid gap-1.5 overflow-hidden rounded-md px-3 py-2.5 pl-4 ring-1 transition',
-                    status === 'ACTIVE' ? toneClasses.row : 'bg-muted/20 ring-border/60',
-                    dropTargetKey === key && toneClasses.drop,
+                    isReferenceCanvas ? 'relative flex min-h-[5.5rem] items-center overflow-visible rounded-r-xl bg-background/80 pl-3 pr-2 shadow-sm ring-1 transition' : 'relative grid gap-1.5 overflow-hidden rounded-md px-3 py-2.5 pl-4 ring-1 transition',
+                    isReferenceCanvas ? (status === 'ACTIVE' ? sourceAccent.row : 'bg-muted/20 ring-border/60') : (status === 'ACTIVE' ? toneClasses.row : 'bg-muted/20 ring-border/60'),
                     draggingKey === key && 'opacity-60',
                   )}
-                  onDragOver={(event) => {
-                    event.preventDefault()
-                    event.dataTransfer.dropEffect = 'move'
-                    if (dropTargetKey !== key) setDropTargetKey(key)
-                  }}
-                  onDragLeave={() => {
-                    if (dropTargetKey === key) setDropTargetKey('')
-                  }}
-                  onDrop={(event) => handleDrop(event, key)}
                 >
-                  <span className={cn('absolute inset-y-0 left-0 w-0.5', status === 'ACTIVE' ? toneClasses.stripe : 'bg-muted-foreground/50')} aria-hidden="true" />
+                  {isReferenceCanvas ? <span className="pointer-events-none absolute -left-6 top-1/2 hidden h-px w-6 bg-primary/45 md:block" aria-hidden="true" /> : null}
+                  <span className={cn('absolute inset-y-0 left-0', isReferenceCanvas ? 'w-1' : 'w-0.5', status === 'ACTIVE' ? (isReferenceCanvas ? sourceAccent.bar : toneClasses.stripe) : 'bg-muted-foreground/50')} aria-hidden="true" />
+                  {isReferenceCanvas ? (
+                    <>
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon" className={cn('size-9 shrink-0 touch-none cursor-grab rounded-full p-0 active:cursor-grabbing ring-1 ring-inset ring-current/20', sourceAccent.button, draggingKey === key && 'cursor-grabbing bg-primary/10', sortSaving && 'pointer-events-none opacity-50')} aria-label={`Drag ${name} to reorder`} title={`Drag ${name} to reorder`} onPointerDown={(event) => beginReferenceDrag(event, row)} onPointerMove={updateReferenceDrag} onPointerUp={finishReferenceDrag} onPointerCancel={(event) => finishReferenceDrag(event, true)} />}>
+                          <GripVertical className="size-4" aria-hidden="true" />
+                        </TooltipTrigger>
+                        <TooltipContent>Drag to reorder</TooltipContent>
+                      </Tooltip>
+                      <button type="button" className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-md px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={`Select ${name}`} aria-pressed={draggingKey === key} onClick={() => setDraggingKey(key)}>
+                        <span className={cn('grid size-11 shrink-0 place-items-center rounded-md ring-1', status === 'ACTIVE' ? sourceAccent.icon : 'bg-muted text-muted-foreground ring-border/60')} aria-hidden="true">
+                          {isSourceCanvas ? <Signpost className="size-5" /> : <Icon className="size-5" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{isSourceCanvas ? 'Source' : 'Treatment'} {index + 1}</span>
+                            <Badge variant={status === 'ACTIVE' ? 'secondary' : 'outline'} className="px-1.5 py-0 text-[10px]">{status}</Badge>
+                          </span>
+                          <span className="mt-1 block truncate text-sm font-semibold uppercase">{name}</span>
+                          <span className="mt-1 block truncate text-[11px] text-muted-foreground">{code || 'No code assigned'}</span>
+                        </span>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
+                        <Button type="button" variant="ghost" size="icon" className={cn('size-8 rounded-full p-0 ring-1 ring-inset ring-current/20', sourceAccent.button)} aria-label={`Move ${name} up`} title="Move up" disabled={sortSaving || index === 0} onClick={() => moveReferenceRow(key, -1)}><ChevronUp className="size-4" /></Button>
+                        <Button type="button" variant="ghost" size="icon" className={cn('size-8 rounded-full p-0 ring-1 ring-inset ring-current/20', sourceAccent.button)} aria-label={`Move ${name} down`} title="Move down" disabled={sortSaving || index === displayRows.length - 1} onClick={() => moveReferenceRow(key, 1)}><ChevronDown className="size-4" /></Button>
+                        <form id={referenceStatusFormId} method="post" data-skip-submit-confirmation="true" className="flex items-center">
+                          <input type="hidden" name="csrf" value={data.csrf} />
+                          <input type="hidden" name="action" value={config.statusAction} />
+                          <input type="hidden" name="return_tab" value={returnTab} />
+                          <input type="hidden" name={config.keyField} value={key} />
+                          <input type="hidden" name={config.statusField} value={nextStatus} />
+                          <Switch
+                            checked={status === 'ACTIVE'}
+                            disabled={sortSaving || status === 'DELETED'}
+                            aria-label={`Set ${name} ${nextStatus.toLowerCase()}`}
+                            title={`Set ${name} ${nextStatus.toLowerCase()}`}
+                            onClick={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              const form = document.getElementById(referenceStatusFormId) as HTMLFormElement | null
+                              if (!form || status === 'DELETED') return
+                              setConfirmation({
+                                title: `${nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${config.entityLabel}`,
+                                message: `${nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${name}?`,
+                                confirmLabel: nextStatus === 'ACTIVE' ? 'Set Active' : 'Set Inactive',
+                                onConfirm: () => form.requestSubmit(),
+                              })
+                            }}
+                          />
+                        </form>
+                        <Tooltip>
+                          <TooltipTrigger render={<Button type="button" variant="ghost" size="icon" className={cn('size-8 rounded-full p-0 ring-1 ring-inset ring-current/20', sourceAccent.button)} aria-label={`Edit ${name}`} title={`Edit ${name}`} onClick={() => openModal(row)} />}>
+                            <Pencil className="size-4" />
+                          </TooltipTrigger>
+                          <TooltipContent>Edit {config.entityLabel}</TooltipContent>
+                        </Tooltip>
+                        <form method="post" data-skip-submit-confirmation="true">
+                          <input type="hidden" name="csrf" value={data.csrf} />
+                          <input type="hidden" name="action" value={config.statusAction} />
+                          <input type="hidden" name="return_tab" value={returnTab} />
+                          <input type="hidden" name={config.keyField} value={key} />
+                          <input type="hidden" name={config.statusField} value="DELETED" />
+                          <Tooltip>
+                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon" className="size-8 rounded-full p-0 text-destructive ring-1 ring-inset ring-current/20 hover:bg-destructive/10 hover:text-destructive" aria-label={`Delete ${name}`} title={`Delete ${name}`} onClick={(event) => {
+                              const form = event.currentTarget.closest('form')
+                              setConfirmation({
+                                title: `Delete ${config.entityLabel}`,
+                                message: `Delete ${name}?`,
+                                confirmLabel: 'Delete',
+                                onConfirm: () => form?.requestSubmit(),
+                              })
+                            }} />}>
+                              <Trash2 className="size-4" />
+                            </TooltipTrigger>
+                            <TooltipContent>Delete {config.entityLabel}</TooltipContent>
+                          </Tooltip>
+                        </form>
+                      </div>
+                    </>
+                  ) : (
                   <div className="flex min-w-0 items-start justify-between gap-2">
                     <div className="flex min-w-0 items-start gap-2">
                       <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <span
-                              draggable={!sortSaving}
-                              role="button"
-                              tabIndex={0}
-                              className={cn('mt-0.5 grid size-7 shrink-0 cursor-grab place-items-center rounded-full active:cursor-grabbing', toneClasses.handle, sortSaving && 'pointer-events-none opacity-50')}
-                              aria-label={`Drag ${name} to sort`}
-                              title={`Drag ${name} to sort`}
-                              onDragStart={(event) => handleDragStart(event, key)}
-                              onDragEnd={() => {
-                                setDraggingKey('')
-                                setDropTargetKey('')
-                              }}
-                            />
-                          }
-                        >
-                          <GripVertical className="size-4" aria-hidden="true" />
+                        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon" className={cn('mt-0.5 size-11 shrink-0 touch-none cursor-grab rounded-md active:cursor-grabbing', toneClasses.handle, draggingKey === key && 'cursor-grabbing bg-primary/10', sortSaving && 'pointer-events-none opacity-50')} aria-label={`Drag ${name} to reorder`} title={`Drag ${name} to reorder`} onPointerDown={(event) => beginReferenceDrag(event, row)} onPointerMove={updateReferenceDrag} onPointerUp={finishReferenceDrag} onPointerCancel={(event) => finishReferenceDrag(event, true)} />}>
+                          <GripVertical className="size-5" aria-hidden="true" />
                         </TooltipTrigger>
-                        <TooltipContent>Drag to sort</TooltipContent>
+                        <TooltipContent>Drag to reorder</TooltipContent>
                       </Tooltip>
                       <span className={cn('mt-0.5 grid size-7 shrink-0 place-items-center rounded-md ring-1', status === 'ACTIVE' ? `${toneClasses.status} ring-current/15` : 'bg-muted text-muted-foreground ring-border/60')} aria-hidden="true">
                         <Icon className="size-4" />
@@ -7950,13 +9777,35 @@ function BedReferenceCrudCard({
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
+                      <Button type="button" variant="ghost" size="icon" className={cn('size-10 rounded-md', toneClasses.handle)} aria-label={`Move ${name} up`} title="Move up" disabled={sortSaving || displayRows.findIndex((item) => rowText(item, config.keyField) === key) === 0} onClick={() => {
+                        const fromIndex = displayRows.findIndex((item) => rowText(item, config.keyField) === key)
+                        if (fromIndex <= 0 || sortSaving) return
+                        const previousRows = displayRows
+                        const nextRows = [...displayRows]
+                        const [movedRow] = nextRows.splice(fromIndex, 1)
+                        nextRows.splice(fromIndex - 1, 0, movedRow)
+                        const normalizedRows = nextRows.map((item, itemIndex) => ({ ...item, [config.sortField]: itemIndex + 1 }))
+                        setOrderedRows(normalizedRows)
+                        void persistSortOrder(normalizedRows, previousRows)
+                      }}><ChevronUp /></Button>
+                      <Button type="button" variant="ghost" size="icon" className={cn('size-10 rounded-md', toneClasses.handle)} aria-label={`Move ${name} down`} title="Move down" disabled={sortSaving || displayRows.findIndex((item) => rowText(item, config.keyField) === key) === displayRows.length - 1} onClick={() => {
+                        const fromIndex = displayRows.findIndex((item) => rowText(item, config.keyField) === key)
+                        if (fromIndex < 0 || fromIndex >= displayRows.length - 1 || sortSaving) return
+                        const previousRows = displayRows
+                        const nextRows = [...displayRows]
+                        const [movedRow] = nextRows.splice(fromIndex, 1)
+                        nextRows.splice(fromIndex + 1, 0, movedRow)
+                        const normalizedRows = nextRows.map((item, itemIndex) => ({ ...item, [config.sortField]: itemIndex + 1 }))
+                        setOrderedRows(normalizedRows)
+                        void persistSortOrder(normalizedRows, previousRows)
+                      }}><ChevronDown /></Button>
                       <Tooltip>
                         <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Edit ${name}`} title={`Edit ${name}`} onClick={() => openModal(row)} />}>
                           <Pencil />
                         </TooltipTrigger>
                         <TooltipContent>Edit {config.entityLabel}</TooltipContent>
                       </Tooltip>
-                      <form method="post">
+                      <form method="post" data-skip-submit-confirmation="true">
                         <input type="hidden" name="csrf" value={data.csrf} />
                         <input type="hidden" name="action" value={config.statusAction} />
                         <input type="hidden" name="return_tab" value={returnTab} />
@@ -7977,7 +9826,7 @@ function BedReferenceCrudCard({
                           <TooltipContent>{nextStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'}</TooltipContent>
                         </Tooltip>
                       </form>
-                      <form method="post">
+                      <form method="post" data-skip-submit-confirmation="true">
                         <input type="hidden" name="csrf" value={data.csrf} />
                         <input type="hidden" name="action" value={config.statusAction} />
                         <input type="hidden" name="return_tab" value={returnTab} />
@@ -8000,6 +9849,7 @@ function BedReferenceCrudCard({
                       </form>
                     </div>
                   </div>
+                  )}
                 </article>
               )
             }) : (
@@ -8009,6 +9859,8 @@ function BedReferenceCrudCard({
                 <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
               </div>
             )}
+            {dropIndicator ? <div data-reference-drop-indicator="true" className="pointer-events-none absolute left-1 right-1 z-20 flex -translate-y-1/2 items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-primary" style={{ top: dropIndicator.top }} aria-live="polite"><span className="h-0.5 flex-1 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.45)]" aria-hidden="true" /><span className="rounded-full bg-primary px-2 py-1 text-primary-foreground shadow-sm">Drop here</span><span className="h-0.5 flex-1 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.45)]" aria-hidden="true" /></div> : null}
+          </div>
           </div>
         </CardContent>
       </Card>
@@ -8030,7 +9882,7 @@ function BedReferenceCrudCard({
             </DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
-          <form key={rowText(editingRow, config.keyField, 'create-reference')} ref={formRef} method="post">
+          <form key={rowText(editingRow, config.keyField, 'create-reference')} ref={formRef} method="post" data-skip-submit-confirmation="true" onSubmit={handleSourceSubmit}>
             <div className="grid gap-4 px-6 py-5">
               <input type="hidden" name="csrf" value={data.csrf} />
               <input type="hidden" name="action" value={config.saveAction} />
@@ -8067,7 +9919,7 @@ function BedReferenceCrudCard({
           </form>
           <DialogFooter className="m-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
             <span className="text-xs text-muted-foreground">{editingRow ? 'Existing history is preserved on update.' : 'This option will be ready after saving.'}</span>
-            <Button type="button" onClick={() => setConfirmation({
+            <Button type="button" disabled={submitSaving} onClick={() => setConfirmation({
               title: editingRow ? `Confirm ${config.entityLabel} update` : `Confirm ${config.entityLabel} creation`,
               message: editingRow ? `Update this ${config.entityLabel.toLowerCase()}?` : `Create this ${config.entityLabel.toLowerCase()}?`,
               confirmLabel: submitLabel,
@@ -8100,6 +9952,10 @@ function BedReferenceManagementView({
   const Icon = isTreatment ? Stethoscope : Signpost
   const config = isTreatment ? bedTreatmentConfig : bedSourceConfig
   const returnTab = isTreatment ? 'bed-treatment' : 'bed-source'
+  const summaryRows = rows.filter((row) => String(row[config.statusField] || 'ACTIVE').toUpperCase() !== 'DELETED')
+  const activeCount = summaryRows.filter((row) => String(row[config.statusField] || 'ACTIVE').toUpperCase() === 'ACTIVE').length
+  const inactiveCount = summaryRows.filter((row) => String(row[config.statusField] || '').toUpperCase() === 'INACTIVE').length
+  const summaryPreviewRows = summaryRows.slice(0, 4)
 
   return (
     <>
@@ -8110,25 +9966,43 @@ function BedReferenceManagementView({
           <p className="mt-1 text-sm text-muted-foreground">{description}</p>
         </div>
       </div>
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,7fr)_minmax(280px,3fr)]">
-        <BedReferenceCrudCard
-          icon={Icon}
-          title={title}
-          description={description}
-          rows={rows}
-          config={config}
-          returnTab={returnTab}
-          showMasterSyncAction
-          setConfirmation={setConfirmation}
-        />
-        <Card className="min-w-0 overflow-hidden">
+      <div className="grid gap-4 xl:grid-cols-12 xl:items-start">
+        <div className="min-w-0 xl:col-span-8">
+          <BedReferenceCrudCard
+            icon={Icon}
+            title={title}
+            description={description}
+            rows={rows}
+            config={config}
+            returnTab={returnTab}
+            setConfirmation={setConfirmation}
+          />
+        </div>
+        <Card className="min-w-0 overflow-hidden xl:col-span-4">
           <CardHeader className="border-b">
-            <CardDescription className="text-xs">Usage</CardDescription>
-            <CardTitle className="text-sm tracking-normal">{isTreatment ? 'Treatment Options' : 'Admission Source Options'}</CardTitle>
+            <CardDescription className="text-xs">Reference summary</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-sm tracking-normal"><Activity className="size-4 text-primary" aria-hidden="true" />{title} Summary</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-3 py-4 text-xs leading-5 text-muted-foreground">
-            <p>Active options appear in task submission selections. Inactive options stay saved but are hidden from users.</p>
-            <p>Deleted options are removed from selection lists while preserving administrator history.</p>
+          <CardContent className="grid gap-4 py-4 text-xs leading-5 text-muted-foreground">
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border/60">
+              <div className="bg-background/80 p-3"><p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Total</p><p className="mt-1 text-xl font-semibold tabular-nums text-foreground">{summaryRows.length}</p></div>
+              <div className="bg-background/80 p-3"><p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Active</p><p className="mt-1 text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{activeCount}</p></div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-md bg-muted/20 p-3"><p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Inactive</p><p className="mt-1 text-base font-semibold tabular-nums text-foreground">{inactiveCount}</p></div>
+              <div className="rounded-md bg-muted/20 p-3"><p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Deleted</p><p className="mt-1 text-base font-semibold tabular-nums text-foreground">{Math.max(0, rows.length - summaryRows.length)}</p></div>
+            </div>
+            <div className="grid gap-2 border-t pt-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Current order</p>
+              {summaryPreviewRows.length > 0 ? <ol className="grid gap-1.5">
+                {summaryPreviewRows.map((row, index) => <li key={String(row[config.keyField] || `${title}-${index}`)} className="flex min-w-0 items-center gap-2"><span className="grid size-5 shrink-0 place-items-center rounded bg-muted/40 text-[10px] font-semibold tabular-nums text-muted-foreground">{index + 1}</span><span className="min-w-0 flex-1 truncate font-medium text-foreground">{String(row[config.nameField] || title)}</span><span className="shrink-0 text-[10px] text-muted-foreground">{String(row[config.codeField] || '')}</span></li>)}
+              </ol> : <p>No saved options yet.</p>}
+              {summaryRows.length > summaryPreviewRows.length ? <p className="text-[11px]">+{summaryRows.length - summaryPreviewRows.length} more shown in the list.</p> : null}
+            </div>
+            <div className="grid gap-2 border-t pt-3">
+              <p>Active options appear in task submission selections. Inactive options stay saved but are hidden from users.</p>
+              <p>Use the Add, Edit, and Sync controls in the left column. Each action opens one confirmation before saving.</p>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -8138,7 +10012,6 @@ function BedReferenceManagementView({
 
 function BedManagementView() {
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
-  const bedSyncFormRef = React.useRef<HTMLFormElement>(null)
   const bedSummary = data.bedMasterListSummary || {}
   const bedGroupCounts: Array<Record<string, any>> = Array.isArray(bedSummary.groupCounts) ? bedSummary.groupCounts : []
   const bedTreatments: Array<Record<string, any>> = Array.isArray(data.bedTreatments) ? data.bedTreatments : []
@@ -8178,27 +10051,6 @@ function BedManagementView() {
                 <CardTitle className="text-base tracking-normal">Bed Summary</CardTitle>
                 <CardDescription>Simple operational counts and field group reports.</CardDescription>
               </div>
-              <form ref={bedSyncFormRef} method="post" className="shrink-0">
-                <input type="hidden" name="csrf" value={data.csrf} />
-                <input type="hidden" name="action" value="resync_bed_master_list" />
-                <input type="hidden" name="return_tab" value="bed-management" />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="rounded-full bg-emerald-500/10 text-emerald-600 shadow-[0_0_18px_rgba(16,185,129,0.22)] hover:bg-emerald-500/20 hover:text-emerald-500 dark:text-emerald-400 dark:shadow-[0_0_18px_rgba(52,211,153,0.22)] dark:hover:text-emerald-300"
-                  aria-label="Refresh bed list"
-                  title="Refresh bed list"
-                  onClick={() => setConfirmation({
-                    title: 'Refresh bed list',
-                    message: 'Update the bed list with the latest hospital bed information? Beds that are no longer available will be marked inactive, not deleted.',
-                    confirmLabel: 'Refresh Beds',
-                    onConfirm: () => bedSyncFormRef.current?.requestSubmit(),
-                  })}
-                >
-                  <RotateCcw />
-                </Button>
-              </form>
             </CardHeader>
             <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
               <div className="grid gap-5">
@@ -8249,8 +10101,284 @@ function BedManagementView() {
 	  )
 	}
 
+function FloorManagementView() {
+  const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
+  const [orderedRows, setOrderedRows] = React.useState<Array<Record<string, any>>>(() => Array.isArray(data.buildingFloors) ? data.buildingFloors : [])
+  const [selectedFloorKey, setSelectedFloorKey] = React.useState('')
+  const [draggingFloorKey, setDraggingFloorKey] = React.useState('')
+  const [dropIndicator, setDropIndicator] = React.useState<{ groupKey: string; top: number } | null>(null)
+  const [savingScope, setSavingScope] = React.useState('')
+  const floorDragRef = React.useRef<{ groupKey: string; rowKey: string; pointerId: number; targetIndex: number | null } | null>(null)
+  const floorAccentPalettes = [
+    {
+      row: 'bg-sky-500/8 ring-sky-500/20 hover:bg-sky-500/12',
+      bar: 'bg-sky-500',
+      icon: 'bg-sky-500/12 text-sky-700 ring-sky-500/25 dark:text-sky-300',
+      button: 'text-sky-700 hover:bg-sky-500/10 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200',
+    },
+    {
+      row: 'bg-emerald-500/8 ring-emerald-500/20 hover:bg-emerald-500/12',
+      bar: 'bg-emerald-500',
+      icon: 'bg-emerald-500/12 text-emerald-700 ring-emerald-500/25 dark:text-emerald-300',
+      button: 'text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200',
+    },
+    {
+      row: 'bg-amber-500/8 ring-amber-500/20 hover:bg-amber-500/12',
+      bar: 'bg-amber-500',
+      icon: 'bg-amber-500/12 text-amber-700 ring-amber-500/25 dark:text-amber-300',
+      button: 'text-amber-700 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200',
+    },
+    {
+      row: 'bg-violet-500/8 ring-violet-500/20 hover:bg-violet-500/12',
+      bar: 'bg-violet-500',
+      icon: 'bg-violet-500/12 text-violet-700 ring-violet-500/25 dark:text-violet-300',
+      button: 'text-violet-700 hover:bg-violet-500/10 hover:text-violet-800 dark:text-violet-300 dark:hover:text-violet-200',
+    },
+  ]
+
+  const rowKey = (row: Record<string, any>) => String(row.building_floor_key || '')
+  const scopeKey = (row: Record<string, any>) => `${String(row.branch_key || row.branch_name || '')}|${String(row.building_key || row.building_name || '')}`
+  const groups = React.useMemo(() => {
+    const grouped = new Map<string, { key: string; branchName: string; buildingName: string; rows: Array<Record<string, any>> }>()
+    orderedRows.forEach((row) => {
+      const key = scopeKey(row)
+      if (!grouped.has(key)) {
+        grouped.set(key, { key, branchName: String(row.branch_name || 'Unspecified branch'), buildingName: String(row.building_name || 'Unspecified building'), rows: [] })
+      }
+      grouped.get(key)?.rows.push(row)
+    })
+    return Array.from(grouped.values()).map((group) => ({
+      ...group,
+      rows: [...group.rows].sort((first, second) => Number(first.floor_sort_order || 0) - Number(second.floor_sort_order || 0) || String(first.floor_name || '').localeCompare(String(second.floor_name || ''))),
+    }))
+  }, [orderedRows])
+
+  const replaceGroupRows = (nextGroupRows: Array<Record<string, any>>) => {
+    const nextByKey = new Map(nextGroupRows.map((row) => [rowKey(row), row]))
+    setOrderedRows((current) => current.map((row) => nextByKey.get(rowKey(row)) || row))
+  }
+
+  const persistGroupOrder = async (groupKey: string, nextGroupRows: Array<Record<string, any>>, previousRows: Array<Record<string, any>>) => {
+    const body = new FormData()
+    body.append('csrf', data.csrf)
+    body.append('action', 'update_project_building_floor_sort_order')
+    nextGroupRows.forEach((row) => body.append('order_keys[]', rowKey(row)))
+    setSavingScope(groupKey)
+    try {
+      const response = await fetch('./', { method: 'POST', body, headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) throw new Error(String(payload.message || 'Floor order was not saved.'))
+      if (Array.isArray(payload.rows)) replaceGroupRows(payload.rows)
+      if (payload.firebase_sync && payload.firebase_sync.ok !== true) window.alert('Floor order saved, but the connected-user update needs attention.')
+    } catch (error) {
+      setOrderedRows(previousRows)
+      window.alert(error instanceof Error ? error.message : 'Floor order was not saved.')
+    } finally {
+      setSavingScope('')
+    }
+  }
+
+  const moveRow = (group: { key: string; rows: Array<Record<string, any>> }, fromIndex: number, toIndex: number) => {
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex || savingScope !== '') return
+    const previousRows = orderedRows
+    const nextGroupRows = [...group.rows]
+    const [movedRow] = nextGroupRows.splice(fromIndex, 1)
+    nextGroupRows.splice(toIndex, 0, movedRow)
+    const normalizedRows = nextGroupRows.map((row, index) => ({ ...row, floor_sort_order: index + 1, sort_order: index + 1 }))
+    replaceGroupRows(normalizedRows)
+    void persistGroupOrder(group.key, normalizedRows, previousRows)
+  }
+
+  const beginFloorDrag = (event: React.PointerEvent<HTMLButtonElement>, group: { key: string; rows: Array<Record<string, any>> }, row: Record<string, any>) => {
+    if (savingScope !== '' || event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    floorDragRef.current = { groupKey: group.key, rowKey: rowKey(row), pointerId: event.pointerId, targetIndex: group.rows.findIndex((item) => rowKey(item) === rowKey(row)) }
+    setSelectedFloorKey(rowKey(row))
+    setDraggingFloorKey(rowKey(row))
+    const sourceNode = document.querySelector<HTMLElement>(`[data-floor-node="${CSS.escape(rowKey(row))}"]`)
+    const sourceParent = sourceNode?.parentElement
+    const sourceTop = sourceNode && sourceParent ? Math.max(0, Math.round(sourceNode.getBoundingClientRect().top - sourceParent.getBoundingClientRect().top - 8)) : 0
+    setDropIndicator({ groupKey: group.key, top: sourceTop })
+  }
+
+  const updateFloorDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = floorDragRef.current
+    if (!drag) return
+    const targetElement = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-floor-node]')
+    const targetGroupKey = targetElement?.closest<HTMLElement>('[data-floor-canvas]')?.dataset.floorCanvas || ''
+    if (!targetElement || targetGroupKey !== drag.groupKey) {
+      drag.targetIndex = null
+      setDropIndicator(null)
+      return
+    }
+    const group = groups.find((item) => item.key === drag.groupKey)
+    const targetIndex = group?.rows.findIndex((item) => rowKey(item) === targetElement.dataset.floorNode) ?? -1
+    if (!group || targetIndex < 0) return
+    const targetRect = targetElement.getBoundingClientRect()
+    const insertionIndex = event.clientY < targetRect.top + targetRect.height / 2 ? targetIndex : targetIndex + 1
+    drag.targetIndex = Math.max(0, Math.min(group.rows.length, insertionIndex))
+    const targetParent = targetElement.parentElement
+    const indicatorTop = targetParent
+      ? Math.round((insertionIndex === targetIndex ? targetRect.top : targetRect.bottom) - targetParent.getBoundingClientRect().top - 8)
+      : 0
+    setDropIndicator((current) => current?.groupKey === drag.groupKey && current.top === indicatorTop ? current : { groupKey: drag.groupKey, top: indicatorTop })
+  }
+
+  const finishFloorDrag = (event: React.PointerEvent<HTMLButtonElement>, cancelled = false) => {
+    const drag = floorDragRef.current
+    if (!drag) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    const group = groups.find((item) => item.key === drag.groupKey)
+    const fromIndex = group?.rows.findIndex((row) => rowKey(row) === drag.rowKey) ?? -1
+    const insertionIndex = drag.targetIndex
+    floorDragRef.current = null
+    setDraggingFloorKey('')
+    setDropIndicator(null)
+    if (cancelled || !group || fromIndex < 0 || insertionIndex === null) return
+    const toIndex = insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex
+    moveRow(group, fromIndex, toIndex)
+  }
+
+  return (
+    <>
+      <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} />
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-normal">Floor Management</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Arrange floors under each building for a predictable mobile display. New floors are discovered from the current bed list.</p>
+        </div>
+      </div>
+      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <CardHeader className="sticky top-0 z-10 flex shrink-0 flex-row items-start justify-between gap-3 border-b bg-card">
+          <div className="min-w-0">
+            <CardTitle className="flex items-center gap-2 text-base tracking-normal"><Building2 className="size-4 text-primary" /> Building - Floor Canvas</CardTitle>
+            <CardDescription>Select a floor symbol in the arrangement canvas, then move it with the large arrow buttons. The saved order is shared with connected users.</CardDescription>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Badge variant="outline">{orderedRows.length} floors</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
+          <div className="grid gap-5">
+            {groups.length > 0 ? groups.map((group) => {
+              const activeFloorCount = group.rows.filter((row) => String(row.floor_status || 'ACTIVE').toUpperCase() === 'ACTIVE').length
+              const previewRows = group.rows.slice(0, 4)
+              return (
+              <section key={group.key} className="grid gap-2 border-t pt-4 first:border-t-0 first:pt-0">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Network className="size-4 shrink-0 text-primary" aria-hidden="true" />
+                    <div className="min-w-0"><h3 className="truncate text-sm font-semibold">{group.buildingName}</h3><p className="truncate text-xs text-muted-foreground">{group.branchName}</p></div>
+                  </div>
+                  <Badge variant="secondary">{group.rows.length} floor{group.rows.length === 1 ? '' : 's'}</Badge>
+                </div>
+                <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
+                <div data-floor-canvas={group.key} className="relative overflow-hidden rounded-xl bg-muted/20 p-3 md:p-5 lg:col-span-8">
+                  <div className="mb-4 flex items-center justify-between gap-3 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span className="flex items-center gap-2"><Building2 className="size-3.5" aria-hidden="true" /> Building flow</span>
+                    <span aria-live="polite">{savingScope === group.key ? 'Saving order…' : draggingFloorKey !== '' && dropIndicator?.groupKey === group.key ? 'Release at the “Drop here” marker' : 'Select or drag a floor symbol to move it'}</span>
+                  </div>
+                  <div className="relative grid gap-4 md:grid-cols-[17rem_minmax(0,1fr)] md:gap-12">
+                    <div className="relative flex items-start md:items-center">
+                      <article data-floor-building-node={group.key} className="relative w-full overflow-hidden rounded-lg bg-background/90 text-left shadow-sm">
+                        <span className="absolute inset-y-0 left-0 w-1 bg-primary" aria-hidden="true" />
+                        <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+                          <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"><span className="grid size-6 shrink-0 place-items-center rounded bg-primary/10 text-primary"><Building2 className="size-3.5" aria-hidden="true" /></span><span className="truncate">Building</span></div>
+                          <Badge variant="outline" className="shrink-0 text-[10px]">Source</Badge>
+                        </div>
+                        <div className="px-3 py-3"><p className="truncate text-base font-semibold">{group.buildingName}</p><p className="mt-1 truncate text-xs text-muted-foreground">{group.branchName}</p><p className="mt-4 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Floors {group.rows.length}</p></div>
+                      </article>
+                    </div>
+                    <div className="relative grid gap-3 md:before:absolute md:before:bottom-7 md:before:left-[-1.5rem] md:before:top-7 md:before:w-px md:before:bg-border/80" role="group" aria-label={`Floors in ${group.buildingName}`}>
+                      {group.rows.map((row, index) => {
+                        const key = rowKey(row)
+                        const saving = savingScope === group.key
+                        const accent = floorAccentPalettes[index % floorAccentPalettes.length]
+                        const selected = selectedFloorKey === key
+                        const floorStatus = String(row.floor_status || 'ACTIVE').toUpperCase() === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE'
+                        const nextFloorStatus = floorStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+                        const floorStatusFormId = `floor-status-${key}`
+                        return (
+                          <React.Fragment key={key}>
+                            <div key={key} data-floor-node={key} className={cn('relative flex min-h-[5.5rem] items-center overflow-visible rounded-r-lg bg-background/80 pl-3 pr-2 shadow-sm transition', accent.row, selected && 'ring-2 ring-primary', draggingFloorKey === key && 'scale-[0.99] opacity-60', saving && 'opacity-70')}>
+                            <span className="pointer-events-none absolute -left-6 top-1/2 hidden h-px w-6 bg-primary/45 md:block" aria-hidden="true" />
+                            <span className={cn('absolute inset-y-0 left-0 w-1', accent.bar)} aria-hidden="true" />
+                            <button type="button" className={cn('grid size-11 shrink-0 touch-none place-items-center rounded-md text-muted-foreground outline-none transition hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary', draggingFloorKey === key ? 'cursor-grabbing bg-primary/10 text-primary' : 'cursor-grab')} aria-label={`Drag ${String(row.floor_name || 'floor')} to reorder`} title="Drag to reorder" onPointerDown={(event) => beginFloorDrag(event, group, row)} onPointerMove={updateFloorDrag} onPointerUp={finishFloorDrag} onPointerCancel={(event) => finishFloorDrag(event, true)}><GripVertical className="size-5" aria-hidden="true" /></button>
+                            <button type="button" className="flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-md px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={`Select ${String(row.floor_name || 'floor')} floor`} aria-pressed={selected} onClick={() => setSelectedFloorKey(key)}>
+                              <span className={cn('grid size-11 shrink-0 place-items-center rounded-md', accent.icon)}><Layers className="size-5" aria-hidden="true" /></span>
+                              <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Floor {index + 1}</span><Badge variant={String(row.floor_status || 'ACTIVE') === 'ACTIVE' ? 'secondary' : 'outline'}>{String(row.floor_status || 'ACTIVE')}</Badge></span><span className="mt-1 block truncate text-sm font-semibold">{String(row.floor_name || 'Unspecified floor')}</span><span className="mt-1 block truncate text-[11px] text-muted-foreground">{String(row.floor_key || '')}</span></span>
+                            </button>
+                            <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
+                              <form id={floorStatusFormId} method="post" data-skip-submit-confirmation="true" className="flex items-center">
+                                <input type="hidden" name="csrf" value={data.csrf} />
+                                <input type="hidden" name="action" value="set_project_building_floor_status" />
+                                <input type="hidden" name="return_tab" value="floor-management" />
+                                <input type="hidden" name="building_floor_key" value={key} />
+                                <input type="hidden" name="floor_status" value={nextFloorStatus} />
+                                <Switch
+                                  checked={floorStatus === 'ACTIVE'}
+                                  disabled={saving}
+                                  aria-label={`Set ${String(row.floor_name || 'floor')} ${nextFloorStatus.toLowerCase()}`}
+                                  title={`Set ${String(row.floor_name || 'floor')} ${nextFloorStatus.toLowerCase()}`}
+                                  onClick={(event) => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    const form = document.getElementById(floorStatusFormId) as HTMLFormElement | null
+                                    if (!form) return
+                                    const requestedStatus = nextFloorStatus
+                                    setSelectedFloorKey(key)
+                                    setConfirmation({
+                                      title: `${requestedStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} floor`,
+                                      message: `${requestedStatus === 'ACTIVE' ? 'Activate' : 'Inactivate'} ${String(row.floor_name || 'this floor')} for connected users?`,
+                                      confirmLabel: requestedStatus === 'ACTIVE' ? 'Set Active' : 'Set Inactive',
+                                      onConfirm: () => form.requestSubmit(),
+                                    })
+                                  }}
+                                />
+                              </form>
+                              <Button type="button" variant="ghost" size="icon" className={cn('size-11 rounded-md', accent.button)} aria-label={`Move ${String(row.floor_name || 'floor')} up`} title="Move up" disabled={saving || index === 0} onClick={() => { setSelectedFloorKey(key); moveRow(group, index, index - 1) }}><ChevronUp /></Button>
+                              <Button type="button" variant="ghost" size="icon" className={cn('size-11 rounded-md', accent.button)} aria-label={`Move ${String(row.floor_name || 'floor')} down`} title="Move down" disabled={saving || index === group.rows.length - 1} onClick={() => { setSelectedFloorKey(key); moveRow(group, index, index + 1) }}><ChevronDown /></Button>
+                            </div>
+                            </div>
+                          </React.Fragment>
+                        )
+                      })}
+                      {dropIndicator?.groupKey === group.key ? <div data-floor-drop-indicator="true" className="pointer-events-none absolute left-1 right-1 z-20 flex -translate-y-1/2 items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-primary" style={{ top: dropIndicator.top }} aria-live="polite"><span className="h-0.5 flex-1 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.45)]" aria-hidden="true" /><span className="rounded-full bg-primary px-2 py-1 text-primary-foreground shadow-sm">Drop here</span><span className="h-0.5 flex-1 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.45)]" aria-hidden="true" /></div> : null}
+                    </div>
+                  </div>
+                </div>
+                <aside data-floor-summary={group.key} className="grid content-start gap-4 rounded-xl bg-muted/20 p-4 lg:col-span-4" aria-label={`Summary for ${group.buildingName}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div><p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"><Activity className="size-3.5 text-primary" aria-hidden="true" /> Floor summary</p><p className="mt-1 text-sm font-semibold">Mobile display order</p></div>
+                    <Badge variant="secondary">{savingScope === group.key ? 'Saving' : 'Ready'}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border/60">
+                    <div className="bg-background/80 p-3"><p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Total floors</p><p className="mt-1 text-xl font-semibold tabular-nums">{group.rows.length}</p></div>
+                    <div className="bg-background/80 p-3"><p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Active</p><p className="mt-1 text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{activeFloorCount}</p></div>
+                  </div>
+                  <div className="grid gap-2 border-t pt-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Current order</p>
+                    <ol className="grid gap-1.5">
+                      {previewRows.map((row, index) => <li key={rowKey(row)} className="flex min-w-0 items-center gap-2 text-xs"><span className="grid size-5 shrink-0 place-items-center rounded bg-background/80 text-[10px] font-semibold tabular-nums text-muted-foreground">{index + 1}</span><span className="min-w-0 flex-1 truncate font-medium">{String(row.floor_name || 'Unspecified floor')}</span><span className="shrink-0 text-[10px] text-muted-foreground">{String(row.floor_key || '')}</span></li>)}
+                    </ol>
+                    {group.rows.length > previewRows.length ? <p className="text-[11px] text-muted-foreground">+{group.rows.length - previewRows.length} more shown in the canvas</p> : null}
+                  </div>
+                  <div className="flex items-start gap-2 border-t pt-3 text-xs text-muted-foreground"><CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-500" aria-hidden="true" /><p>Use the grip handle or arrow buttons to update the order used by connected mobile users.</p></div>
+                </aside>
+                </div>
+              </section>
+            )}) : <div className="grid place-items-center gap-2 rounded-md bg-muted/20 px-4 py-12 text-center"><Building2 className="size-8 text-muted-foreground" /><p className="text-sm font-medium">No building floors found.</p><p className="max-w-md text-xs text-muted-foreground">Refresh the bed list first, then return here to arrange its building floors.</p></div>}
+          </div>
+        </CardContent>
+      </Card>
+    </>
+  )
+}
+
 function TaskBuilderView() {
-  const taskList = Array.isArray(data.projectTasks) ? data.projectTasks : []
+  const networkLoading = React.useContext(ShellNetworkLoadingContext)
+  const initialTaskList = Array.isArray(data.projectTasks) ? data.projectTasks : []
+  const [taskList, setTaskList] = React.useState<Array<Record<string, any>>>(initialTaskList)
   const taskStageList = Array.isArray(data.projectTaskStages) ? data.projectTaskStages : []
   const initialTaskStageResponseList = Array.isArray(data.projectTaskStageResponses) ? data.projectTaskStageResponses : []
   const taskUserGroups = data.groups.filter((group) => group.group_status !== 'DELETED')
@@ -8284,6 +10412,7 @@ function TaskBuilderView() {
   const [responseManagerStage, setResponseManagerStage] = React.useState<Record<string, any> | null>(null)
   const [editingResponse, setEditingResponse] = React.useState<Record<string, any> | null>(null)
   const [responseSaveState, setResponseSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [responseSaveMessage, setResponseSaveMessage] = React.useState('')
   const [taskStageResponseList, setTaskStageResponseList] = React.useState<Array<Record<string, any>>>(initialTaskStageResponseList)
   const [stageConnectionModalOpen, setStageConnectionModalOpen] = React.useState(false)
   const [connectingStage, setConnectingStage] = React.useState<Record<string, any> | null>(null)
@@ -8542,16 +10671,10 @@ function TaskBuilderView() {
   const modalTaskKey = editingTask ? taskText(editingTask, 'task_key') : ''
   const modalTitle = editingTask ? 'Edit Task' : 'Add Task'
   const modalAction = editingTask ? 'update_project_task' : 'create_project_task'
-  const modalConfirmTitle = editingTask ? 'Confirm task update' : 'Confirm task creation'
-  const modalConfirmMessage = editingTask ? 'Update this task in project_task?' : 'Create this task in project_task?'
-  const modalConfirmLabel = editingTask ? 'Update Task' : 'Create Task'
   const modalSubmitLabel = editingTask ? 'Update Task' : 'Create Task'
   const modalStageKey = editingStage ? taskStageKey(editingStage) : ''
   const stageModalTitle = editingStage ? 'Edit Task Stage' : 'Add Task Stage'
   const stageModalAction = editingStage ? 'update_project_task_stage' : 'create_project_task_stage'
-  const stageModalConfirmTitle = editingStage ? 'Confirm stage update' : 'Confirm stage creation'
-  const stageModalConfirmMessage = editingStage ? 'Update this stage?' : 'Create this stage for the selected task?'
-  const stageModalConfirmLabel = editingStage ? 'Update Stage' : 'Create Stage'
   const stageModalSubmitLabel = editingStage ? 'Update Stage' : 'Create Stage'
   const editingStageIsDefault = editingStage ? taskStageIsDefault(editingStage) : false
   const responseManagerStageKey = responseManagerStage ? taskStageKey(responseManagerStage) : ''
@@ -8559,17 +10682,78 @@ function TaskBuilderView() {
   const responseRows = responseManagerStageKey !== '' ? taskStageResponses(responseManagerStageKey) : []
   const responseModalAction = editingResponse ? 'update_project_task_stage_response' : 'create_project_task_stage_response'
   const responseModalTitle = editingResponse ? 'Edit Response' : 'Add Response'
-  const responseModalConfirmTitle = editingResponse ? 'Confirm response update' : 'Confirm response creation'
-  const responseModalConfirmMessage = editingResponse ? 'Update this stage response?' : 'Create this response for the selected stage?'
-  const responseModalConfirmLabel = editingResponse ? 'Update Response' : 'Create Response'
   const responseModalSubmitLabel = editingResponse ? 'Update Response' : 'Create Response'
   const responseModalStatusText = responseSaveState === 'saving'
     ? 'Saving response...'
     : responseSaveState === 'saved'
-      ? 'Response saved. Manager remains open.'
+      ? (responseSaveMessage || 'Response saved. Manager remains open.')
       : responseSaveState === 'error'
-        ? 'Response was not saved. Check the fields and try again.'
+        ? (responseSaveMessage || 'Response was not saved. Check the fields and try again.')
         : editingResponse ? 'Response key is preserved on update.' : 'Response key is generated on save.'
+  const confirmTaskBuilderFormSubmit = (form: HTMLFormElement, title: string, message: string, submitAfterConfirm?: () => void) => {
+    if (!submitAfterConfirm && form.dataset.taskBuilderConfirmedSubmit === 'true') {
+      delete form.dataset.taskBuilderConfirmedSubmit
+      return true
+    }
+    if (!HTMLFormElement.prototype.reportValidity.call(form)) return false
+    setConfirmation({
+      title,
+      message,
+      confirmLabel: 'Confirm',
+      onConfirm: () => {
+        if (submitAfterConfirm) {
+          submitAfterConfirm()
+          return
+        }
+        form.dataset.taskBuilderConfirmedSubmit = 'true'
+        form.requestSubmit()
+      },
+    })
+    return false
+  }
+  const submitTaskForm = async (form: HTMLFormElement) => {
+    if (!HTMLFormElement.prototype.reportValidity.call(form)) return
+    const body = new FormData(form)
+    const action = String(body.get('action') || '')
+    const taskKey = String(body.get('task_key') || '')
+    try {
+      const httpResponse = await fetch('./', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      })
+      const responseText = await httpResponse.text()
+      let payload: Record<string, any>
+      try {
+        payload = JSON.parse(responseText)
+      } catch {
+        throw new Error(httpResponse.ok ? 'The server returned an invalid response.' : `Task save failed (HTTP ${httpResponse.status}).`)
+      }
+      if (!httpResponse.ok || !payload.ok) throw new Error(String(payload.message || 'Task was not saved.'))
+      const savedTask = payload.task
+      const savedKey = String(payload.document_key || savedTask?.task_key || taskKey)
+      if (action === 'delete_project_task') {
+        setTaskList((current) => current.filter((task) => taskText(task, 'task_key') !== savedKey))
+        if (selectedTaskKey === savedKey) setSelectedTaskKey('')
+      } else {
+        if (!savedTask || String(savedTask.task_key || '') === '') throw new Error('Task read-back was missing.')
+        setTaskList((current) => [...current.filter((task) => taskText(task, 'task_key') !== savedKey), savedTask])
+        setSelectedTaskKey(savedKey)
+      }
+      setTaskModalOpen(false)
+      window.dispatchEvent(new Event('builderx:admin-form-submit-complete'))
+    } catch (error) {
+      setConfirmation({
+        title: 'Task Save Failed',
+        message: error instanceof Error ? error.message : 'Task was not saved.',
+        confirmLabel: 'Close',
+        onConfirm: () => setConfirmation(null),
+      })
+    } finally {
+      window.dispatchEvent(new Event('builderx:admin-form-submit-complete'))
+    }
+  }
   const openTaskModal = (task: Record<string, any> | null = null) => {
     const nextColor = taskColorValue(task ? taskText(task, 'task_color_hex', '#00000000') : '#00000000')
     setEditingTask(task)
@@ -8613,18 +10797,21 @@ function TaskBuilderView() {
     setResponseManagerStage(stage)
     setEditingResponse(null)
     setResponseSaveState('idle')
+    setResponseSaveMessage('')
     setResponseManagerOpen(true)
   }
   const editStageResponse = (response: Record<string, any>) => {
     setEditingResponse(response)
     setResponseSaveState('idle')
+    setResponseSaveMessage('')
   }
   const submitResponseManagerForm = async (form: HTMLFormElement) => {
-    if (!form.reportValidity()) return
+    if (!HTMLFormElement.prototype.reportValidity.call(form)) return
     const body = new FormData(form)
     const action = String(body.get('action') || '')
     const responseKey = String(body.get('task_stage_response_key') || '')
     setResponseSaveState('saving')
+    setResponseSaveMessage('')
 
     try {
       const httpResponse = await fetch('./', {
@@ -8633,7 +10820,15 @@ function TaskBuilderView() {
         headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body,
       })
-      const payload = await httpResponse.json()
+      const responseText = await httpResponse.text()
+      let payload: Record<string, any>
+      try {
+        payload = JSON.parse(responseText)
+      } catch {
+        throw new Error(httpResponse.ok
+          ? 'The server returned an invalid response.'
+          : `Stage response save failed (HTTP ${httpResponse.status}).`)
+      }
       if (!httpResponse.ok || !payload.ok) {
         throw new Error(String(payload.message || 'Stage response save failed.'))
       }
@@ -8658,11 +10853,21 @@ function TaskBuilderView() {
         }
       }
 
+      const firebaseSync = payload.firebase_sync || {}
+      setResponseSaveMessage(firebaseSync.ok === false
+        ? String(payload.message || 'Response saved. Firebase sync needs attention.')
+        : String(payload.message || 'Response saved. Manager remains open.'))
       setResponseSaveState('saved')
       window.setTimeout(() => setResponseSaveState('idle'), 1400)
     } catch (error) {
+      setResponseSaveMessage(error instanceof Error ? error.message : 'Response was not saved. Check the fields and try again.')
       setResponseSaveState('error')
-      window.setTimeout(() => setResponseSaveState('idle'), 2600)
+      window.setTimeout(() => {
+        setResponseSaveState('idle')
+        setResponseSaveMessage('')
+      }, 3600)
+    } finally {
+      window.dispatchEvent(new Event('builderx:admin-form-submit-complete'))
     }
   }
 	  const openStageConnectionModal = (stage: Record<string, any>) => {
@@ -9005,27 +11210,27 @@ function TaskBuilderView() {
 	            </div>
 	            <div className="flex shrink-0 items-center gap-1.5">
 	              <Tooltip>
-	                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Auto arrange canvas" title="Auto arrange canvas" onClick={autoArrangeTaskBuilderCanvas} disabled={!selectedTask} />}>
+                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-violet-500/50 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 disabled:opacity-40" aria-label="Auto arrange canvas" title="Auto arrange canvas" onClick={autoArrangeTaskBuilderCanvas} disabled={!selectedTask} />}>
 	                  <RotateCcw />
 	                </TooltipTrigger>
 	                <TooltipContent>Auto arrange</TooltipContent>
 	              </Tooltip>
 	              <Tooltip>
-	                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Zoom canvas out" title="Zoom canvas out" onClick={() => setTaskBuilderCanvasZoom(canvasZoom - 0.1)} disabled={canvasZoom <= 0.65} />}>
+                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-sky-500/50 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 hover:text-sky-200 disabled:opacity-40" aria-label="Zoom canvas out" title="Zoom canvas out" onClick={() => setTaskBuilderCanvasZoom(canvasZoom - 0.1)} disabled={canvasZoom <= 0.65} />}>
 	                  <ZoomOut />
 	                </TooltipTrigger>
 	                <TooltipContent>Zoom out</TooltipContent>
 	              </Tooltip>
 	              <Badge variant="outline" className="min-w-14 justify-center">{canvasZoomLabel}</Badge>
 	              <Tooltip>
-	                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Zoom canvas in" title="Zoom canvas in" onClick={() => setTaskBuilderCanvasZoom(canvasZoom + 0.1)} disabled={canvasZoom >= 1.6} />}>
+                <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-sky-500/50 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 hover:text-sky-200 disabled:opacity-40" aria-label="Zoom canvas in" title="Zoom canvas in" onClick={() => setTaskBuilderCanvasZoom(canvasZoom + 0.1)} disabled={canvasZoom >= 1.6} />}>
 	                  <ZoomIn />
 	                </TooltipTrigger>
 	                <TooltipContent>Zoom in</TooltipContent>
 	              </Tooltip>
 	              {(canvasPanOffset.x !== 0 || canvasPanOffset.y !== 0) ? (
 	                <Tooltip>
-	                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Reset canvas focus" title="Reset canvas focus" onClick={() => setCanvasPanOffset({ x: 0, y: 0 })} />}>
+                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:text-cyan-200" aria-label="Reset canvas focus" title="Reset canvas focus" onClick={() => setCanvasPanOffset({ x: 0, y: 0 })} />}>
 	                    <MousePointer2 />
 	                  </TooltipTrigger>
 	                  <TooltipContent>Reset focus</TooltipContent>
@@ -9127,7 +11332,7 @@ function TaskBuilderView() {
                           {responseSortSaveState !== 'idle' ? <span className="text-[9px] font-semibold uppercase tracking-wide text-white/70">{responseSortSaveState}</span> : null}
                           {canvasSaveState !== 'idle' ? <span className="text-[9px] font-semibold uppercase tracking-wide text-white/70">{canvasSaveState}</span> : null}
                           <Tooltip>
-                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-white/10 text-white/85 hover:bg-white/20 hover:text-white" aria-label={`Edit ${taskText(selectedTask, 'task_title', 'selected task')}`} title={`Edit ${taskText(selectedTask, 'task_title', 'selected task')}`} onClick={(event) => {
+                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 hover:text-sky-100" aria-label={`Edit ${taskText(selectedTask, 'task_title', 'selected task')}`} title={`Edit ${taskText(selectedTask, 'task_title', 'selected task')}`} onClick={(event) => {
                               event.stopPropagation()
                               openTaskModal(selectedTask)
                             }} />}>
@@ -9146,42 +11351,13 @@ function TaskBuilderView() {
                           <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
                             <p className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-white/60">Stages {selectedTaskStages.length}</p>
                             {selectedTaskGroups.length > 0 ? (
-                              <div className="flex min-w-0 -space-x-2" aria-label="Groups involved">
-                                {selectedTaskGroups.slice(0, 5).map((group, index) => {
-                                  const groupKey = taskText(group, 'group_key', `${index}`)
-                                  const groupName = taskText(group, 'group_name', 'Group')
-                                  const groupIconUrl = groupImageViewerUrl(group as Record<string, string>, 'XS')
-                                  const canBypass = selectedTaskBypassGroupKeySet.has(groupKey)
-                                  return (
-                                    <span
-                                      key={groupKey}
-                                      className={cn(
-                                        'relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-full border border-white/20 bg-slate-900 text-white/75 shadow-sm',
-                                        canBypass ? 'ring-1 ring-emerald-300/70' : 'ring-1 ring-black/30',
-                                      )}
-                                      title={canBypass ? `${groupName} - can bypass stages` : groupName}
-                                      aria-label={canBypass ? `${groupName}, can bypass stages` : groupName}
-                                    >
-                                      <Users className="size-4" aria-hidden="true" />
-                                      {groupIconUrl !== '' ? (
-                                        <img
-                                          src={groupIconUrl}
-                                          alt=""
-                                          className="absolute inset-0 h-full w-full object-cover"
-                                          onError={(event) => {
-                                            event.currentTarget.style.display = 'none'
-                                          }}
-                                        />
-                                      ) : null}
-                                    </span>
-                                  )
-                                })}
-                                {selectedTaskGroups.length > 5 ? (
-                                  <span className="grid size-8 shrink-0 place-items-center rounded-full border border-white/20 bg-white/10 text-[10px] font-semibold text-white/75 shadow-sm">
-                                    +{selectedTaskGroups.length - 5}
-                                  </span>
-                                ) : null}
-                              </div>
+                              <TaskGroupAvatarStack
+                                groups={selectedTaskGroups}
+                                bypassGroupKeys={selectedTaskBypassGroupKeySet}
+                                limit={5}
+                                tone="canvas"
+                                label={`${taskText(selectedTask, 'task_title', 'Untitled task')} assigned groups`}
+                              />
                             ) : null}
                           </div>
                           <p className="mt-3 line-clamp-2 text-xs leading-5 text-white/78">{taskText(selectedTask, 'task_description', 'No description added.')}</p>
@@ -9195,7 +11371,7 @@ function TaskBuilderView() {
                         </div>
                         <div className="flex shrink-0 flex-col items-center gap-1.5" onPointerDown={(event) => event.stopPropagation()}>
                           <Tooltip>
-                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full bg-white/10 text-white hover:bg-white/20 hover:text-white" aria-label="Add task stage" title="Add task stage" onClick={(event) => {
+                            <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full border border-emerald-400/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 hover:text-emerald-100" aria-label="Add task stage" title="Add task stage" onClick={(event) => {
                               event.stopPropagation()
                               openStageModal()
                             }} />}>
@@ -9244,24 +11420,26 @@ function TaskBuilderView() {
 					                              <Milestone className="size-3.5" />
 				                            </span>
 					                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-amber-100/78">Task Stage</span>
-				                            <Tooltip>
-				                              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-teal-400/10 text-teal-100 hover:bg-teal-400/20 hover:text-teal-50" aria-label={`Manage responses for stage ${stageLabel}`} title={`Manage responses for stage ${stageLabel}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
-				                                event.stopPropagation()
-				                                openStageResponseManager(item.stage)
-				                              }} />}>
-				                                <MessageCircle />
-				                              </TooltipTrigger>
-				                              <TooltipContent>Response manager</TooltipContent>
-				                            </Tooltip>
-				                            <Tooltip>
-			                              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className={cn('size-6 shrink-0 rounded-full bg-white/8 text-white/70 hover:bg-white/18 hover:text-white', connectedTask && 'bg-sky-400/15 text-sky-100')} aria-label={`Connect stage ${stageLabel} to secondary task`} title={`Connect stage ${stageLabel} to secondary task`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
-			                                event.stopPropagation()
-			                                openStageConnectionModal(item.stage)
-			                              }} />}>
-			                                <Link2 />
-			                              </TooltipTrigger>
-			                              <TooltipContent>{connectedTask ? `Connected to ${taskText(connectedTask, 'task_title', 'secondary task')}` : 'Connect secondary task'}</TooltipContent>
-			                            </Tooltip>
+                            {!isDefaultStage ? <>
+                              <Tooltip>
+                                <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-teal-400/10 text-teal-100 hover:bg-teal-400/20 hover:text-teal-50" aria-label={`Manage responses for stage ${stageLabel}`} title={`Manage responses for stage ${stageLabel}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
+                                  event.stopPropagation()
+                                  openStageResponseManager(item.stage)
+                                }} />}>
+                                  <MessageCircle />
+                                </TooltipTrigger>
+                                <TooltipContent>Response manager</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className={cn('size-6 shrink-0 rounded-full bg-white/8 text-white/70 hover:bg-white/18 hover:text-white', connectedTask && 'bg-sky-400/15 text-sky-100')} aria-label={`Connect stage ${stageLabel} to secondary task`} title={`Connect stage ${stageLabel} to secondary task`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
+                                  event.stopPropagation()
+                                  openStageConnectionModal(item.stage)
+                                }} />}>
+                                  <Link2 />
+                                </TooltipTrigger>
+                                <TooltipContent>{connectedTask ? `Connected to ${taskText(connectedTask, 'task_title', 'secondary task')}` : 'Connect secondary task'}</TooltipContent>
+                              </Tooltip>
+                            </> : null}
 			                            <Tooltip>
 			                              <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-white/8 text-white/70 hover:bg-white/18 hover:text-white" aria-label={`Edit stage ${stageLabel}`} title={`Edit stage ${stageLabel}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
 			                                event.stopPropagation()
@@ -9272,7 +11450,7 @@ function TaskBuilderView() {
 			                              <TooltipContent>Edit stage</TooltipContent>
 			                            </Tooltip>
 			                            {!isDefaultStage ? (
-			                              <form method="post" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+                              <form method="post" data-skip-submit-confirmation="true" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
 			                                <input type="hidden" name="csrf" value={data.csrf} />
 			                                <input type="hidden" name="action" value="delete_project_task_stage" />
 			                                <input type="hidden" name="task_key" value={selectedTaskKey} />
@@ -9280,13 +11458,7 @@ function TaskBuilderView() {
 			                                <Tooltip>
 			                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 shrink-0 rounded-full bg-rose-500/10 text-rose-100 hover:bg-rose-500/20 hover:text-rose-50" aria-label={`Delete stage ${stageLabel}`} title={`Delete stage ${stageLabel}`} onClick={(event) => {
 			                                    event.stopPropagation()
-			                                    const form = event.currentTarget.closest('form')
-			                                    setConfirmation({
-			                                      title: 'Confirm stage delete',
-			                                      message: `Delete stage ${stageLabel}?`,
-			                                      confirmLabel: 'Delete Stage',
-			                                      onConfirm: () => form?.requestSubmit(),
-			                                    })
+			                                    event.currentTarget.closest('form')?.requestSubmit()
 			                                  }} />}>
 			                                    <Trash2 />
 			                                  </TooltipTrigger>
@@ -9343,12 +11515,41 @@ function TaskBuilderView() {
 			                          onPointerUp={handleTaskStageResponsePointerUp}
 			                          onPointerCancel={handleTaskStageResponsePointerUp}
 			                        >
-			                          <div className="relative z-10 flex min-w-0 items-center gap-2 overflow-hidden rounded-t-md border-b border-white/10 bg-slate-950/25 px-3 py-1.5">
-		                            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-teal-400/15 text-teal-100 ring-1 ring-teal-200/20">
-		                              <MessageCircle className="size-3.5" />
-		                            </span>
-		                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-teal-100/72">Response</span>
-		                          </div>
+				                          <div className="relative z-10 flex min-w-0 items-center gap-2 overflow-hidden rounded-t-md border-b border-white/10 bg-slate-950/25 px-3 py-1.5">
+			                            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-teal-400/15 text-teal-100 ring-1 ring-teal-200/20">
+			                              <MessageCircle className="size-3.5" />
+			                            </span>
+			                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-teal-100/72">Response</span>
+			                            <div className="flex shrink-0 items-center gap-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+			                              <Tooltip>
+			                                <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-white/10 text-white/85 hover:bg-white/20 hover:text-white" aria-label={`Edit response ${responseLabel}`} title={`Edit response ${responseLabel}`} onClick={() => {
+			                                  openStageResponseManager(item.stage)
+			                                  editStageResponse(response)
+			                                }} />}>
+			                                  <Pencil />
+			                                </TooltipTrigger>
+			                                <TooltipContent>Edit response</TooltipContent>
+			                              </Tooltip>
+			                              <form method="post" data-skip-submit-confirmation="true" className="contents" onSubmit={(event) => {
+			                                event.preventDefault()
+			                                void submitResponseManagerForm(event.currentTarget)
+			                              }}>
+			                                <input type="hidden" name="csrf" value={data.csrf} />
+			                                <input type="hidden" name="action" value="delete_project_task_stage_response" />
+			                                <input type="hidden" name="task_key" value={selectedTaskKey} />
+			                                <input type="hidden" name="task_stage_key" value={responseStageKey} />
+			                                <input type="hidden" name="task_stage_response_key" value={responseKey} />
+			                                <Tooltip>
+			                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-rose-500/10 text-rose-200 hover:bg-rose-500/20 hover:text-rose-100" aria-label={`Delete response ${responseLabel}`} title={`Delete response ${responseLabel}`} onClick={(event) => {
+			                                    event.currentTarget.closest('form')?.requestSubmit()
+			                                  }} />}>
+			                                    <Trash2 />
+			                                  </TooltipTrigger>
+			                                  <TooltipContent>Delete response</TooltipContent>
+			                                </Tooltip>
+			                              </form>
+			                            </div>
+			                          </div>
 			                          <div className="relative z-10 overflow-hidden rounded-b-md bg-slate-950/18 px-3 py-2 uppercase">
 		                            <p className="truncate text-xs font-semibold uppercase tracking-wide">{responseLabel}</p>
 		                            <p className="mt-0.5 truncate text-[10px] text-sky-100/65">{taskStatusLabel(responseStatus)}</p>
@@ -9397,7 +11598,7 @@ function TaskBuilderView() {
 			                              <Network className="size-3.5" />
 			                            </span>
 			                            <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-violet-100/72">Secondary Task</span>
-			                            <form method="post" className="shrink-0" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                              <form method="post" data-skip-submit-confirmation="true" className="shrink-0" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
 			                              <input type="hidden" name="csrf" value={data.csrf} />
 			                              <input type="hidden" name="action" value="delete_project_task" />
 			                              <input type="hidden" name="task_key" value={linkedTaskKey} />
@@ -9405,13 +11606,7 @@ function TaskBuilderView() {
 			                              <Tooltip>
 			                                <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-6 rounded-full bg-rose-500/10 text-rose-100 hover:bg-rose-500/20 hover:text-rose-50" aria-label={`Delete secondary task ${linkedTaskTitle}`} title={`Delete secondary task ${linkedTaskTitle}`} onClick={(event) => {
 			                                  event.stopPropagation()
-			                                  const form = event.currentTarget.closest('form')
-			                                  setConfirmation({
-			                                    title: 'Confirm secondary task delete',
-			                                    message: `Delete secondary task ${linkedTaskTitle} and all related stages?`,
-			                                    confirmLabel: 'Delete Task',
-			                                    onConfirm: () => form?.requestSubmit(),
-			                                  })
+                                  event.currentTarget.closest('form')?.requestSubmit()
 			                                }} />}>
 			                                  <Trash2 />
 			                                </TooltipTrigger>
@@ -9423,42 +11618,14 @@ function TaskBuilderView() {
 			                            <div className="flex min-w-0 items-center justify-between gap-2">
 			                              <p className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide">{linkedTaskTitle}</p>
 			                              {linkedTaskGroups.length > 0 ? (
-			                                <div className="flex shrink-0 -space-x-1.5" aria-label="Secondary task groups involved">
-			                                  {linkedTaskGroups.slice(0, 4).map((group, index) => {
-			                                    const groupKey = taskText(group, 'group_key', `${index}`)
-			                                    const groupName = taskText(group, 'group_name', 'Group')
-			                                    const groupIconUrl = groupImageViewerUrl(group as Record<string, string>, 'XS')
-			                                    const canBypass = linkedTaskBypassGroupKeySet.has(groupKey)
-			                                    return (
-			                                      <span
-			                                        key={groupKey}
-			                                        className={cn(
-			                                          'relative grid size-6 shrink-0 place-items-center overflow-hidden rounded-full border border-white/20 bg-slate-900 text-white/75 shadow-sm',
-			                                          canBypass ? 'ring-1 ring-emerald-300/70' : 'ring-1 ring-black/30',
-			                                        )}
-			                                        title={canBypass ? `${groupName} - can bypass stages` : groupName}
-			                                        aria-label={canBypass ? `${groupName}, can bypass stages` : groupName}
-			                                      >
-			                                        <Users className="size-3.5" aria-hidden="true" />
-			                                        {groupIconUrl !== '' ? (
-			                                          <img
-			                                            src={groupIconUrl}
-			                                            alt=""
-			                                            className="absolute inset-0 h-full w-full object-cover"
-			                                            onError={(event) => {
-			                                              event.currentTarget.style.display = 'none'
-			                                            }}
-			                                          />
-			                                        ) : null}
-			                                      </span>
-			                                    )
-			                                  })}
-			                                  {linkedTaskGroups.length > 4 ? (
-			                                    <span className="grid size-6 shrink-0 place-items-center rounded-full border border-white/20 bg-white/10 text-[9px] font-semibold text-white/75 shadow-sm">
-			                                      +{linkedTaskGroups.length - 4}
-			                                    </span>
-			                                  ) : null}
-			                                </div>
+			                                <TaskGroupAvatarStack
+			                                  groups={linkedTaskGroups}
+			                                  bypassGroupKeys={linkedTaskBypassGroupKeySet}
+			                                  limit={4}
+			                                  size="sm"
+			                                  tone="canvas"
+			                                  label={`${linkedTaskTitle} assigned groups`}
+			                                />
 			                              ) : null}
 			                            </div>
 			                            <p className="mt-1 truncate text-[10px] font-medium uppercase tracking-wide text-violet-100/60">{taskStatusLabel(taskText(linkedTask, 'task_status', 'INACTIVE'))}</p>
@@ -9494,7 +11661,7 @@ function TaskBuilderView() {
               <div className="flex shrink-0 items-center gap-1.5">
                 <Badge variant="outline">{taskList.length}</Badge>
                 <Tooltip>
-                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full" aria-label="Add task" title="Add task" onClick={() => openTaskModal()} />}>
+                  <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="rounded-full border-emerald-500/60 bg-emerald-500/10 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.18)] hover:bg-emerald-500/20 hover:text-emerald-200" aria-label="Add task" title="Add task" onClick={() => openTaskModal()} />}>
                     <Plus />
                   </TooltipTrigger>
                   <TooltipContent>Add task</TooltipContent>
@@ -9521,6 +11688,10 @@ function TaskBuilderView() {
                         const priority = taskText(task, 'task_priority', 'NORMAL')
                         const colorHex = taskColorValue(taskText(task, 'task_color_hex', '#00000000'))
                         const isSelected = taskKey !== '' && taskKey === selectedTaskKey
+                        const rowTaskBypassGroupKeySet = new Set(taskBypassGroupKeys(task))
+                        const rowTaskGroups = taskGroupKeys(task)
+                          .map((groupKey) => taskUserGroups.find((group) => taskText(group, 'group_key') === groupKey))
+                          .filter((group): group is Record<string, any> => Boolean(group))
                         return (
                           <article
                             key={taskKey || taskTitle}
@@ -9543,30 +11714,17 @@ function TaskBuilderView() {
                                 selectTaskForCanvas(taskKey)
                               }
                             }}
-                          >
+	                          >
 		                            <span className="absolute inset-y-0 left-0 w-0.5" style={{ backgroundColor: colorHex }} aria-hidden="true" />
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="size-2 rounded-full" style={{ backgroundColor: colorHex }} aria-hidden="true" />
-                                  <Badge variant="secondary" className={cn('border-0 px-1.5 py-0 text-[9px]', statusTone[status] || 'bg-muted text-muted-foreground')}>{taskStatusLabel(status)}</Badge>
-                                  <Badge variant="outline" className="px-1.5 py-0 text-[9px]">{priority}</Badge>
-                                </div>
-                                <h3 className="mt-1 truncate text-[13px] font-semibold leading-4">{taskTitle}</h3>
-                                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{taskText(task, 'task_code', 'Task')}</p>
+                            <div data-task-list-row="status" className="flex items-center justify-between gap-2">
+                              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                <span className="size-2 rounded-full" style={{ backgroundColor: colorHex }} aria-hidden="true" />
+                                <Badge variant="secondary" className={cn('border-0 px-1.5 py-0 text-[9px]', statusTone[status] || 'bg-muted text-muted-foreground')}>{taskStatusLabel(status)}</Badge>
+                                <Badge variant="outline" className="px-1.5 py-0 text-[9px]">{priority}</Badge>
                               </div>
                               <div className="flex shrink-0 items-center gap-1">
                                 <Tooltip>
-                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Open ${taskTitle}`} title={`Open ${taskTitle}`} onClick={(event) => {
-                                    event.stopPropagation()
-                                    selectTaskForCanvas(taskKey)
-                                  }} />}>
-                                    <Eye />
-                                  </TooltipTrigger>
-                                  <TooltipContent>Open task</TooltipContent>
-                                </Tooltip>
-                                <Tooltip>
-                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full" aria-label={`Edit ${taskTitle}`} title={`Edit ${taskTitle}`} onClick={(event) => {
+                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 hover:text-sky-200" aria-label={`Edit ${taskTitle}`} title={`Edit ${taskTitle}`} onClick={(event) => {
                                     event.stopPropagation()
                                     openTaskModal(task)
                                   }} />}>
@@ -9574,31 +11732,41 @@ function TaskBuilderView() {
                                   </TooltipTrigger>
                                   <TooltipContent>Edit task</TooltipContent>
                                 </Tooltip>
-                                <form method="post" onClick={(event) => event.stopPropagation()}>
+                                <form method="post" data-skip-submit-confirmation="true" onClick={(event) => event.stopPropagation()}>
                                   <input type="hidden" name="csrf" value={data.csrf} />
                                   <input type="hidden" name="action" value="delete_project_task" />
                                   <input type="hidden" name="task_key" value={taskKey} />
                                   <Tooltip>
                                     <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={`Delete ${taskTitle}`} title={`Delete ${taskTitle}`} onClick={(event) => {
                                       event.stopPropagation()
-                                      const form = event.currentTarget.closest('form')
-                                      setConfirmation({
-                                        title: 'Confirm task delete',
-                                        message: `Delete ${taskTitle} and all related stages?`,
-                                        confirmLabel: 'Delete Task',
-                                        onConfirm: () => form?.requestSubmit(),
-                                      })
+                                      event.currentTarget.closest('form')?.requestSubmit()
                                     }} />}>
                                       <Trash2 />
                                     </TooltipTrigger>
                                     <TooltipContent>Delete task</TooltipContent>
                                   </Tooltip>
-                                </form>
-                              </div>
+	                                </form>
+	                              </div>
+	                            </div>
+                            <div data-task-list-row="details" className="grid min-w-0 gap-0.5">
+                              <h3 className="truncate text-[13px] font-semibold leading-4">{taskTitle}</h3>
+                              <p className="truncate text-[11px] text-muted-foreground">{taskText(task, 'task_code', 'Task')}</p>
+                              <p className="line-clamp-1 text-[11px] leading-4 text-muted-foreground">{taskText(task, 'task_description', 'No description added.')}</p>
+                              <p className="truncate text-[10px] text-muted-foreground/80">Updated {taskText(task, 'updated_at', 'No date')}</p>
                             </div>
-                            <p className="line-clamp-1 text-[11px] leading-4 text-muted-foreground">{taskText(task, 'task_description', 'No description added.')}</p>
-                            <p className="truncate text-[10px] text-muted-foreground/80">Updated {taskText(task, 'updated_at', 'No date')}</p>
-                          </article>
+                            {rowTaskGroups.length > 0 ? (
+                              <div data-task-list-row="avatar" className="flex min-w-0 items-center">
+                                <TaskGroupAvatarStack
+                                  groups={rowTaskGroups}
+                                  bypassGroupKeys={rowTaskBypassGroupKeySet}
+                                  limit={3}
+                                  size="sm"
+                                  tone="panel"
+                                  label={`${taskTitle} assigned groups`}
+                                />
+                              </div>
+                            ) : null}
+	                          </article>
                         )
                       })}
                     </div>
@@ -9634,8 +11802,13 @@ function TaskBuilderView() {
               {modalTitle}
             </DialogTitle>
             <DialogDescription>Create a task for the builder canvas.</DialogDescription>
+            <TaskBuilderModalHeaderLoading active={networkLoading} />
           </DialogHeader>
-          <form key={modalTaskKey || 'create-task'} ref={taskFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+          <form key={modalTaskKey || 'create-task'} ref={taskFormRef} method="post" data-skip-submit-confirmation="true" className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => {
+            const form = event.currentTarget
+            if (confirmTaskBuilderFormSubmit(form, editingTask ? 'Confirm task update' : 'Confirm task creation', editingTask ? 'Update this task?' : 'Create this task?', () => void submitTaskForm(form))) return
+            event.preventDefault()
+          }}>
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <div className="grid gap-4">
                 <input type="hidden" name="csrf" value={data.csrf} />
@@ -9768,15 +11941,7 @@ function TaskBuilderView() {
 	            <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
 	              <span className="text-xs text-muted-foreground">New tasks are inactive until enabled.</span>
 	              <div className="flex items-center gap-2">
-	                <Button
-	                  type="button"
-                  onClick={() => setConfirmation({
-                    title: modalConfirmTitle,
-                    message: modalConfirmMessage,
-                    confirmLabel: modalConfirmLabel,
-                    onConfirm: () => taskFormRef.current?.requestSubmit(),
-                  })}
-                >
+	                <Button type="submit">
                   <Save className="h-4 w-4" aria-hidden="true" />
                   {modalSubmitLabel}
                 </Button>
@@ -9796,7 +11961,7 @@ function TaskBuilderView() {
 		        }
       }}>
         <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
-          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+          <DialogHeader className="relative shrink-0 border-b bg-popover px-6 py-5 pr-14">
             <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close task stage form" title="Close task stage form" />}>
               <X />
             </DialogClose>
@@ -9805,8 +11970,13 @@ function TaskBuilderView() {
               {stageModalTitle}
             </DialogTitle>
             <DialogDescription>{selectedTask ? taskText(selectedTask, 'task_title', 'Selected task') : 'Selected task'}</DialogDescription>
+            <TaskBuilderModalHeaderLoading active={networkLoading} />
           </DialogHeader>
-          <form key={modalStageKey || 'create-stage'} ref={stageFormRef} method="post" className="flex min-h-0 flex-1 flex-col">
+          <form key={modalStageKey || 'create-stage'} ref={stageFormRef} method="post" data-skip-submit-confirmation="true" className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => {
+            const form = event.currentTarget
+            if (confirmTaskBuilderFormSubmit(form, editingStage ? 'Confirm stage update' : 'Confirm stage creation', editingStage ? 'Update this stage?' : 'Create this stage?')) return
+            event.preventDefault()
+          }}>
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <div className="grid gap-4">
                 <input type="hidden" name="csrf" value={data.csrf} />
@@ -9858,18 +12028,10 @@ function TaskBuilderView() {
                 </div>
               </div>
             </div>
-	            <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+	              <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
 	              <span className="text-xs text-muted-foreground">{editingStage ? 'Stage key is preserved on update.' : 'Stage key is generated on save.'}</span>
 	              <div className="flex items-center gap-2">
-	                <Button
-	                  type="button"
-                  onClick={() => setConfirmation({
-                    title: stageModalConfirmTitle,
-                    message: stageModalConfirmMessage,
-                    confirmLabel: stageModalConfirmLabel,
-                    onConfirm: () => stageFormRef.current?.requestSubmit(),
-                  })}
-                >
+	                <Button type="submit">
                   <Save className="h-4 w-4" aria-hidden="true" />
                   {stageModalSubmitLabel}
                 </Button>
@@ -9889,7 +12051,7 @@ function TaskBuilderView() {
         }
       }}>
         <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
-          <DialogHeader className="shrink-0 border-b bg-popover px-6 py-5 pr-14">
+          <DialogHeader className="relative shrink-0 border-b bg-popover px-6 py-5 pr-14">
             <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close response manager" title="Close response manager" />}>
               <X />
             </DialogClose>
@@ -9898,6 +12060,7 @@ function TaskBuilderView() {
               Response Manager
             </DialogTitle>
             <DialogDescription>{responseManagerStage ? taskText(responseManagerStage, 'stage_label', 'Task stage') : 'Task stage'}</DialogDescription>
+            <TaskBuilderModalHeaderLoading active={networkLoading} />
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             <div className="grid gap-5">
@@ -9931,7 +12094,7 @@ function TaskBuilderView() {
                                 </TooltipTrigger>
                                 <TooltipContent>Edit response</TooltipContent>
                               </Tooltip>
-                              <form method="post" onSubmit={(event) => {
+                              <form method="post" data-skip-submit-confirmation="true" onSubmit={(event) => {
                                 event.preventDefault()
                                 void submitResponseManagerForm(event.currentTarget)
                               }}>
@@ -9942,13 +12105,7 @@ function TaskBuilderView() {
                                 <input type="hidden" name="task_stage_response_key" value={responseKey} />
                                 <Tooltip>
 	                                  <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={`Delete response ${responseLabel}`} title={`Delete response ${responseLabel}`} onClick={(event) => {
-	                                    const form = event.currentTarget.closest('form')
-	                                    setConfirmation({
-                                      title: 'Confirm response delete',
-                                      message: `Delete response ${responseLabel}?`,
-                                      confirmLabel: 'Delete Response',
-	                                      onConfirm: () => form?.requestSubmit(),
-	                                    })
+	                                    event.currentTarget.closest('form')?.requestSubmit()
 	                                  }} />}>
                                     <Trash2 />
                                   </TooltipTrigger>
@@ -9965,9 +12122,15 @@ function TaskBuilderView() {
                 )}
               </section>
 
-              <form key={editingResponse ? taskStageResponseKey(editingResponse) : `create-response-${responseManagerStageKey}`} ref={responseFormRef} method="post" className="grid gap-4 border-t pt-5" onSubmit={(event) => {
+              <form key={editingResponse ? taskStageResponseKey(editingResponse) : `create-response-${responseManagerStageKey}`} ref={responseFormRef} method="post" data-skip-submit-confirmation="true" className="grid gap-4 border-t pt-5" onSubmit={(event) => {
+                const form = event.currentTarget
                 event.preventDefault()
-                void submitResponseManagerForm(event.currentTarget)
+                confirmTaskBuilderFormSubmit(
+                  form,
+                  editingResponse ? 'Confirm response update' : 'Confirm response creation',
+                  editingResponse ? 'Update this response?' : 'Create this response?',
+                  () => { void submitResponseManagerForm(form) },
+                )
               }}>
                 <input type="hidden" name="csrf" value={data.csrf} />
                 <input type="hidden" name="action" value={responseModalAction} />
@@ -10009,19 +12172,14 @@ function TaskBuilderView() {
             </div>
           </div>
 	          <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
-	            <span className={cn('text-xs text-muted-foreground', responseSaveState === 'saved' && 'text-emerald-500', responseSaveState === 'error' && 'text-destructive')}>
+	            <div className="flex items-center gap-3"><span className={cn('text-xs text-muted-foreground', responseSaveState === 'saved' && 'text-emerald-500', responseSaveState === 'error' && 'text-destructive')}>
 	              {responseModalStatusText}
-	            </span>
+	            </span></div>
 	            <div className="flex items-center gap-2">
 	              <Button
 	                type="button"
 	                disabled={responseSaveState === 'saving'}
-	                onClick={() => setConfirmation({
-	                  title: responseModalConfirmTitle,
-	                  message: responseModalConfirmMessage,
-                  confirmLabel: responseModalConfirmLabel,
-                  onConfirm: () => responseFormRef.current?.requestSubmit(),
-                })}
+	                onClick={() => responseFormRef.current?.requestSubmit()}
               >
                 <Save className="h-4 w-4" aria-hidden="true" />
                 {responseModalSubmitLabel}
@@ -10040,7 +12198,7 @@ function TaskBuilderView() {
 		        }
 	      }}>
 	        <DialogContent showCloseButton={false} className="w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-md">
-	          <DialogHeader className="border-b bg-popover px-6 py-5 pr-14">
+	          <DialogHeader className="relative border-b bg-popover px-6 py-5 pr-14">
 	            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label="Close stage connection form" title="Close stage connection form" />}>
 	              <X />
 	            </DialogClose>
@@ -10049,8 +12207,13 @@ function TaskBuilderView() {
 	              Connect Secondary Task
 	            </DialogTitle>
 	            <DialogDescription>{connectingStage ? taskText(connectingStage, 'stage_label', 'Task stage') : 'Task stage'}</DialogDescription>
+	            <TaskBuilderModalHeaderLoading active={networkLoading} />
 	          </DialogHeader>
-	          <form key={connectingStage ? taskStageKey(connectingStage) : 'connect-stage'} ref={stageConnectionFormRef} method="post">
+	          <form key={connectingStage ? taskStageKey(connectingStage) : 'connect-stage'} ref={stageConnectionFormRef} method="post" data-skip-submit-confirmation="true" onSubmit={(event) => {
+	            const form = event.currentTarget
+	            if (confirmTaskBuilderFormSubmit(form, 'Confirm stage connection', 'Save this stage connection?')) return
+	            event.preventDefault()
+	          }}>
 	            <div className="grid gap-4 px-6 py-5">
 	              <input type="hidden" name="csrf" value={data.csrf} />
 	              <input type="hidden" name="action" value="update_project_task_stage_connection" />
@@ -10090,18 +12253,10 @@ function TaskBuilderView() {
 		              </div>
 		              {connectableSecondaryTasks.length === 0 ? <p className="rounded-md bg-muted/20 px-3 py-2 text-xs text-muted-foreground">No secondary tasks are available.</p> : null}
 	            </div>
-		            <DialogFooter className="m-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
-		              <span className="text-xs text-muted-foreground">{connectedTaskKey === '' ? 'Connection will be cleared.' : 'Connection will be saved to this stage.'}</span>
+	            <DialogFooter className="m-0 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
+	              <span className="text-xs text-muted-foreground">{connectedTaskKey === '' ? 'Connection will be cleared.' : 'Connection will be saved to this stage.'}</span>
 		              <div className="flex items-center gap-2">
-		                <Button
-		                  type="button"
-	                  onClick={() => setConfirmation({
-	                    title: 'Confirm stage connection',
-	                    message: connectedTaskKey === '' ? 'Clear this stage connection?' : 'Connect this stage to the selected secondary task?',
-	                    confirmLabel: 'Save Connection',
-	                    onConfirm: () => stageConnectionFormRef.current?.requestSubmit(),
-	                  })}
-	                >
+		                <Button type="submit">
 	                  <Save className="h-4 w-4" aria-hidden="true" />
 	                  Save Connection
 	                </Button>
@@ -10747,6 +12902,158 @@ function RuntimeHealthView() {
   )
 }
 
+function TraverseView() {
+  const report = typeof data.runtimeHealth?.traverseDashboard === 'object' && data.runtimeHealth?.traverseDashboard !== null ? data.runtimeHealth.traverseDashboard : {}
+  const runtime = typeof report.runtime === 'object' && report.runtime !== null ? report.runtime : {}
+  const events = Array.isArray(report.events) ? report.events : []
+  const registry = typeof data.traverseDocuments === 'object' && data.traverseDocuments !== null
+    ? data.traverseDocuments
+    : (typeof data.runtimeHealth?.traverseDocuments === 'object' && data.runtimeHealth?.traverseDocuments !== null ? data.runtimeHealth.traverseDocuments : {})
+  const registryRows = Array.isArray(registry.rows) ? registry.rows : []
+  const queueReport = typeof data.runtimeHealth?.traverseQueue === 'object' && data.runtimeHealth?.traverseQueue !== null ? data.runtimeHealth.traverseQueue : {}
+  const queueRows = Array.isArray(queueReport.rows) ? queueReport.rows : []
+  const [queueDialog, setQueueDialog] = React.useState<'pending' | 'issues' | null>(null)
+  const [copiedQueueId, setCopiedQueueId] = React.useState('')
+  const [registryForm, setRegistryForm] = React.useState<Record<string, any> | null>(null)
+  const refresh = () => window.location.reload()
+  const safePromptValue = (value: unknown, fallback: string, maxLength = 500) => {
+    const normalized = String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+    return (normalized || fallback).slice(0, maxLength)
+  }
+  const buildInvestigationPrompt = (row: Record<string, any>) => [
+    'Investigate this TRAVERSE Firebase-to-MySQL synchronization issue.',
+    '',
+    `Queue ID: #${safePromptValue(row.id, 'unknown', 40)}`,
+    `Firebase collection: ${safePromptValue(row.collection, 'unknown', 120)}`,
+    `Firebase document ID: ${safePromptValue(row.document, 'unknown', 255)}`,
+    `Queue state: ${safePromptValue(row.state, 'unknown', 40)}`,
+    `Attempts: ${safePromptValue(row.attempts, '0', 40)}`,
+    `Error code: ${safePromptValue(row.error, 'not recorded', 160)}`,
+    `Error description: ${safePromptValue(row.error_detail, 'not recorded', 800)}`,
+    `Last updated: ${safePromptValue(row.updated_at, 'not recorded', 80)}`,
+    '',
+    'Determine the exact root cause of why this item did not complete synchronization. Inspect the TRAVERSE service logs, queue state transition, Firebase field names/types/timestamps, MySQL schema and projection/read-back, and project/tenant boundaries. Report the evidence, the smallest safe fix, and the verification steps.',
+    'Do not expose passwords, hashes, tokens, service-account details, credentials, or raw document payloads. Do not mutate live Firebase or MySQL data while investigating.',
+  ].join('\n')
+  const copyInvestigationPrompt = async (row: Record<string, any>) => {
+    const prompt = buildInvestigationPrompt(row)
+    try {
+      await navigator.clipboard.writeText(prompt)
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = prompt
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    const queueId = String(row.id || '')
+    setCopiedQueueId(queueId)
+    window.setTimeout(() => setCopiedQueueId((current) => current === queueId ? '' : current), 1600)
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+      <section className="shrink-0 rounded-xl border bg-card px-4 py-4 shadow-sm" aria-labelledby="traverse-title">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 id="traverse-title" className="text-2xl font-bold tracking-normal">Traverse</h2>
+            <p className="mt-1 text-sm text-muted-foreground">MySQL-only operational report. Viewing or refreshing this page does not read Firebase.</p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={refresh} title="Refresh MySQL-only Traverse report"><RotateCcw data-icon="inline-start" />Refresh</Button>
+            <form method="post" onSubmit={(event) => { if (!window.confirm('Restart TRAVERSE now? Current sync work will resume after the service starts.')) event.preventDefault() }}>
+              <input type="hidden" name="csrf" value={data.csrf} />
+              <input type="hidden" name="action" value="restart_traverse" />
+              <Button type="submit" variant="outline" size="sm" title="Restart TRAVERSE service"><Power data-icon="inline-start" />Restart TRAVERSE</Button>
+            </form>
+          </div>
+        </div>
+      </section>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 pr-1 [scrollbar-gutter:stable]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <Card className="min-w-0">
+            <CardHeader className="border-b">
+              <div className="flex items-start justify-between gap-3">
+                <div><CardTitle>TRAVERSE document registry</CardTitle><CardDescription>Every registered Firebase collection/document is shown from MySQL. Restart TRAVERSE after changes.</CardDescription></div>
+                <Button type="button" size="icon" variant="outline" title="Add TRAVERSE document" aria-label="Add TRAVERSE document" onClick={() => setRegistryForm({ mode: 'create', collection: '', document: '', status: 'ACTIVE' })}><Plus /></Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {registryRows.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{String(registry.message || 'No TRAVERSE registry collections found.')}</p> : <FoundationTable headers={['ID', 'Firebase collection', 'Status', 'Actions']}>
+                {registryRows.map((row: Record<string, any>) => <TableRow key={String(row.id)}>
+                  <TableCell className="font-mono text-xs">#{String(row.id || '')}</TableCell>
+                  <TableCell className="max-w-44 break-words font-medium">{String(row.collection || '')}</TableCell>
+                  <TableCell><HealthStatusBadge status={String(row.status || '')} /></TableCell>
+                  <TableCell><div className="flex flex-wrap items-center gap-1">
+                    <Button type="button" size="icon" variant="ghost" title="Edit registry entry" aria-label="Edit registry entry" onClick={() => setRegistryForm({ mode: 'edit', id: row.id, collection: row.collection, document: row.document, status: row.status })}><Pencil /></Button>
+                    <form method="post" onSubmit={(event) => { if (!window.confirm(`Set registry entry #${String(row.id)} to ${String(row.status) === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'}? Restart TRAVERSE afterward.`)) event.preventDefault() }}>
+                      <input type="hidden" name="csrf" value={data.csrf} /><input type="hidden" name="action" value="set_traverse_document_status" /><input type="hidden" name="xId" value={String(row.id)} /><input type="hidden" name="traverse_status" value={String(row.status) === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'} />
+                      <Button type="submit" size="icon" variant="ghost" title={String(row.status) === 'ACTIVE' ? 'Set inactive' : 'Set active'} aria-label={String(row.status) === 'ACTIVE' ? 'Set inactive' : 'Set active'}><RotateCcw /></Button>
+                    </form>
+                    <form method="post" onSubmit={(event) => { if (!window.confirm(`Delete TRAVERSE registry entry #${String(row.id)}? Restart TRAVERSE afterward.`)) event.preventDefault() }}>
+                      <input type="hidden" name="csrf" value={data.csrf} /><input type="hidden" name="action" value="delete_traverse_document" /><input type="hidden" name="xId" value={String(row.id)} />
+                      <Button type="submit" size="icon" variant="ghost" className="text-destructive" title="Delete registry entry" aria-label="Delete registry entry"><Trash2 /></Button>
+                    </form>
+                  </div></TableCell>
+                </TableRow>)}
+              </FoundationTable>}
+            </CardContent>
+          </Card>
+          <div className="grid min-w-0 gap-4">
+          <Card>
+            <CardHeader className="border-b"><CardTitle className="flex items-center gap-2"><Activity className="size-4" />Service health</CardTitle><CardDescription>Current state and counters recorded by TRAVERSE.</CardDescription></CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-md bg-muted/25 px-3 py-2.5"><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</p><strong className="mt-1 block truncate text-base">{String(runtime.status || report.status || 'NOT_READY')}</strong></div>
+              <div className="rounded-md bg-muted/25 px-3 py-2.5"><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Firebase reads</p><strong className="mt-1 block truncate text-base">{Number(runtime.reads || 0)}</strong></div>
+              <button type="button" className="rounded-md bg-muted/25 px-3 py-2.5 text-left transition hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setQueueDialog('pending')} title="View pending queue records"><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pending queue</p><strong className="mt-1 block truncate text-base">{Number(runtime.pending || 0)}</strong><span className="mt-1 block text-[11px] text-muted-foreground">View records</span></button>
+              <button type="button" className="rounded-md bg-muted/25 px-3 py-2.5 text-left transition hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setQueueDialog('issues')} title="View retry and dead-letter records"><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Retry / dead letter</p><strong className="mt-1 block truncate text-base">{Number(runtime.retry || 0)} / {Number(runtime.dead_letter || 0)}</strong><span className="mt-1 block text-[11px] text-muted-foreground">View issues</span></button>
+            </CardContent>
+            <CardFooter className="border-t text-xs text-muted-foreground">Last heartbeat: {String(runtime.heartbeat || '—')} · Started: {String(runtime.started_at || '—')} · PID: {String(runtime.pid || '—')}</CardFooter>
+          </Card>
+          <Card>
+            <CardHeader className="border-b"><CardTitle>Technical event history</CardTitle><CardDescription>Latest safe diagnostic events from MySQL. Passwords, tokens, payloads, and secrets are never stored here.</CardDescription></CardHeader>
+            <CardContent className="p-0">
+              {events.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{String(report.message || 'No Traverse events recorded yet.')}</p> : <FoundationTable headers={['Time', 'Event', 'Status', 'Collection', 'Document', 'Error', 'Detail']}>
+                {events.map((event: Record<string, any>, index: number) => <TableRow key={`${String(event.created_at)}-${index}`}><TableCell className="whitespace-nowrap font-mono text-xs">{String(event.created_at || '')}</TableCell><TableCell className="font-medium">{String(event.type || '')}</TableCell><TableCell><HealthStatusBadge status={String(event.status || '')} /></TableCell><TableCell>{String(event.collection || '—')}</TableCell><TableCell className="max-w-40 truncate font-mono text-xs" title={String(event.document || '')}>{String(event.document || '—')}</TableCell><TableCell className="text-xs text-destructive">{String(event.error_code || '—')}</TableCell><TableCell className="max-w-72 truncate text-xs" title={String(event.error_detail || '')}>{String(event.error_detail || '—')}</TableCell></TableRow>)}
+              </FoundationTable>}
+            </CardContent>
+          </Card>
+          </div>
+        </div>
+      </div>
+      <Dialog open={registryForm !== null} onOpenChange={(open) => !open && setRegistryForm(null)}>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-14"><DialogTitle>{registryForm?.mode === 'edit' ? 'Edit TRAVERSE collection' : 'Add TRAVERSE collection'}</DialogTitle><DialogDescription className="max-w-prose">Register the exact Firebase collection for TRAVERSE. This form reads and writes MySQL only.</DialogDescription></DialogHeader>
+          {registryForm && <form method="post" onSubmit={(event) => { if (!window.confirm(`${registryForm.mode === 'edit' ? 'Update' : 'Add'} this TRAVERSE registry entry? Restart TRAVERSE afterward.`)) event.preventDefault() }}>
+            <div className="grid gap-4 px-6 py-5">
+              <input type="hidden" name="csrf" value={data.csrf} /><input type="hidden" name="action" value={registryForm.mode === 'edit' ? 'update_traverse_document' : 'create_traverse_document'} />
+              {registryForm.mode === 'edit' && <input type="hidden" name="xId" value={String(registryForm.id)} />}
+              <div className="grid gap-2"><Label htmlFor="traverse_firebase_collection">Firebase collection</Label><Input id="traverse_firebase_collection" name="firebase_collection" defaultValue={String(registryForm.collection || '')} placeholder="project_group" pattern="[A-Za-z][A-Za-z0-9_]{0,79}" maxLength={80} required /></div>
+              <div className="grid gap-2"><Label htmlFor="traverse_status">TRAVERSE status</Label><select id="traverse_status" name="traverse_status" defaultValue={String(registryForm.status || 'ACTIVE')} className="h-9 rounded-md border bg-background px-3 text-sm"><option value="ACTIVE">ACTIVE</option><option value="INACTIVE">INACTIVE</option></select></div>
+            </div>
+            <DialogFooter className="m-0 flex w-full flex-wrap items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-3 sm:flex-nowrap"><span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">Restart TRAVERSE to load this registry change.</span><Button type="submit" className="shrink-0"><Save data-icon="inline-start" />{registryForm.mode === 'edit' ? 'Save changes' : 'Add document'}</Button></DialogFooter>
+          </form>}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={queueDialog !== null} onOpenChange={(open) => !open && setQueueDialog(null)}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-1rem)] min-w-0 flex-col overflow-hidden p-0 sm:max-w-[min(98vw,110rem)]">
+          <DialogHeader className="relative shrink-0 border-b px-6 py-4 pr-14"><DialogTitle>{queueDialog === 'issues' ? 'TRAVERSE Queue Issues' : 'TRAVERSE Pending Queue'}</DialogTitle><DialogDescription>{String(queueReport.message || 'MySQL-only queue records. No Firebase reads are performed.')}</DialogDescription><DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-3 top-3" aria-label="Close queue dialog" title="Close"><X /></Button>} /></DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+            {queueRows.filter((row: Record<string, any>) => queueDialog === 'issues' ? ['RETRY_WAIT', 'DEAD_LETTER', 'ACK_PENDING'].includes(String(row.state)) : ['QUEUED', 'CLAIMED', 'RETRY_WAIT', 'ACK_PENDING'].includes(String(row.state))).length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No matching queue records.</p> : <FoundationTable headers={['Queue ID', 'Collection', 'Document', 'State', 'Attempts', 'Error code', 'Error description', 'Updated', 'Action']}>
+              {queueRows.filter((row: Record<string, any>) => queueDialog === 'issues' ? ['RETRY_WAIT', 'DEAD_LETTER', 'ACK_PENDING'].includes(String(row.state)) : ['QUEUED', 'CLAIMED', 'RETRY_WAIT', 'ACK_PENDING'].includes(String(row.state))).map((row: Record<string, any>) => <TableRow key={String(row.id)}><TableCell className="font-mono text-xs font-semibold">#{String(row.id || '')}</TableCell><TableCell>{String(row.collection || '')}</TableCell><TableCell className="max-w-56 truncate font-mono text-xs" title={String(row.document || '')}>{String(row.document || '')}</TableCell><TableCell><HealthStatusBadge status={String(row.state || '')} /></TableCell><TableCell>{String(row.attempts || 0)}</TableCell><TableCell className="max-w-48 truncate text-xs text-destructive" title={String(row.error || '')}>{String(row.error || '—')}</TableCell><TableCell className="min-w-80 max-w-[32rem] whitespace-normal break-words text-xs" title={String(row.error_detail || '')}>{String(row.error_detail || 'No error description recorded.')}</TableCell><TableCell className="whitespace-nowrap text-xs">{String(row.updated_at || '')}</TableCell><TableCell className="text-right"><Button type="button" variant="outline" size="icon-sm" className="rounded-full" title={copiedQueueId === String(row.id || '') ? 'Investigation prompt copied' : 'Copy English investigation prompt'} aria-label={copiedQueueId === String(row.id || '') ? 'Investigation prompt copied' : 'Copy English investigation prompt'} onClick={() => { void copyInvestigationPrompt(row) }}><Copy /></Button></TableCell></TableRow>)}
+            </FoundationTable>}
+          </div>
+          <DialogFooter className="m-0 shrink-0 justify-end rounded-none border-t bg-muted/50 px-6 py-3"><DialogClose render={<Button type="button" variant="outline" className="min-w-24">Close</Button>} /></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 function AuditLogView() {
   const exportParams = new URLSearchParams({ tab: 'audit', audit_export: 'csv' })
 
@@ -10882,10 +13189,12 @@ function portalViewHref(view: PortalRouteKey): string {
 function readPortalView(): PortalRouteKey {
   const payloadView = portalData?.portalView
   if (payloadView === 'bed-management') return 'bed-management'
+  if (payloadView === 'signin') return 'signin'
 
   if (typeof window !== 'undefined') {
     const requestedView = new URLSearchParams(window.location.search).get('portal_view')
     if (requestedView === 'bed-management') return 'bed-management'
+    if (requestedView === 'signin') return 'signin'
   }
 
   return 'dashboard'
@@ -11154,9 +13463,16 @@ function PortalShell({
   onThemeToggle: () => void
 }) {
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  const { loading: portalNetworkLoading } = useShellNetworkLoading()
   const portalSignedIn = Boolean(portalData?.currentUser?.user_key)
   const [messengerOpen, setMessengerOpen] = usePersistentMessengerOpen(portalSignedIn)
-  const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen, portalSignedIn)
+  const [messengerNotificationSoundKey, setMessengerNotificationSoundKey] = React.useState(() => normalizePortalTaskNotificationSoundKey(portalData?.currentUser?.messenger_notification_sound || defaultPortalMessengerNotificationSoundKey))
+  const [messengerNotificationVolumeKey, setMessengerNotificationVolumeKey] = React.useState(() => normalizePortalTaskNotificationVolumeKey(portalData?.currentUser?.messenger_notification_volume || defaultPortalMessengerNotificationVolumeKey))
+  const [taskNotificationSoundKey, setTaskNotificationSoundKey] = React.useState(() => normalizePortalTaskNotificationSoundKey(portalData?.currentUser?.task_notification_sound))
+  const [taskNotificationVolumeKey, setTaskNotificationVolumeKey] = React.useState(() => normalizePortalTaskNotificationVolumeKey(portalData?.currentUser?.task_notification_volume))
+  const [taskSoundSettingsOpen, setTaskSoundSettingsOpen] = React.useState(false)
+  const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen, portalSignedIn, messengerNotificationSoundKey, messengerNotificationVolumeKey)
+  const { updateCount, clearUpdates } = usePortalTaskUpdates(portalSignedIn, taskNotificationSoundKey, taskNotificationVolumeKey)
   const defaultSidebarOpen = React.useMemo(
     () => readBooleanCookie(sidebarCookieName) ?? true,
     [],
@@ -11170,6 +13486,29 @@ function PortalShell({
     clearUnread()
     setMessengerOpen(true)
   }, [clearUnread, portalSignedIn, setMessengerOpen])
+  const openTaskSoundSettings = React.useCallback(() => {
+    if (!portalSignedIn) {
+      window.location.assign(portalHref('#portal-login'))
+      return
+    }
+    setTaskSoundSettingsOpen(true)
+  }, [portalSignedIn])
+  const handleNotificationSoundsSaved = React.useCallback((savedTaskSoundKey: string, savedTaskVolumeKey: string, savedMessengerSoundKey: string, savedMessengerVolumeKey: string) => {
+    const normalizedTaskSoundKey = normalizePortalTaskNotificationSoundKey(savedTaskSoundKey)
+    const normalizedTaskVolumeKey = normalizePortalTaskNotificationVolumeKey(savedTaskVolumeKey)
+    const normalizedMessengerSoundKey = normalizePortalTaskNotificationSoundKey(savedMessengerSoundKey)
+    const normalizedMessengerVolumeKey = normalizePortalTaskNotificationVolumeKey(savedMessengerVolumeKey)
+    setTaskNotificationSoundKey(normalizedTaskSoundKey)
+    setTaskNotificationVolumeKey(normalizedTaskVolumeKey)
+    setMessengerNotificationSoundKey(normalizedMessengerSoundKey)
+    setMessengerNotificationVolumeKey(normalizedMessengerVolumeKey)
+    if (portalData?.currentUser) {
+      portalData.currentUser.task_notification_sound = normalizedTaskSoundKey
+      portalData.currentUser.task_notification_volume = normalizedTaskVolumeKey
+      portalData.currentUser.messenger_notification_sound = normalizedMessengerSoundKey
+      portalData.currentUser.messenger_notification_volume = normalizedMessengerVolumeKey
+    }
+  }, [])
   const displayTitle = messengerOpen ? 'Messenger' : title
   const displayBreadcrumbItems = messengerOpen ? [...breadcrumbItems.slice(0, 1), 'Messenger'] : breadcrumbItems
 
@@ -11207,6 +13546,15 @@ function PortalShell({
             </div>
             <nav className="ml-auto flex min-w-0 items-center justify-end gap-2" aria-label="Portal controls">
               <MessengerHeaderButton onOpen={openMessenger} unreadCount={unreadCount} />
+              <PortalTaskUpdateHeaderButton onOpen={clearUpdates} updateCount={updateCount} />
+              <Tooltip>
+                <TooltipTrigger
+                  render={<Button type="button" variant="outline" size="icon-sm" aria-label="Notification sound settings" title="Notification Sound Settings" onClick={openTaskSoundSettings} />}
+                >
+                  <Music2 />
+                </TooltipTrigger>
+                <TooltipContent>Notification Sound Settings</TooltipContent>
+              </Tooltip>
               <HeaderControlSeparator />
               <Tooltip>
                 <TooltipTrigger
@@ -11220,17 +13568,28 @@ function PortalShell({
               </Tooltip>
             </nav>
           </header>
+          <SampleShellProgressBar active={portalNetworkLoading} />
 
           <main className={cn('flex min-h-0 w-full flex-1 flex-col gap-4 p-4', messengerOpen ? 'overflow-hidden' : 'overflow-y-auto pb-16')}>
             {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><PortalFlashMessage />{children}</>}
           </main>
 
-          <footer className="sticky bottom-0 z-20 flex min-h-12 items-center justify-between gap-3 border-t bg-background px-4 text-xs text-muted-foreground">
-            <span>{footerLabel}</span>
-            <span>Build Target {buildTarget}</span>
+          <footer className="sticky bottom-0 z-20 grid min-h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-t bg-background px-4 text-xs text-muted-foreground">
+            <span className="min-w-0 truncate">{footerLabel}</span>
+            <SampleFooterLoadingIndicator active={portalNetworkLoading} />
+            <span className="min-w-0 justify-self-end truncate text-right">Mode: Preview · Build Target {buildTarget}</span>
           </footer>
         </SidebarInset>
       </SidebarProvider>
+      <PortalNotificationSoundSettingsDialog
+        open={taskSoundSettingsOpen}
+        onOpenChange={setTaskSoundSettingsOpen}
+        taskSoundKey={taskNotificationSoundKey}
+        taskVolumeKey={taskNotificationVolumeKey}
+        messengerSoundKey={messengerNotificationSoundKey}
+        messengerVolumeKey={messengerNotificationVolumeKey}
+        onSaved={handleNotificationSoundsSaved}
+      />
     </TooltipProvider>
   )
 }
@@ -11391,7 +13750,7 @@ function PortalNavUser() {
                 </DropdownMenuItem>
               </form>
             ) : (
-              <DropdownMenuItem render={<a href={portalHref()} />}>
+              <DropdownMenuItem render={<a href={portalViewHref('signin')} />}>
                 Sign In
               </DropdownMenuItem>
             )}
@@ -11427,7 +13786,6 @@ function PortalDashboardView({ theme, onThemeToggle }: { theme: AdminThemeMode; 
       onThemeToggle={onThemeToggle}
     >
       <div className="flex w-full flex-col gap-5">
-        {!portalData?.currentUser ? <PortalSignInCard /> : null}
         <section className="shrink-0 overflow-hidden rounded-lg border bg-card">
           <div className="px-4 py-3">
             <div className="min-w-0">
@@ -11468,6 +13826,89 @@ function PortalDashboardView({ theme, onThemeToggle }: { theme: AdminThemeMode; 
 
 function PortalSignInCard() {
   const softwareName = portalData?.softwareName || 'BuilderX'
+  const [login, setLogin] = React.useState('')
+  const [password, setPassword] = React.useState('')
+  const [showPassword, setShowPassword] = React.useState(false)
+  const [state, setState] = React.useState<'idle' | 'loading' | 'error'>('idle')
+  const [error, setError] = React.useState('')
+
+  const portalFirebaseAuth = React.useCallback(() => {
+    const config = portalData?.firebaseConfig && typeof portalData.firebaseConfig === 'object' ? portalData.firebaseConfig : null
+    if (!config || String(config.apiKey || '').trim() === '' || String(config.projectId || '').trim() === '' || portalData?.firebaseConfig?.authEnabled !== true) {
+      throw new Error('Portal Firebase sign-in is not configured.')
+    }
+    const existingApp = getApps().find((app) => app.name === 'portal-auth')
+    const app = existingApp || initializeApp(config as FirebaseOptions, 'portal-auth')
+    return getAuth(app)
+  }, [])
+
+  const submit = React.useCallback(async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = event.currentTarget
+    if (!form.reportValidity() || state === 'loading') return
+    setState('loading')
+    setError('')
+    let auth: ReturnType<typeof getAuth> | null = null
+    try {
+      auth = portalFirebaseAuth()
+      const identifierResponse = await fetch(form.getAttribute('action') || window.location.href, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({
+          csrf: String(portalData?.csrf || ''),
+          action: 'portal_resolve_login',
+          login: login.trim(),
+        }),
+      })
+      const identifierPayload = await identifierResponse.json().catch(() => ({}))
+      if (!identifierResponse.ok || identifierPayload.ok !== true) {
+        const identifierError = new Error(String(identifierPayload.message || 'Portal sign-in could not be completed.')) as Error & { code?: string }
+        const identifierCode = String(identifierPayload.code || '').trim()
+        identifierError.code = `server/${identifierCode || `http_${identifierResponse.status}`}`
+        throw identifierError
+      }
+      const firebaseIdentifier = String(identifierPayload.data?.firebase_identifier || '').trim().toLowerCase()
+      if (!firebaseIdentifier.includes('@')) throw new Error('Portal sign-in could not be completed.')
+      const credential = await signInWithEmailAndPassword(auth, firebaseIdentifier, password)
+      const firebaseIdToken = await credential.user.getIdToken(true)
+      const response = await fetch(form.getAttribute('action') || window.location.href, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({
+          csrf: String(portalData?.csrf || ''),
+          action: 'firebase_login_portal',
+          firebase_id_token: firebaseIdToken,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.ok !== true) {
+        const handoffError = new Error(String(payload.message || 'Portal sign-in could not be completed.')) as Error & { code?: string }
+        const handoffCode = String(payload.code || '').trim()
+        handoffError.code = `server/${handoffCode || `http_${response.status}`}`
+        throw handoffError
+      }
+      window.location.assign(portalViewHref('dashboard'))
+    } catch (cause) {
+      if (auth) await signOut(auth).catch(() => undefined)
+      setPassword('')
+      const code = String((cause as { code?: string })?.code || '').trim()
+        || (cause instanceof Error ? (cause.message.match(/\bauth\/[a-z-]+\b/)?.[0] || '') : '')
+      const rawMessage = cause instanceof Error ? cause.message : ''
+      if (code.startsWith('auth/')) {
+        void fetch(form.getAttribute('action') || window.location.href, { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: new URLSearchParams({ csrf: String(portalData?.csrf || ''), action: 'record_portal_login_failure', login: login.trim(), reason: code }) }).catch(() => undefined)
+      }
+      setError(code.startsWith('auth/')
+        ? `Firebase error: ${code}`
+        : code.startsWith('server/')
+          ? `Server error: ${code.slice('server/'.length)}`
+        : rawMessage === 'Portal Firebase sign-in is not configured.'
+          ? rawMessage
+          : 'Sign-in error: firebase_unknown_error')
+      setState('error')
+    }
+  }, [login, password, portalFirebaseAuth, state])
 
   return (
     <Card id="portal-login">
@@ -11476,21 +13917,95 @@ function PortalSignInCard() {
         <CardDescription>Sign in to {softwareName} to load assigned bed-management records.</CardDescription>
       </CardHeader>
       <CardContent className="pt-4">
-        <form method="post" action={portalHref('')} className="grid gap-4 md:max-w-md">
+        <form method="post" action={portalHref('')} className="grid gap-4 md:max-w-md" onSubmit={(event) => void submit(event)}>
           <input type="hidden" name="csrf" value={portalData?.csrf || ''} />
-          <input type="hidden" name="action" value="login_portal" />
           <div className="grid gap-2">
             <Label htmlFor="portal-login">Username or email</Label>
-            <Input id="portal-login" name="login" autoComplete="username" required />
+            <Input id="portal-login" name="login" value={login} onChange={(event) => setLogin(event.target.value)} autoComplete="username" required disabled={state === 'loading'} />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="portal-password">Password</Label>
-            <Input id="portal-password" name="password" type="password" autoComplete="current-password" required />
+            <div className="relative">
+              <Input id="portal-password" name="password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required disabled={state === 'loading'} className="pr-10" />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="absolute right-1 top-1/2 -translate-y-1/2"
+                onClick={() => setShowPassword((visible) => !visible)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                title={showPassword ? 'Hide password' : 'Show password'}
+                disabled={state === 'loading'}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
-          <Button type="submit" className="w-fit"><LogIn data-icon="inline-start" />Sign In</Button>
+          {error ? <p className="text-sm text-destructive" role="alert" aria-live="assertive">{error}</p> : null}
+          <Button type="submit" className="w-fit" disabled={state === 'loading'}><LogIn data-icon="inline-start" />{state === 'loading' ? 'Signing in…' : 'Sign In'}</Button>
         </form>
       </CardContent>
     </Card>
+  )
+}
+
+function PortalAuthenticationRedirectDialog({ enabled = true }: { enabled?: boolean }) {
+  const [open, setOpen] = React.useState(() => {
+    if (typeof window === 'undefined') return false
+    return enabled && !portalData?.currentUser && window.location.hash !== '#portal-login'
+  })
+
+  React.useEffect(() => {
+    if (!enabled || portalData?.currentUser || window.location.hash === '#portal-login') {
+      setOpen(false)
+      return
+    }
+    setOpen(true)
+  }, [])
+
+  const redirectToLogin = React.useCallback(() => {
+    setOpen(false)
+    window.location.assign(portalViewHref('signin'))
+  }, [])
+
+  return (
+    <AlertDialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) redirectToLogin() }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Sign in before continuing</AlertDialogTitle>
+          <AlertDialogDescription>
+            Sign in to the User Portal to monitor bed tasks and receive real-time updates.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogAction type="button" onClick={(event) => { event.preventDefault(); redirectToLogin() }}>
+            <LogIn data-icon="inline-start" />Go to Sign In
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+function PortalSignInView({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
+  const softwareName = portalData?.softwareName || 'BuilderX'
+
+  return (
+    <PortalShell
+      activeView="signin"
+      title="Sign In"
+      breadcrumbItems={['Portal', 'Sign In']}
+      buildTarget="PORTAL"
+      footerLabel={`${softwareName} User Portal`}
+      theme={theme}
+      onThemeToggle={onThemeToggle}
+    >
+      <div className="flex min-h-full w-full items-start justify-center px-4 py-10 sm:items-center">
+        <div className="w-full max-w-md">
+          <PortalSignInCard />
+        </div>
+      </div>
+    </PortalShell>
   )
 }
 
@@ -11505,6 +14020,51 @@ function portalBooleanFlag(value: any, fallback = false): boolean {
 
 function portalCsvValues(value: any): string[] {
   return String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function portalDisplayDateTime(value: any): string {
+  const text = String(value || '').trim()
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?$/)
+  if (!match) return text || 'Not synced'
+
+  const [, year, month, day, hour, minute] = match
+  const monthLabel = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Math.max(0, Math.min(11, Number(month) - 1))]
+  const hour24 = Number(hour)
+  const period = hour24 >= 12 ? 'PM' : 'AM'
+  const hour12 = hour24 % 12 || 12
+
+  return `${monthLabel} ${Number(day)}, ${year} ${hour12}:${minute} ${period}`
+}
+
+function portalRelativeTime(value: any): string {
+  const text = String(value || '').trim()
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/)
+  if (!match) return portalDisplayDateTime(value)
+
+  const [, year, month, day, hour, minute, second = '0'] = match
+  const timestamp = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  ).getTime()
+  if (!Number.isFinite(timestamp)) return portalDisplayDateTime(value)
+
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000))
+  if (elapsedMinutes < 1) return 'Just now'
+  if (elapsedMinutes < 60) return `${elapsedMinutes} min${elapsedMinutes === 1 ? '' : 's'} ago`
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) return `${elapsedHours} hour${elapsedHours === 1 ? '' : 's'} ago`
+
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  return `${elapsedDays} day${elapsedDays === 1 ? '' : 's'} ago`
+}
+
+function portalUniqueStrings(values: any[]): string[] {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
 }
 
 function portalTaskColorHex(value: any): string {
@@ -11548,9 +14108,23 @@ function portalBedTaskCardStyle(taskColorHex: string, statusMismatch: boolean): 
   }
 }
 
-function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
+function PortalBedLookupResultCard({
+  row,
+  bedTasksByBed,
+  bedTaskLogs,
+  onRefresh,
+}: {
+  row: Record<string, any>
+  bedTasksByBed: Record<string, Array<Record<string, any>>>
+  bedTaskLogs: Record<string, Array<Record<string, any>>>
+  onRefresh?: () => void | Promise<void>
+}) {
   const [taskModalType, setTaskModalType] = React.useState<'PRIMARY' | 'SECONDARY' | null>(null)
   const [selectedTaskForForm, setSelectedTaskForForm] = React.useState<Record<string, any> | null>(null)
+  const [taskDetailsOpen, setTaskDetailsOpen] = React.useState(false)
+  const [selectedTaskDetailsKey, setSelectedTaskDetailsKey] = React.useState('')
+  const [taskSubmitting, setTaskSubmitting] = React.useState(false)
+  const [taskFormError, setTaskFormError] = React.useState('')
   const [taskFormValues, setTaskFormValues] = React.useState({
     roomClass: '',
     bedTreatmentKey: '',
@@ -11561,15 +14135,51 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
   const location = [row.branch_name, row.building_name, row.floor_name, row.nurse_station_name].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
   const room = [row.room_key, row.room_class].map((value) => String(value || '').trim()).filter(Boolean).join(' / ')
   const currentRoomClass = String(row.room_class || '').trim()
-  const managedStatus = String(row.managed_status || 'ACTIVE')
   const sourceStatus = String(row.source_bed_status || 'Unspecified')
   const checkBedStatus = String(row.rbms_check_bed_status || '').trim()
   const statusMismatch = portalBooleanFlag(row.bed_status_mismatch, false)
   const existingTaskCount = Number(row.existing_task_count || 0)
   const existingTaskColorHex = portalTaskColorHex(row.existing_task_color_hex)
   const existingTaskTitle = String(row.existing_task_title || row.existing_task_key || '').trim()
+  const existingTaskStatus = String(row.existing_task_status || '').trim()
+  const existingTaskResponse = String(row.existing_task_response || '').trim()
+  const existingTaskStageLabel = String(row.existing_task_stage_label || row.existing_task_status || '').trim()
+  const existingTaskStageColorHex = portalTaskColorHex(row.existing_task_stage_color_hex)
+  const existingTaskKey = String(row.existing_task_key || '').trim()
+  const loadedTaskRows: Array<Record<string, any>> = Array.isArray(bedTasksByBed?.[bedKey])
+    ? bedTasksByBed[bedKey]
+    : []
+  const existingTaskRows: Array<Record<string, any>> = loadedTaskRows.length > 0
+    ? loadedTaskRows
+    : (existingTaskKey !== '' ? [{
+        bed_task_key: existingTaskKey,
+        task_key: row.existing_task_task_key,
+        task_title: existingTaskTitle,
+        task_status: existingTaskStatus,
+        task_color_hex: row.existing_task_color_hex,
+        current_stage_label: existingTaskStageLabel,
+        current_stage_color_hex: row.existing_task_stage_color_hex,
+        task_updated_at: row.existing_task_updated_at,
+      }] : [])
+  const visibleTaskRows = existingTaskRows.slice(0, 3)
+  const totalTaskCount = Math.max(existingTaskCount, existingTaskRows.length)
+  const additionalTaskCount = Math.max(0, totalTaskCount - visibleTaskRows.length)
+  const selectedTaskDetails = existingTaskRows.find((task) => String(task.bed_task_key || '').trim() === selectedTaskDetailsKey)
+    || (existingTaskRows.length === 1 ? existingTaskRows[0] : null)
+  const selectedTaskDetailsBedTaskKey = String(selectedTaskDetails?.bed_task_key || existingTaskKey).trim()
+  const selectedTaskDetailsTitle = String(selectedTaskDetails?.task_title || selectedTaskDetails?.task_code || existingTaskTitle || 'Task request').trim()
+  const selectedTaskDetailsStatus = String(selectedTaskDetails?.task_status || existingTaskStatus || '').trim()
+  const selectedTaskDetailsResponse = String(selectedTaskDetails?.task_response || selectedTaskDetails?.response || existingTaskResponse || '').trim()
+  const selectedTaskDetailsColorHex = portalTaskColorHex(selectedTaskDetails?.task_color_hex || existingTaskColorHex)
+  const selectedTaskDetailsStageLabel = String(selectedTaskDetails?.current_stage_label || selectedTaskDetails?.task_status || existingTaskStageLabel || 'Pending').trim()
+  const selectedTaskDetailsStageColorHex = portalTaskColorHex(selectedTaskDetails?.current_stage_color_hex || existingTaskStageColorHex)
+  const selectedTaskDetailsUpdatedAt = portalRelativeTime(selectedTaskDetails?.task_updated_at || row.existing_task_updated_at)
+  const showTaskDetailsBody = existingTaskRows.length <= 1 || selectedTaskDetails !== null
   const existingTaskKeys = new Set(portalCsvValues(row.existing_task_keys))
-  const hasExistingTaskRequest = existingTaskCount > 0
+  const taskLogs: Array<Record<string, any>> = selectedTaskDetailsBedTaskKey !== '' && Array.isArray(bedTaskLogs?.[selectedTaskDetailsBedTaskKey])
+    ? bedTaskLogs[selectedTaskDetailsBedTaskKey]
+    : []
+  const hasExistingTaskRequest = totalTaskCount > 0
   const hasExistingTaskColor = hasExistingTaskRequest && existingTaskColorHex !== ''
   const cardTitle = [
     statusMismatch ? `Bed Status Mismatch: Project Bed ${sourceStatus}; RBMS Check Bed Status ${checkBedStatus || 'Missing'}` : '',
@@ -11589,8 +14199,6 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
     if (isVacant) return portalBooleanFlag(task.task_can_run_if_bed_vacant, true)
     return false
   })
-  const primaryActionTasks = allowedBedTasks.filter((task) => String(task.task_type || '').trim().toUpperCase() === 'PRIMARY')
-  const secondaryActionTasks = allowedBedTasks.filter((task) => String(task.task_type || '').trim().toUpperCase() === 'SECONDARY')
   const selectableBedTasks = allowedBedTasks.filter((task) => {
     const taskKey = String(task.task_key || '').trim()
     return !existingTaskKeys.has(taskKey)
@@ -11614,57 +14222,134 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
     && (!selectedTaskRequiresTreatment || taskFormValues.bedTreatmentKey.trim() !== '')
     && (!selectedTaskRequiresSource || taskFormValues.bedSourceKey.trim() !== '')
   )
-  const currentPortalSearch = typeof window !== 'undefined' && window.location.search ? window.location.search : '?portal_view=bed-management'
+  const submitTaskForm = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = event.currentTarget
+    if (!HTMLFormElement.prototype.reportValidity.call(form) || !selectedTaskForForm || taskSubmitting) return
+    setTaskSubmitting(true)
+    setTaskFormError('')
+    try {
+      const formData = new FormData(form)
+      const treatment = treatmentRows.find((item) => String(item.bed_treatment_key || item.treatment_code || '') === taskFormValues.bedTreatmentKey)
+      const source = sourceRows.find((item) => String(item.bed_source_key || item.bed_source_code || '') === taskFormValues.bedSourceKey)
+      await createPortalBedTaskInFirebase({
+        row,
+        task: selectedTaskForForm,
+        roomClass: taskFormValues.roomClass,
+        bedTreatmentKey: taskFormValues.bedTreatmentKey,
+        bedTreatmentName: String(treatment?.treatment_name || treatment?.treatment_code || ''),
+        bedSourceKey: taskFormValues.bedSourceKey,
+        bedSourceName: String(source?.bed_source_name || source?.bed_source_code || ''),
+        remarks: String(formData.get('remarks') || ''),
+      })
+      setSelectedTaskForForm(null)
+      setTaskFormValues({ roomClass: currentRoomClass, bedTreatmentKey: '', bedSourceKey: '' })
+      void onRefresh?.()
+    } catch (error) {
+      setTaskFormError(error instanceof Error ? error.message : 'The task request could not be saved.')
+    } finally {
+      setTaskSubmitting(false)
+    }
+  }
+  const openTaskDetails = (event: React.MouseEvent<HTMLElement>) => {
+    if (!hasExistingTaskRequest) return
+    const target = event.target as HTMLElement
+    const nestedControl = target.closest('button, a, input, select, textarea, [role="button"]')
+    if (nestedControl && nestedControl !== event.currentTarget) return
+    setSelectedTaskDetailsKey(existingTaskRows.length === 1 ? String(existingTaskRows[0]?.bed_task_key || '').trim() : '')
+    setTaskDetailsOpen(true)
+  }
+  const openTaskDetailsFromKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (!hasExistingTaskRequest || event.target !== event.currentTarget) return
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    setSelectedTaskDetailsKey(existingTaskRows.length === 1 ? String(existingTaskRows[0]?.bed_task_key || '').trim() : '')
+    setTaskDetailsOpen(true)
+  }
 
   return (
     <>
       <article
         className={cn(
-          'grid gap-3 rounded-md border p-4 transition-shadow sm:grid-cols-[minmax(0,1fr)_auto]',
+          'portal-bed-lookup-card relative grid gap-3 overflow-hidden rounded-md border p-4 transition-[filter,transform] duration-200 hover:-translate-y-px sm:grid-cols-[minmax(0,1fr)_auto]',
+          hasExistingTaskRequest && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
           statusMismatch
             ? 'border-red-500/45 bg-background/80 shadow-[0_0_26px_rgba(239,68,68,0.32)] ring-1 ring-red-500/30'
             : 'border-transparent bg-background/80 shadow-sm',
         )}
         style={hasExistingTaskColor ? portalBedTaskCardStyle(existingTaskColorHex, statusMismatch) : undefined}
         title={cardTitle || undefined}
+        onClick={openTaskDetails}
+        onKeyDown={openTaskDetailsFromKeyboard}
+        role={hasExistingTaskRequest ? 'button' : undefined}
+        tabIndex={hasExistingTaskRequest ? 0 : undefined}
+        aria-label={hasExistingTaskRequest ? `Show details for ${existingTaskTitle || 'task'} on Bed ${bedLabel}` : undefined}
       >
         <div className="grid min-w-0 gap-3">
           <div className="flex min-w-0 gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
               <BedDouble className="size-5" aria-hidden="true" />
             </span>
-            <div className="min-w-0">
+            <div className="grid min-w-0 flex-1 content-start gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <h4 className="truncate text-sm font-semibold">Bed {bedLabel}</h4>
-                <Badge variant={managedStatus === 'ACTIVE' ? 'default' : 'secondary'}>{managedStatus}</Badge>
                 <Badge variant="outline">{sourceStatus}</Badge>
+              </div>
+              <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">
+                <div><span className="block font-medium text-foreground">Location</span>{location || 'Unspecified'}</div>
+                <div><span className="block font-medium text-foreground">Room</span>{room || 'Unspecified'}</div>
               </div>
             </div>
           </div>
-          <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-            <div><span className="block font-medium text-foreground">Location</span>{location || 'Unspecified'}</div>
-            <div><span className="block font-medium text-foreground">Room</span>{room || 'Unspecified'}</div>
-            <div><span className="block font-medium text-foreground">Source</span>{String(row.bed_source_key || 'Unspecified')}</div>
-            <div><span className="block font-medium text-foreground">Last sync</span>{String(row.last_synced_at || 'Not synced')}</div>
-          </div>
+          {hasExistingTaskRequest ? (
+            <>
+              <Separator className="bg-border/40" />
+              <div className="grid gap-2 text-xs text-muted-foreground">
+                <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-[10px] font-medium uppercase tracking-wide text-foreground/70">
+                  <span>Task</span>
+                  <span>Stage</span>
+                  <span>Last update</span>
+                </div>
+                {visibleTaskRows.map((task, index) => {
+                  const taskTitle = String(task.task_title || task.task_code || 'Task request').trim()
+                  const taskColorHex = portalTaskColorHex(task.task_color_hex)
+                  const stageLabel = String(task.current_stage_label || task.task_status || 'Pending').trim()
+                  const stageColorHex = portalTaskColorHex(task.current_stage_color_hex)
+                  const updatedAt = portalRelativeTime(task.task_updated_at)
+                  const taskKey = String(task.bed_task_key || '').trim()
+                  return (
+                    <div key={taskKey || `${bedKey}-task-${index}`} className="grid min-w-0 grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                      <span className="min-w-0 truncate font-medium" style={taskColorHex !== '' ? { color: portalHexToRgba(taskColorHex, 0.95) } : undefined}>{taskTitle}</span>
+                      <span className="inline-flex min-w-0 items-center gap-2">
+                        {stageColorHex !== '' ? <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: portalHexToRgba(stageColorHex, 0.9), boxShadow: `0 0 10px ${portalHexToRgba(stageColorHex, 0.38)}` }} aria-hidden="true" /> : null}
+                        <span className="truncate" style={stageColorHex !== '' ? { color: portalHexToRgba(stageColorHex, 0.95) } : undefined}>{stageLabel}</span>
+                      </span>
+                      <span className="min-w-0 truncate">{updatedAt}</span>
+                    </div>
+                  )
+                })}
+                {additionalTaskCount > 0 ? (
+                  <button type="button" className="w-fit text-xs font-medium text-primary underline-offset-4 hover:underline" onClick={(event) => { event.stopPropagation(); setSelectedTaskDetailsKey(''); setTaskDetailsOpen(true) }}>
+                    View more +{additionalTaskCount} task{additionalTaskCount === 1 ? '' : 's'}
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
         </div>
         <div className="flex flex-col items-end justify-start gap-2">
-          {primaryActionTasks.length > 0 ? (
-            <Tooltip>
-              <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="border-sky-500/60 bg-sky-500/10 text-sky-500 shadow-[0_0_14px_rgba(14,165,233,0.22)] hover:bg-sky-500/20 hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-200" aria-label={`Show primary bed tasks for bed ${bedLabel}`} title={taskActionLabel('PRIMARY', primaryBedTasks)} onClick={() => setTaskModalType('PRIMARY')} />}>
-                <ClipboardList />
-              </TooltipTrigger>
-              <TooltipContent>{taskActionLabel('PRIMARY', primaryBedTasks)}</TooltipContent>
-            </Tooltip>
-          ) : null}
-          {secondaryActionTasks.length > 0 ? (
-            <Tooltip>
-              <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" className="border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_14px_rgba(139,92,246,0.22)] hover:bg-violet-500/20 hover:text-violet-600 dark:text-violet-300 dark:hover:text-violet-200" aria-label={`Show secondary bed tasks for bed ${bedLabel}`} title={taskActionLabel('SECONDARY', secondaryBedTasks)} onClick={() => setTaskModalType('SECONDARY')} />}>
-                <Workflow />
-              </TooltipTrigger>
-              <TooltipContent>{taskActionLabel('SECONDARY', secondaryBedTasks)}</TooltipContent>
-            </Tooltip>
-          ) : null}
+          <Tooltip>
+            <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" disabled={primaryBedTasks.length === 0} className="border-sky-500/60 bg-sky-500/10 text-sky-500 shadow-[0_0_14px_rgba(14,165,233,0.22)] hover:bg-sky-500/20 hover:text-sky-600 disabled:opacity-40 dark:text-sky-300 dark:hover:text-sky-200" aria-label={`Show primary bed tasks for bed ${bedLabel}`} title={taskActionLabel('PRIMARY', primaryBedTasks)} onClick={() => setTaskModalType('PRIMARY')} />}>
+              <ClipboardList aria-hidden="true" />
+            </TooltipTrigger>
+            <TooltipContent>{taskActionLabel('PRIMARY', primaryBedTasks)}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" disabled={secondaryBedTasks.length === 0} className="border-violet-500/60 bg-violet-500/10 text-violet-500 shadow-[0_0_14px_rgba(139,92,246,0.22)] hover:bg-violet-500/20 hover:text-violet-600 disabled:opacity-40 dark:text-violet-300 dark:hover:text-violet-200" aria-label={`Show secondary bed tasks for bed ${bedLabel}`} title={taskActionLabel('SECONDARY', secondaryBedTasks)} onClick={() => setTaskModalType('SECONDARY')} />}>
+              <Workflow aria-hidden="true" />
+            </TooltipTrigger>
+            <TooltipContent>{taskActionLabel('SECONDARY', secondaryBedTasks)}</TooltipContent>
+          </Tooltip>
           {isOccupied ? (
             <Tooltip>
               <TooltipTrigger render={<a href={pxLookupHref} className={cn(buttonClassName({ variant: 'outline', size: 'icon-sm' }), 'border-emerald-500/60 bg-emerald-500/10 text-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.22)] hover:bg-emerald-500/20 hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200')} aria-label={`PX lookup for bed ${bedLabel}`} title={`PX Lookup For Bed ${bedLabel}`} />}>
@@ -11679,15 +14364,19 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
             </TooltipTrigger>
             <TooltipContent>Search This Bed</TooltipContent>
           </Tooltip>
-        </div>
-      </article>
-      <Dialog open={taskModalType !== null} onOpenChange={(open) => { if (!open) setTaskModalType(null) }}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
+	        </div>
+	      </article>
+	      <Dialog open={taskModalType !== null} onOpenChange={(open) => { if (!open) setTaskModalType(null) }}>
+	        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="sticky top-0 z-30 shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label={`Close ${taskModalType === 'SECONDARY' ? 'secondary' : 'primary'} bed tasks for Bed ${bedLabel}`} title={`Close ${taskModalType === 'SECONDARY' ? 'Secondary' : 'Primary'} Bed Tasks For Bed ${bedLabel}`} />}>
+              <X />
+            </DialogClose>
             <DialogTitle>{taskModalType === 'SECONDARY' ? 'Secondary' : 'Primary'} Bed Tasks</DialogTitle>
             <DialogDescription>Manual active tasks allowed for Bed {bedLabel} while status is {sourceStatus}.</DialogDescription>
           </DialogHeader>
-          <div className="grid max-h-[60vh] gap-2 overflow-y-auto pb-2">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-6">
+            <div className="grid gap-2">
             {modalTasks.length === 0 ? <p className="rounded-md bg-muted/20 p-4 text-sm text-muted-foreground">No possible {taskModalType === 'SECONDARY' ? 'secondary' : 'primary'} tasks for this bed status.</p> : modalTasks.map((task) => {
               const taskColorHex = portalTaskColorHex(task.task_color_hex)
               const taskColorStyle = taskColorHex !== ''
@@ -11705,6 +14394,7 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
                   className="grid gap-2 rounded-md border-b border-l-4 border-b-transparent border-l-transparent bg-muted/20 p-3 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   style={taskColorStyle}
                   onClick={() => {
+                    setTaskFormError('')
                     setTaskFormValues({
                       roomClass: currentRoomClass,
                       bedTreatmentKey: '',
@@ -11729,7 +14419,11 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
                 </button>
               )
             })}
+            </div>
           </div>
+          <DialogFooter className="sticky bottom-0 z-30 m-0 w-full shrink-0 border-t bg-popover px-6 py-4 sm:justify-end">
+            <DialogClose render={<Button type="button" variant="outline">Close</Button>} />
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <Dialog open={selectedTaskForForm !== null} onOpenChange={(open) => { if (!open) setSelectedTaskForForm(null) }}>
@@ -11742,18 +14436,13 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
             <DialogDescription>{taskFormTitle} for Bed {bedLabel}.</DialogDescription>
           </DialogHeader>
           <form
-            method="post"
-            action={portalHref('')}
+            onSubmit={(event) => void submitTaskForm(event)}
             className="contents"
           >
-            <input type="hidden" name="csrf" value={portalData?.csrf || ''} />
-            <input type="hidden" name="action" value="create_project_bed_task" />
-            <input type="hidden" name="bed_key" value={bedKey} />
-            <input type="hidden" name="task_key" value={String(selectedTaskForForm?.task_key || '')} />
-            <input type="hidden" name="redirect_to" value={currentPortalSearch} />
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-6">
               <div className="grid gap-4">
-                <div className="grid gap-4 rounded-md bg-muted/20 p-4">
+                <fieldset className="grid gap-4 rounded-md bg-muted/20 p-4">
+                  <legend className="sr-only">Task request details</legend>
                   <div className="grid gap-2">
                     <Label htmlFor={`portal-task-room-class-${bedKey}`}>Bed Class</Label>
                     <select
@@ -11815,18 +14504,139 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
                       })}
                     </select>
                   </div>
-                </div>
+                </fieldset>
                 <div className="grid gap-2">
                   <Label htmlFor={`portal-task-remarks-${bedKey}`}>Remarks</Label>
                   <Textarea id={`portal-task-remarks-${bedKey}`} name="remarks" rows={4} placeholder="Remarks" className="resize-y" />
                 </div>
+                {taskFormError !== '' ? <p className="text-sm text-destructive" role="alert">{taskFormError}</p> : null}
               </div>
             </div>
             <DialogFooter className="sticky bottom-0 z-30 m-0 w-full shrink-0 flex-row items-center justify-between gap-3 rounded-none border-t bg-popover px-6 py-4 sm:justify-between">
               <span className="text-xs text-muted-foreground">{taskFormReady ? 'Pending task request' : 'Complete required fields'}</span>
-              <Button type="submit" className="shrink-0" disabled={!taskFormReady}>Submit</Button>
+              <Button type="submit" className="shrink-0" disabled={!taskFormReady || taskSubmitting}>{taskSubmitting ? 'Submitting…' : 'Submit'}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={taskDetailsOpen} onOpenChange={(open) => { setTaskDetailsOpen(open); if (!open) setSelectedTaskDetailsKey('') }}>
+        <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0 sm:w-[95vw] sm:max-w-[95vw]">
+          <DialogHeader className="sticky top-0 z-30 shrink-0 border-b bg-popover px-6 py-5 pr-14">
+            <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="absolute right-4 top-4 text-muted-foreground hover:text-foreground" aria-label={`Close task details for Bed ${bedLabel}`} title={`Close Task Details For Bed ${bedLabel}`} />}>
+              <X />
+            </DialogClose>
+            <DialogTitle>Bed {bedLabel} Task Details</DialogTitle>
+            <DialogDescription>{showTaskDetailsBody ? `${selectedTaskDetailsTitle} and its current workflow details.` : 'Select a task request to view details and history.'}</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 max-h-[calc(100dvh-11rem)] overflow-y-auto overscroll-contain p-6">
+            <div className="grid gap-6 lg:grid-cols-3">
+              <div className="grid min-w-0 gap-6 lg:col-span-2">
+                {existingTaskRows.length > 1 ? (
+                  <section className="grid gap-3" aria-labelledby={`portal-task-details-all-${bedKey}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 id={`portal-task-details-all-${bedKey}`} className="text-sm font-semibold">All Task Requests</h3>
+                      <span className="text-xs text-muted-foreground">{existingTaskRows.length} tasks</span>
+                    </div>
+                    <div className="grid gap-2">
+                      {existingTaskRows.map((task, index) => {
+                        const taskTitle = String(task.task_title || task.task_code || 'Task request').trim()
+                        const taskColorHex = portalTaskColorHex(task.task_color_hex)
+                        const stageLabel = String(task.current_stage_label || task.task_status || 'Pending').trim()
+                        const stageColorHex = portalTaskColorHex(task.current_stage_color_hex)
+                        return (
+                          <button
+                            key={String(task.bed_task_key || `${bedKey}-all-task-${index}`)}
+                            type="button"
+                            className={cn(
+                              'grid min-w-0 grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-3 rounded-md bg-muted/20 px-3 py-2 text-left text-xs transition hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                              String(task.bed_task_key || '').trim() === selectedTaskDetailsBedTaskKey && 'bg-muted/40',
+                            )}
+                            onClick={() => setSelectedTaskDetailsKey(String(task.bed_task_key || '').trim())}
+                          >
+                            <span className="min-w-0 truncate font-medium" style={taskColorHex !== '' ? { color: portalHexToRgba(taskColorHex, 0.95) } : undefined}>{taskTitle}</span>
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              {stageColorHex !== '' ? <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: portalHexToRgba(stageColorHex, 0.9), boxShadow: `0 0 10px ${portalHexToRgba(stageColorHex, 0.38)}` }} aria-hidden="true" /> : null}
+                              <span className="truncate" style={stageColorHex !== '' ? { color: portalHexToRgba(stageColorHex, 0.95) } : undefined}>{stageLabel}</span>
+                            </span>
+                            <span className="min-w-0 truncate text-muted-foreground">{portalRelativeTime(task.task_updated_at)}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </section>
+                ) : null}
+                {showTaskDetailsBody ? (
+                  <>
+                    <section className="grid gap-4" aria-labelledby={`portal-task-details-bed-${bedKey}`}>
+                      <h3 id={`portal-task-details-bed-${bedKey}`} className="text-sm font-semibold">Bed Details</h3>
+                      <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Bed</dt><dd className="truncate">Bed {bedLabel}</dd></div>
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Bed status</dt><dd className="truncate">{sourceStatus}</dd></div>
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Room</dt><dd className="break-words">{room || 'Unspecified'}</dd></div>
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3 sm:col-span-2 lg:col-span-3"><dt className="text-xs font-medium text-muted-foreground">Location</dt><dd className="break-words">{location || 'Unspecified'}</dd></div>
+                      </dl>
+                    </section>
+                    <section className="grid gap-4" aria-labelledby={`portal-task-details-workflow-${bedKey}`}>
+                      <h3 id={`portal-task-details-workflow-${bedKey}`} className="text-sm font-semibold">Task</h3>
+                      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Task name</dt><dd className="break-words font-medium" style={selectedTaskDetailsColorHex !== '' ? { color: portalHexToRgba(selectedTaskDetailsColorHex, 0.95) } : undefined}>{selectedTaskDetailsTitle}</dd></div>
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Stage</dt><dd className="inline-flex items-center gap-2" style={selectedTaskDetailsStageColorHex !== '' ? { color: portalHexToRgba(selectedTaskDetailsStageColorHex, 0.95) } : undefined}>
+                          {selectedTaskDetailsStageColorHex !== '' ? <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: portalHexToRgba(selectedTaskDetailsStageColorHex, 0.9), boxShadow: `0 0 10px ${portalHexToRgba(selectedTaskDetailsStageColorHex, 0.38)}` }} aria-hidden="true" /> : null}
+                          {selectedTaskDetailsStageLabel}
+                        </dd></div>
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Status</dt><dd>{selectedTaskDetailsStatus || 'Pending'}</dd></div>
+                        <div className="grid min-w-0 gap-1 bg-muted/20 p-3"><dt className="text-xs font-medium text-muted-foreground">Last update</dt><dd>{selectedTaskDetailsUpdatedAt}</dd></div>
+                      </dl>
+                    </section>
+                    <section className="grid gap-4" aria-labelledby={`portal-task-details-response-${bedKey}`}>
+                      <h3 id={`portal-task-details-response-${bedKey}`} className="text-sm font-semibold">Response</h3>
+                      <div className="min-h-24 bg-muted/20 p-3 text-sm text-muted-foreground">
+                        {selectedTaskDetailsResponse || 'No response recorded.'}
+                      </div>
+                    </section>
+                  </>
+                ) : null}
+              </div>
+              <section className="grid min-w-0 content-start gap-4 border-border/40 lg:border-l lg:pl-6" aria-labelledby={`portal-task-details-history-${bedKey}`}>
+                <h3 id={`portal-task-details-history-${bedKey}`} className="text-sm font-semibold">History</h3>
+                {!showTaskDetailsBody ? (
+                  <div className="bg-muted/20 p-4 text-sm text-muted-foreground">Select a task request to show history.</div>
+                ) : taskLogs.length === 0 ? (
+                  <div className="bg-muted/20 p-4 text-sm text-muted-foreground">No log records found.</div>
+                ) : (
+                  <ol className="grid gap-3" aria-label="Task log records">
+                    {taskLogs.map((log, index) => {
+                      const statusFrom = String(log.status_from || '').trim()
+                      const statusTo = String(log.status_to || '').trim()
+                      const actorName = String(log.actor_fullname || log.actor_user_key || '').trim()
+                      const requesterName = String(log.requester_fullname || log.requester_user_key || '').trim()
+                      const remarks = String(log.remarks || '').trim()
+                      return (
+                        <li key={String(log.bed_task_log_key || `${selectedTaskDetailsBedTaskKey}-${index}`)} className="grid gap-3 bg-muted/20 p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="grid gap-1">
+                              <p className="text-sm font-medium">{String(log.event_type || 'UPDATED')}</p>
+                              <p className="text-xs text-muted-foreground">{String(log.task_title || selectedTaskDetailsTitle || 'Task request')}</p>
+                            </div>
+                            <time className="text-xs text-muted-foreground">{portalDisplayDateTime(log.created_at)}</time>
+                          </div>
+                          <dl className="grid gap-3 text-xs sm:grid-cols-3">
+                            <div className="grid gap-1"><dt className="font-medium text-muted-foreground">Status</dt><dd>{statusFrom ? `${statusFrom} → ${statusTo}` : statusTo || 'Not recorded'}</dd></div>
+                            <div className="grid gap-1"><dt className="font-medium text-muted-foreground">Actor</dt><dd className="break-words">{actorName || 'Not recorded'}</dd></div>
+                            <div className="grid gap-1"><dt className="font-medium text-muted-foreground">Requester</dt><dd className="break-words">{requesterName || 'Not recorded'}</dd></div>
+                          </dl>
+                          {remarks !== '' ? <p className="border-t border-border/40 pt-3 text-sm text-muted-foreground">{remarks}</p> : null}
+                        </li>
+                      )
+                    })}
+                  </ol>
+                )}
+              </section>
+            </div>
+          </div>
+          <DialogFooter className="sticky bottom-0 z-30 m-0 w-full shrink-0 border-t bg-popover px-6 py-4">
+            <DialogClose render={<Button type="button" variant="outline">Close</Button>} />
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
@@ -11836,9 +14646,95 @@ function PortalBedLookupResultCard({ row }: { row: Record<string, any> }) {
 function PortalWorkspace({ theme, onThemeToggle }: { theme: AdminThemeMode; onThemeToggle: () => void }) {
   {
     const bedLookupFilters = portalData?.bedLookupFilters || {}
-    const bedLookupOptions = portalData?.bedLookupOptions || {}
-    const bedLookupRows: Array<Record<string, any>> = Array.isArray(portalData?.bedLookupRows) ? portalData.bedLookupRows : []
+    const [bedLookupSnapshot, setBedLookupSnapshot] = React.useState(() => ({
+      bedLookupOptions: portalData?.bedLookupOptions || {},
+      bedLookupRows: Array.isArray(portalData?.bedLookupRows) ? portalData.bedLookupRows : [],
+      projectBedTasks: portalData?.projectBedTasks || {},
+      projectBedTaskLogs: portalData?.projectBedTaskLogs || {},
+    }))
+    const bedLookupOptions = bedLookupSnapshot.bedLookupOptions
+    const bedLookupRows: Array<Record<string, any>> = bedLookupSnapshot.bedLookupRows
+    const projectBedTasks = bedLookupSnapshot.projectBedTasks
+    const projectBedTaskLogs = bedLookupSnapshot.projectBedTaskLogs
+    const realtimeTaskOverridesRef = React.useRef<Record<string, { task: Record<string, any>; contentSignature: string }>>({})
+    const refreshRequestIdRef = React.useRef(0)
     const softwareName = portalData?.softwareName || 'BuilderX'
+    const refreshBedLookup = React.useCallback(async () => {
+      if (typeof window === 'undefined') return
+
+      const refreshUrl = new URL(window.location.href)
+      const requestId = ++refreshRequestIdRef.current
+      refreshUrl.searchParams.set('portal_view', 'bed-management')
+      refreshUrl.searchParams.set('action', 'portal_bed_lookup_refresh')
+      refreshUrl.searchParams.set('_', String(Date.now()))
+
+      const response = await fetch(refreshUrl.toString(), {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload?.ok !== true || !payload?.data) return
+      if (requestId !== refreshRequestIdRef.current) return
+
+      const nextData = payload.data
+      const nextBedLookupRows = Array.isArray(nextData.bedLookupRows) ? nextData.bedLookupRows : []
+      const firebase = await portalBedTaskFirestore().catch(() => null)
+      const firebaseSnapshot = firebase
+        ? await loadPortalBedTaskSnapshot(firebase, nextBedLookupRows.map((row: Record<string, any>) => String(row.bed_key || ''))).catch(() => ({ projectBedTasks: {}, projectBedTaskLogs: {} }))
+        : { projectBedTasks: {}, projectBedTaskLogs: {} }
+      const overlay = portalOverlayRealtimeTaskOverrides(
+        firebaseSnapshot.projectBedTasks,
+        realtimeTaskOverridesRef.current,
+      )
+      for (const bedTaskKey of overlay.syncedKeys) delete realtimeTaskOverridesRef.current[bedTaskKey]
+      setBedLookupSnapshot({
+        bedLookupOptions: nextData.bedLookupOptions || {},
+        bedLookupRows: nextBedLookupRows,
+        projectBedTasks: overlay.taskMap,
+        projectBedTaskLogs: firebaseSnapshot.projectBedTaskLogs,
+      })
+      if (window.__BUILDERX_PORTAL__) {
+        window.__BUILDERX_PORTAL__.bedLookupOptions = nextData.bedLookupOptions || {}
+        window.__BUILDERX_PORTAL__.bedLookupRows = nextBedLookupRows
+        window.__BUILDERX_PORTAL__.projectBedTasks = overlay.taskMap
+        window.__BUILDERX_PORTAL__.projectBedTaskLogs = firebaseSnapshot.projectBedTaskLogs
+      }
+    }, [])
+
+    React.useEffect(() => {
+      void refreshBedLookup()
+    }, [refreshBedLookup])
+
+    React.useEffect(() => {
+      const refreshOnTaskChange = (event: Event) => {
+        const tasks = (event as CustomEvent<{ tasks?: Array<Record<string, any>> }>).detail?.tasks || []
+        if (tasks.some((task) => task._removed === true)) {
+          void refreshBedLookup()
+          return
+        }
+        const realtimeTasks = tasks.map((task) => portalRealtimeTaskRow(task))
+        if (realtimeTasks.length > 0) {
+          for (const task of realtimeTasks) {
+            const bedTaskKey = String(task.bed_task_key || '').trim()
+            if (bedTaskKey !== '') {
+              realtimeTaskOverridesRef.current[bedTaskKey] = {
+                task,
+                contentSignature: portalTaskRealtimeContentSignature(task),
+              }
+            }
+          }
+          setBedLookupSnapshot((current) => ({
+            ...current,
+            projectBedTasks: portalMergeRealtimeTaskRows(current.projectBedTasks, realtimeTasks),
+          }))
+        }
+      }
+      window.addEventListener(portalBedTaskChangedEvent, refreshOnTaskChange)
+      return () => {
+        window.removeEventListener(portalBedTaskChangedEvent, refreshOnTaskChange)
+      }
+    }, [refreshBedLookup])
 
     return (
       <PortalShell
@@ -11901,7 +14797,15 @@ function PortalWorkspace({ theme, onThemeToggle }: { theme: AdminThemeMode; onTh
               <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:stable]">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {bedLookupRows.length > 0
-                    ? bedLookupRows.map((row) => <PortalBedLookupResultCard key={String(row.bed_key)} row={row} />)
+                    ? bedLookupRows.map((row) => (
+                        <PortalBedLookupResultCard
+                          key={String(row.bed_key)}
+                          row={row}
+                          bedTasksByBed={projectBedTasks}
+                          bedTaskLogs={projectBedTaskLogs}
+                          onRefresh={refreshBedLookup}
+                        />
+                      ))
                     : <div className="col-span-full grid place-items-center gap-2 rounded-md bg-muted/20 px-4 py-12 text-center"><BedDouble className="size-8 text-muted-foreground" /><p className="text-sm font-medium">No beds matched the lookup.</p><p className="max-w-md text-xs text-muted-foreground">Adjust the filters or clear the search to see current beds.</p></div>}
                 </div>
               </CardContent>
@@ -11938,7 +14842,6 @@ function PortalWorkspace({ theme, onThemeToggle }: { theme: AdminThemeMode; onTh
           <AiRephraseCard />
           <CoordinatorManagementCard />
           <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><Badge variant="secondary" className="w-fit"><Building2 className="mr-1 h-3 w-3" />{portalText(tenant.floorName, 'Assigned floor')}</Badge><h1 className="mt-2 text-2xl font-semibold tracking-normal">Beds, Status, and Task Workspace</h1><p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{portalText(tenant.projectName, 'Current project')} · {portalData?.currentUser ? `signed in as ${phaseField(portalData?.currentUser, 'user_name', 'Portal User')}` : 'not signed in'}</p></div><div className="flex flex-wrap gap-2"><Tooltip><TooltipTrigger render={<Button type="button" disabled={!writeActionsAvailable} /> }><Plus data-icon="inline-start" />Common Task</TooltipTrigger><TooltipContent>{writeActionsAvailable ? 'Create a Common Task' : 'Database rollback protection is required before task writes are enabled.'}</TooltipContent></Tooltip><Tooltip><TooltipTrigger render={<Button type="button" variant="outline" disabled={!writeActionsAvailable} /> }><LockKeyhole data-icon="inline-start" />Lock Ready</TooltipTrigger><TooltipContent>Inactivity lock state is visible; server lock writes remain disabled until rollback protection is available.</TooltipContent></Tooltip></div></section>
-          {!portalData?.currentUser ? <PortalSignInCard /> : null}
           <section className="grid gap-2 rounded-lg border bg-card p-4"><p className="text-xs font-medium text-muted-foreground">Hospital data sources</p><div className="flex flex-wrap gap-2">{sources.map((source) => <Badge key={portalText(source.table)} variant={source.available ? 'default' : 'outline'}>{portalText(source.table)}</Badge>)}</div></section>
           <section className="grid gap-0 rounded-lg border bg-card md:grid-cols-3 xl:grid-cols-6">{metrics.map((metric) => <div key={portalText(metric.label)} className="border-b border-r p-4 last:border-r-0 xl:border-b-0"><p className="text-xs text-muted-foreground">{portalText(metric.label)}</p><strong className="mt-1 block text-2xl">{Number(metric.value || 0)}</strong></div>)}<div className="p-4"><p className="text-xs text-muted-foreground">Write actions</p><strong className="mt-1 block text-sm">{writeActionsAvailable ? 'Enabled' : 'Rollback required'}</strong></div></section>
           <section id="bed-management" className="grid min-h-0 gap-5 xl:grid-cols-[1.1fr_0.9fr]">
@@ -12004,9 +14907,16 @@ function PortalApp() {
     setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')
   }, [])
 
-  return activePortalView === 'bed-management'
-    ? <PortalWorkspace theme={theme} onThemeToggle={handleThemeToggle} />
-    : <PortalDashboardView theme={theme} onThemeToggle={handleThemeToggle} />
+  return (
+    <>
+      {activePortalView === 'bed-management'
+        ? <PortalWorkspace theme={theme} onThemeToggle={handleThemeToggle} />
+        : activePortalView === 'signin'
+          ? <PortalSignInView theme={theme} onThemeToggle={handleThemeToggle} />
+          : <PortalDashboardView theme={theme} onThemeToggle={handleThemeToggle} />}
+      <PortalAuthenticationRedirectDialog enabled={activePortalView !== 'signin'} />
+    </>
+  )
 }
 
 const phaseStatusOptions = ['Not Started', 'In Progress', 'For Review', 'Completed', 'Blocked']
@@ -12902,8 +15812,10 @@ function FormConfirmationGuard({ children }: { children: React.ReactNode }) {
 
       bypassFormsRef.current.add(submission.form)
       try {
-        if (submission.submitter) submission.form.requestSubmit(submission.submitter)
-        else submission.form.requestSubmit()
+        const submitter = submission.submitter instanceof HTMLButtonElement || submission.submitter instanceof HTMLInputElement
+          ? submission.submitter
+          : undefined
+        submission.form.requestSubmit(submitter)
       } finally {
         bypassFormsRef.current.delete(submission.form)
         confirmingRef.current = false
@@ -13921,6 +16833,7 @@ function PhaseShell({
   onThemeToggle: () => void
 }) {
   const nextThemeLabel = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+  const { loading: phaseNetworkLoading } = useShellNetworkLoading()
   const [messengerOpen, setMessengerOpen] = usePersistentMessengerOpen()
   const { unreadCount, clearUnread } = useMessengerNotifications(messengerOpen)
   const aiMonitor = useAiJobMonitor()
@@ -14018,17 +16931,19 @@ function PhaseShell({
               </form>
             </div>
           </header>
+          <SampleShellProgressBar active={phaseNetworkLoading} />
 
           <main className={cn('min-h-0 flex-1 bg-muted/20', messengerOpen ? 'flex flex-col overflow-hidden p-4' : activeView === 'data-structure-v2' || activeView === 'ai-flow' || activeView === 'ai-operation' ? 'flex flex-col gap-3 overflow-y-auto p-3' : activeView === 'phases' ? 'flex flex-col gap-4 overflow-y-auto p-4 [&>*]:shrink-0' : 'flex flex-col gap-4 overflow-y-auto p-4')}>
             {messengerOpen ? <MessengerWorkspace onClose={() => setMessengerOpen(false)} /> : <><PhaseFlashMessage flash={phaseData?.flash ?? null} />{children}</>}
           </main>
 
-          <footer className="sticky bottom-0 z-20 mt-auto flex min-h-11 shrink-0 items-center justify-between gap-3 border-t bg-background/95 px-4 text-xs text-muted-foreground backdrop-blur">
+          <footer className="sticky bottom-0 z-20 mt-auto grid min-h-11 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-t bg-background/95 px-4 text-xs text-muted-foreground backdrop-blur">
             <span className="inline-flex min-w-0 items-center gap-2">
               <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
               <span className="truncate">{footerLabel}</span>
             </span>
-            <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em]">{buildTarget}</span>
+            <SampleFooterLoadingIndicator active={phaseNetworkLoading} />
+            <span className="min-w-0 justify-self-end truncate text-right font-mono text-[10px] uppercase tracking-[0.08em]">Mode: Preview · {buildTarget}</span>
           </footer>
           {activeView !== 'flow' ? <UiUxFlowView operationOnly /> : null}
         </SidebarInset>
@@ -32712,16 +35627,20 @@ function AdminApp() {
                 ? 'Permissions'
                 : activeView === 'settings'
                   ? 'System Settings'
+                  : activeView === 'traverse'
+                    ? 'Traverse'
                   : activeView === 'bed-management'
-                    ? 'Bed Management'
+                    ? 'Bed Analytics'
                     : activeView === 'bed-lookup'
                       ? 'Bed Lookup'
                       : activeView === 'bed-treatment'
                         ? 'Bed Treatment'
-                        : activeView === 'bed-source'
+                      : activeView === 'bed-source'
                           ? 'Bed Source'
+                          : activeView === 'floor-management'
+                            ? 'Floor Management'
                     : activeView === 'task-builder'
-                      ? 'Task Builder'
+                      ? 'Task Management'
                   : activeView === 'health'
                     ? 'Runtime Health'
                     : activeView === 'audit'
@@ -32729,7 +35648,7 @@ function AdminApp() {
                       : activeView === 'template'
                           ? 'Template'
                           : 'Dashboard'
-  const buildTarget = activeView === 'template' ? 'TEMPLATE' : activeView === 'health' ? 'P1-T17' : activeView === 'audit' ? 'P1-T15' : activeView === 'task-builder' ? 'TASK-BUILDER' : activeView === 'bed-source' ? 'BED-SOURCE' : activeView === 'bed-treatment' ? 'BED-TREATMENT' : activeView === 'bed-lookup' ? 'BED-LOOKUP' : activeView === 'bed-management' ? 'BED' : activeView === 'settings' ? 'P1-T14' : activeView === 'permissions' ? 'P1-T13' : activeView === 'roles' ? 'P1-T12' : activeView === 'groups' ? 'P1-T11' : activeView === 'positions' ? 'P1-T10-POS' : activeView === 'users' ? 'P1-T10' : activeView === 'projects' ? 'P1-T9' : activeView === 'branches' ? 'P1-T8' : 'P1'
+  const buildTarget = activeView === 'template' ? 'TEMPLATE' : activeView === 'health' ? 'P1-T17' : activeView === 'traverse' ? 'TRAVERSE' : activeView === 'audit' ? 'P1-T15' : activeView === 'task-builder' ? 'TASK-BUILDER' : activeView === 'floor-management' ? 'FLOOR-MANAGEMENT' : activeView === 'bed-source' ? 'BED-SOURCE' : activeView === 'bed-treatment' ? 'BED-TREATMENT' : activeView === 'bed-lookup' ? 'BED-LOOKUP' : activeView === 'bed-management' ? 'BED' : activeView === 'settings' ? 'P1-T14' : activeView === 'permissions' ? 'P1-T13' : activeView === 'roles' ? 'P1-T12' : activeView === 'groups' ? 'P1-T11' : activeView === 'positions' ? 'P1-T10-POS' : activeView === 'users' ? 'P1-T10' : activeView === 'projects' ? 'P1-T9' : activeView === 'branches' ? 'P1-T8' : 'P1'
   const breadcrumbItems = ['Administrator', viewTitle]
 
   return (
@@ -32759,6 +35678,8 @@ function AdminApp() {
                       ? <PermissionMatrixView />
                       : activeView === 'settings'
                         ? <SystemSettingsView />
+                        : activeView === 'traverse'
+                          ? <TraverseView />
                         : activeView === 'bed-management'
                           ? <BedManagementView />
                         : activeView === 'bed-lookup'
@@ -32767,6 +35688,8 @@ function AdminApp() {
                           ? <BedReferenceManagementView type="treatment" />
                         : activeView === 'bed-source'
                           ? <BedReferenceManagementView type="source" />
+                        : activeView === 'floor-management'
+                          ? <FloorManagementView />
                         : activeView === 'task-builder'
                           ? <TaskBuilderView />
                         : activeView === 'health'
@@ -35978,7 +38901,6 @@ async function sendSharinganAiExecution(runKey: string, surfaceKey: 'user_portal
 function ShadcnPhaseManagerApp() {
   const [theme, setTheme] = React.useState<AdminThemeMode>(() => readStoredPhaseTheme())
   const [confirmation, setConfirmation] = React.useState<ConfirmationState>(null)
-  const phaseBedSyncFormRef = React.useRef<HTMLFormElement>(null)
   const phases = phaseData?.phases ?? []
   const tasks = phaseData?.tasks ?? []
   const phaseBedSummary = phaseData?.bedMasterListSummary || {}
@@ -36772,23 +39694,6 @@ function ShadcnPhaseManagerApp() {
                     Beds {String(phaseBedSummary.managedRows ?? 0)} · active {String(phaseBedSummary.activeRows ?? 0)} · updated {String(phaseBedSummary.firebaseDocumentRows ?? 0)} · latest list {String(phaseBedSummary.sourceRows ?? 0)} · last refresh {String(phaseBedSummary.lastSyncedAt || 'not refreshed')}
                   </CardDescription>
                 </div>
-                <form ref={phaseBedSyncFormRef} method="post" className="contents">
-                  <input type="hidden" name="csrf" value={csrf} />
-                  <input type="hidden" name="action" value="resync_bed_master_list" />
-                  <input type="hidden" name="phase_view" value={activeTab} />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setConfirmation({
-                      title: 'Refresh bed list',
-                      message: 'Update the bed list with the latest hospital bed information? Beds that are no longer available will be marked inactive, not deleted.',
-                      confirmLabel: 'Refresh Beds',
-                      onConfirm: () => phaseBedSyncFormRef.current?.requestSubmit(),
-                    })}
-                  >
-                    <RotateCcw data-icon="inline-start" />Refresh Beds
-                  </Button>
-                </form>
               </CardHeader>
             </Card>
             {renderRoadmapWorkspace()}

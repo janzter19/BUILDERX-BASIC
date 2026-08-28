@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI/UX Media"
+  short_description: "Project-scoped image upload and viewer rules"
+  default_prompt: "Use $ui-ux-media to review this image upload or viewer workflow."

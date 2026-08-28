@@ -1,23 +1,12 @@
 <?php
 declare(strict_types=1);
 
+define('BUILDERX_PORTAL_SESSION', true);
 require_once __DIR__ . '/app/foundation.php';
 
 function bx_portal_redirect(): void
 {
     header('Location: ./');
-    exit;
-}
-
-function bx_portal_bed_management_redirect(): void
-{
-    $redirect = trim((string) ($_POST['redirect_to'] ?? ''));
-    if ($redirect !== '' && str_starts_with($redirect, '?') && str_contains($redirect, 'portal_view=bed-management')) {
-        header('Location: ./' . $redirect);
-        exit;
-    }
-
-    header('Location: ./?portal_view=bed-management');
     exit;
 }
 
@@ -32,7 +21,7 @@ function bx_portal_json_response(array $payload, int $status = 200): never
 
 function bx_portal_require_authorization(array $requirements = [], bool $json = false): array
 {
-    $authorization = bx_authorization_guard($requirements);
+    $authorization = bx_portal_authorization_guard($requirements);
     if ($authorization['allowed']) {
         return $authorization;
     }
@@ -43,6 +32,379 @@ function bx_portal_require_authorization(array $requirements = [], bool $json = 
 
     bx_flash((string) $authorization['message'], 'error');
     bx_portal_redirect();
+}
+
+function bx_portal_group_context_for_user(array $user): array
+{
+    $projectKey = trim((string) ($user['project_key'] ?? ''));
+    $userKey = trim((string) ($user['user_key'] ?? ''));
+    $rows = [];
+    if ($projectKey !== '' && $userKey !== '') {
+        $hasAssignmentKey = (int) bx_db()->GetOne(
+            'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [BUILDERX_DB_NAME, 'project_user_group', 'assignment_key']
+        ) === 1;
+        if ($hasAssignmentKey) {
+            $rows = bx_db()->GetAll(
+                "SELECT g.group_key, g.group_name
+                 FROM project_user_group a
+                 JOIN project_group g ON g.group_key = a.group_key AND g.project_key = a.project_key AND g.group_status = 'ACTIVE'
+                 WHERE a.user_key = ? AND a.project_key = ? AND a.assignment_status = 'ACTIVE'
+                 ORDER BY g.group_name, g.group_key",
+                [$userKey, $projectKey]
+            ) ?: [];
+        }
+        if ($rows === [] && trim((string) ($user['group_key'] ?? '')) !== '') {
+            $groupKey = trim((string) $user['group_key']);
+            $rows = bx_db()->GetAll(
+                "SELECT group_key, group_name
+                 FROM project_group
+                 WHERE group_key = ? AND project_key = ? AND group_status = 'ACTIVE'
+                 LIMIT 1",
+                [$groupKey, $projectKey]
+            ) ?: [];
+            if ($rows === [] && (int) bx_db()->GetOne(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+                [BUILDERX_DB_NAME, 'project_user_group', 'group_name']
+            ) === 1) {
+                $rows = bx_db()->GetAll(
+                    "SELECT group_key, group_name
+                     FROM project_user_group
+                     WHERE group_key = ? AND project_key = ? AND group_status = 'ACTIVE'
+                     LIMIT 1",
+                    [$groupKey, $projectKey]
+                ) ?: [];
+            }
+        }
+    }
+
+    return [
+        'groupKeys' => array_values(array_unique(array_filter(array_map(static fn (array $row): string => trim((string) ($row['group_key'] ?? '')), $rows)))),
+        'groupNames' => array_values(array_unique(array_filter(array_map(static fn (array $row): string => trim((string) ($row['group_name'] ?? '')), $rows)))),
+    ];
+}
+
+function bx_portal_authorization_guard(array $requirements = []): array
+{
+    $requireAuthenticated = (bool) ($requirements['requireAuthenticated'] ?? true);
+    $userKey = trim((string) ($_SESSION['builderx_portal_user_key'] ?? ''));
+    $sessionKey = trim((string) ($_SESSION['builderx_portal_session_key'] ?? ''));
+    $firebaseUid = trim((string) ($_SESSION['builderx_portal_firebase_uid'] ?? ''));
+    if ($userKey === '' || $sessionKey === '' || $firebaseUid === '') {
+        return $requireAuthenticated
+            ? bx_authorization_result(false, 'authentication_required', 'Sign in before continuing.')
+            : bx_authorization_result(true, 'anonymous_allowed', 'Anonymous access allowed.');
+    }
+    if ((string) ($_SESSION['builderx_auth_audience'] ?? '') !== 'rbms-portal') {
+        return bx_authorization_result(false, 'session_invalid', 'Sign in before continuing.');
+    }
+
+    $user = bx_db()->GetRow(
+        "SELECT * FROM project_user
+         WHERE user_key = ? AND firebase_uid = ?
+           AND user_status = 'ACTIVE' AND (user_deleted = 0 OR user_deleted IS NULL)
+         LIMIT 1",
+        [$userKey, $firebaseUid]
+    );
+    if (!$user) {
+        return bx_authorization_result(false, 'session_invalid', 'Sign in before continuing.');
+    }
+
+    $groupContext = bx_portal_group_context_for_user($user);
+    $administratorGroup = bx_authorization_missing(['Administrators'], $groupContext['groupNames'], true) === null;
+    if ($administratorGroup || !empty($_SESSION['builderx_admin_auth_marker']) || (string) ($_SESSION['builderx_auth_audience'] ?? '') === 'rbms-administrator') {
+        return bx_authorization_result(false, 'administrator_context_denied', 'This account is not available in the User Portal.');
+    }
+
+    $projectKeys = [];
+    $projectKey = trim((string) ($user['project_key'] ?? ''));
+    if ($projectKey !== '') {
+        $projectKeys[] = $projectKey;
+    }
+    $context = [
+        'sessionKey' => $sessionKey,
+        'roleNames' => [],
+        'roleKeys' => [],
+        'permissionCodes' => [],
+        'groupKeys' => $groupContext['groupKeys'],
+        'groupNames' => $groupContext['groupNames'],
+        'branchKeys' => [],
+        'branchNames' => [],
+        'branchCodes' => [],
+        'projectKeys' => $projectKeys,
+        'projectBranchKeys' => [],
+    ];
+    if (!empty($requirements['requireAdmin'])) {
+        return bx_authorization_result(false, 'administrator_required', 'Administrator access is not available in the User Portal.', $user, $context);
+    }
+    if (($requirements['requireTenant'] ?? $requireAuthenticated) && $projectKeys === []) {
+        return bx_authorization_result(false, 'tenant_required', 'Request not authorized.', $user, $context);
+    }
+
+    foreach ([
+        'groupKeys' => ['values' => $context['groupKeys'], 'reason' => 'group_required'],
+        'groupNames' => ['values' => $context['groupNames'], 'reason' => 'group_required'],
+        'projectKeys' => ['values' => $context['projectKeys'], 'reason' => 'project_required'],
+    ] as $key => $constraint) {
+        $missing = bx_authorization_missing(bx_authorization_list($requirements[$key] ?? []), $constraint['values'], true);
+        if ($missing !== null) {
+            return bx_authorization_result(false, $constraint['reason'], 'Request not authorized.', $user, $context);
+        }
+    }
+
+    return bx_authorization_result(true, 'authorized', 'Authorized.', $user, $context);
+}
+
+function bx_portal_current_user(): ?array
+{
+    $authorization = bx_portal_authorization_guard(['requireAuthenticated' => false, 'requireTenant' => false]);
+    return $authorization['allowed'] && is_array($authorization['user'] ?? null) ? $authorization['user'] : null;
+}
+
+function bx_portal_logout(): void
+{
+    $userKey = trim((string) ($_SESSION['builderx_portal_user_key'] ?? ''));
+    $userLogin = trim((string) ($_SESSION['builderx_portal_user_login'] ?? ''));
+    if ($userKey !== '') {
+        bx_project_user_firebase_telemetry($userKey, [
+            'user_last_logout_at' => gmdate('c'), 'user_last_logout_ip_address' => bx_client_ip(), 'user_last_logout_device' => bx_project_user_device_label(),
+        ]);
+        bx_project_user_activity_history($userKey, $userLogin !== '' ? $userLogin : null, 'LOGOUT', 'SUCCESS');
+    }
+    bx_audit('LOGOUT', 'authentication', $userKey !== '' ? $userKey : null);
+    unset($_SESSION['builderx_portal_user_key'], $_SESSION['builderx_portal_user_login'], $_SESSION['builderx_portal_session_key'], $_SESSION['builderx_portal_firebase_uid'], $_SESSION['builderx_portal_administrator_group'], $_SESSION['builderx_auth_audience']);
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_regenerate_id(true);
+    }
+}
+
+/**
+ * Resolve a Firebase-authenticated Portal identity to the existing Portal
+ * session principal. MySQL is used here only for profile, lifecycle, and
+ * tenant/group authorization; no password hash is read or verified.
+ */
+function bx_portal_firebase_identity_context(array $identity): array
+{
+    $firebaseUid = trim((string) ($identity['uid'] ?? ''));
+    if ($firebaseUid === '') {
+        throw new RuntimeException('firebase_identity_invalid');
+    }
+    $sessionAudience = trim((string) ($_SESSION['builderx_auth_audience'] ?? ''));
+    $adminSessionMarker = trim((string) ($_SESSION['builderx_admin_auth_marker'] ?? ''));
+    if ($sessionAudience === 'rbms-administrator' || $adminSessionMarker === 'RBMS_ADMINISTRATOR') {
+        throw new RuntimeException('portal_administrator_context_denied');
+    }
+
+    $user = bx_db()->GetRow(
+        "SELECT pu.*
+         FROM project_user pu
+         WHERE pu.firebase_uid = ?
+           AND pu.user_status = 'ACTIVE'
+           AND (pu.user_deleted = 0 OR pu.user_deleted IS NULL)
+         ORDER BY pu.project_key
+         LIMIT 1",
+        [$firebaseUid]
+    );
+    if (!$user) {
+        $email = strtolower(trim((string) ($identity['email'] ?? '')));
+        $emailMatches = $email !== '' ? (bx_db()->GetAll(
+            "SELECT pu.*
+             FROM project_user pu
+             WHERE LOWER(pu.user_auth_email) = ?
+               AND pu.firebase_uid IS NULL
+               AND pu.user_status = 'ACTIVE'
+               AND (pu.user_deleted = 0 OR pu.user_deleted IS NULL)
+             ORDER BY pu.project_key",
+            [$email]
+        ) ?: []) : [];
+        if (count($emailMatches) !== 1) {
+            throw new RuntimeException(count($emailMatches) > 1 ? 'portal_identity_mapping_ambiguous' : 'portal_identity_not_authorized');
+        }
+        $candidate = $emailMatches[0];
+        $bound = bx_db()->Execute(
+            "UPDATE project_user
+             SET firebase_uid = ?, mysql_sync_status = 'PENDING', mysql_updated_at = CURRENT_TIMESTAMP(6)
+             WHERE user_key = ? AND firebase_uid IS NULL AND user_status = 'ACTIVE' AND (user_deleted = 0 OR user_deleted IS NULL)",
+            [$firebaseUid, $candidate['user_key']]
+        );
+        if ($bound === false) {
+            throw new RuntimeException('portal_identity_mapping_failed');
+        }
+        $user = bx_db()->GetRow(
+            "SELECT * FROM project_user WHERE user_key = ? AND firebase_uid = ? AND user_status = 'ACTIVE' AND (user_deleted = 0 OR user_deleted IS NULL) LIMIT 1",
+            [$candidate['user_key'], $firebaseUid]
+        );
+        if (!$user) {
+            throw new RuntimeException('portal_identity_mapping_readback_failed');
+        }
+        bx_audit('UPDATE', 'project_user', (string) $candidate['user_key'], [
+            'firebase_uid_bound' => true,
+            'mysql_sync_status' => 'PENDING',
+        ], 'Portal bound the verified Firebase Auth UID to the matching project_user email.');
+    }
+    if (!$user) {
+        throw new RuntimeException('portal_identity_not_authorized');
+    }
+
+
+    $projectKey = trim((string) ($user['project_key'] ?? ''));
+    $groupRows = [];
+    $groupKey = trim((string) ($user['group_key'] ?? ''));
+    if ($projectKey !== '') {
+        $hasAssignmentKey = (int) bx_db()->GetOne(
+            'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [BUILDERX_DB_NAME, 'project_user_group', 'assignment_key']
+        ) === 1;
+        if ($hasAssignmentKey) {
+            $groupRows = bx_db()->GetAll(
+                "SELECT g.group_key, g.group_name, g.group_status
+                 FROM project_user_group a
+                 JOIN project_group g ON g.group_key = a.group_key AND g.project_key = a.project_key AND g.group_status = 'ACTIVE'
+                 WHERE a.user_key = ? AND a.project_key = ? AND a.assignment_status = 'ACTIVE'
+                 LIMIT 20",
+                [$user['user_key'], $projectKey]
+            ) ?: [];
+        }
+    }
+    if ($groupRows === [] && $groupKey !== '' && $projectKey !== '') {
+        // The target contract stores group definitions in project_group. Keep
+        // the legacy lookup only as a migration fallback; never treat the
+        // assignment-shaped project_user_group table as a definition table.
+        $groupRows = bx_db()->GetAll(
+            "SELECT group_key, group_name, group_status
+             FROM project_group
+             WHERE group_key = ? AND project_key = ? AND group_status = 'ACTIVE'
+             LIMIT 1",
+            [$groupKey, $projectKey]
+        ) ?: [];
+        if ($groupRows === []) {
+            $hasLegacyGroupName = (int) bx_db()->GetOne(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+                [BUILDERX_DB_NAME, 'project_user_group', 'group_name']
+            ) === 1;
+            if ($hasLegacyGroupName) {
+                $groupRows = bx_db()->GetAll(
+                    "SELECT group_key, group_name, group_status
+                     FROM project_user_group
+                     WHERE group_key = ? AND project_key = ? AND group_status = 'ACTIVE'
+                     LIMIT 1",
+                    [$groupKey, $projectKey]
+                ) ?: [];
+            }
+        }
+    }
+
+    $administratorGroupMember = false;
+    foreach ($groupRows as $groupRow) {
+        $groupName = strtolower(trim((string) ($groupRow['group_name'] ?? '')));
+        if (in_array($groupName, ['administrator', 'administrators'], true)) {
+            $administratorGroupMember = true;
+            break;
+        }
+    }
+
+    if ($administratorGroupMember) {
+        throw new RuntimeException('portal_administrator_group_denied');
+    }
+
+    return [
+        'user' => $user,
+        'administratorGroupMember' => $administratorGroupMember,
+        'firebaseUid' => $firebaseUid,
+        'projectKey' => $projectKey,
+    ];
+}
+
+/**
+ * Resolve the Portal login alias before Firebase email/password sign-in.
+ * Only the public auth identifier is returned; passwords never reach this
+ * resolver and are sent directly to Firebase Auth by the browser.
+ */
+function bx_portal_resolve_firebase_identifier(string $login): string
+{
+    $login = trim($login);
+    if ($login === '' || strlen($login) > 190 || preg_match('/[[:cntrl:]]/', $login) === 1) {
+        throw new RuntimeException('portal_identity_not_authorized');
+    }
+
+    $row = bx_db()->GetRow(
+        "SELECT user_auth_username, user_auth_email
+         FROM project_user
+         WHERE user_login = ?
+           AND user_status = 'ACTIVE'
+           AND (user_deleted = 0 OR user_deleted IS NULL)
+         LIMIT 1",
+        [$login]
+    );
+    if (!$row) {
+        throw new RuntimeException('portal_identity_not_authorized');
+    }
+
+    $identifier = strtolower(trim((string) ($row['user_auth_email'] ?? '')));
+    if ($identifier === '') {
+        $username = strtolower(trim((string) ($row['user_auth_username'] ?? '')));
+        if (filter_var($username, FILTER_VALIDATE_EMAIL)) {
+            $identifier = $username;
+        } else {
+            $domain = strtolower(trim((string) bx_setting('project_user_auth_email_domain', '')));
+            if ($username !== '' && preg_match('/^[a-z0-9][a-z0-9._-]{0,39}$/', $username) === 1
+                && preg_match('/^[a-z0-9.-]{3,190}$/', $domain) === 1) {
+                $identifier = $username . '@' . $domain;
+            }
+        }
+    }
+
+    if (!filter_var($identifier, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException('portal_identity_not_authorized');
+    }
+
+    return $identifier;
+}
+
+function bx_portal_login_with_firebase_identity(array $context, array $identity): void
+{
+    $user = $context['user'] ?? [];
+    $userKey = trim((string) ($user['user_key'] ?? ''));
+    $firebaseUid = trim((string) ($identity['uid'] ?? ''));
+    if ($userKey === '' || $firebaseUid === '') {
+        throw new RuntimeException('firebase_identity_invalid');
+    }
+
+    session_regenerate_id(true);
+    $sessionKey = bx_uuid();
+    $_SESSION['builderx_portal_user_key'] = $userKey;
+    $_SESSION['builderx_portal_session_key'] = $sessionKey;
+    $_SESSION['builderx_auth_audience'] = 'rbms-portal';
+    $_SESSION['builderx_portal_firebase_uid'] = $firebaseUid;
+    $_SESSION['builderx_portal_administrator_group'] = !empty($context['administratorGroupMember']);
+    $_SESSION['builderx_portal_user_login'] = (string) ($user['user_login'] ?? '');
+    unset($_SESSION['builderx_admin_auth_marker'], $_SESSION['builderx_admin_firebase_uid']);
+
+    bx_project_user_firebase_telemetry($userKey, [
+        'user_last_login_at' => gmdate('c'), 'user_last_login_ip_address' => bx_client_ip(), 'user_last_login_device' => bx_project_user_device_label(),
+    ]);
+    bx_project_user_activity_history($userKey, (string) ($user['user_login'] ?? ''), 'LOGIN', 'SUCCESS', null, null, null, null, (string) ($user['project_key'] ?? ''));
+
+    bx_audit('LOGIN', 'authentication', $userKey, [
+        'authentication_method' => 'firebase_email_password',
+        'auth_audience' => 'rbms-portal',
+        'firebase_uid' => $firebaseUid,
+        'administrator_group_member' => !empty($context['administratorGroupMember']),
+    ], 'Portal signed in with Firebase Auth using project_user.');
+    bx_persist_portal_session();
+}
+
+function bx_portal_bed_lookup_payload(array $filters): array
+{
+    $bedLookupRows = bx_project_bed_lookup_rows($filters);
+    return [
+        'bedLookupOptions' => bx_project_bed_lookup_options($filters),
+        'bedLookupRows' => $bedLookupRows,
+        // Bed task records and logs are Firebase-only; the browser hydrates them
+        // after authenticating with the existing Firebase client.
+        'projectBedTasks' => [],
+        'projectBedTaskLogs' => [],
+    ];
 }
 
 /**
@@ -154,17 +516,11 @@ function bx_portal_firebase_web_config(): array
         return is_string($envValue) && trim($envValue) !== '' ? trim($envValue) : $fallback;
     };
 
-    $clientStreamEnabled = in_array(strtolower(trim((string) bx_setting('firebase_client_stream_enabled', '0'))), ['1', 'true', 'yes', 'enabled'], true);
-    if (!$clientStreamEnabled) {
-        return [
-            'enabled' => false,
-            'clientStreamEnabled' => false,
-            'clientWriteEnabled' => false,
-            'mode' => 'server_admin',
-            'projectId' => bx_messenger_firebase_project_id(),
-        ];
-    }
-
+    $clientStreamSetting = strtolower(trim((string) bx_setting('firebase_client_stream_enabled', '')));
+    $clientStreamEnv = strtolower(trim((string) getenv('FIREBASE_CLIENT_STREAM_ENABLED')));
+    $clientWriteEnv = strtolower(trim((string) getenv('FIREBASE_CLIENT_WRITE_ENABLED')));
+    $clientStreamEnabled = in_array($clientStreamSetting, ['1', 'true', 'yes', 'enabled'], true)
+        || in_array($clientStreamEnv, ['1', 'true', 'yes', 'enabled'], true);
     $config = [
         'apiKey' => $value('firebase_web_api_key', 'FIREBASE_WEB_API_KEY'),
         'authDomain' => $value('firebase_web_auth_domain', 'FIREBASE_WEB_AUTH_DOMAIN'),
@@ -173,14 +529,75 @@ function bx_portal_firebase_web_config(): array
         'messagingSenderId' => $value('firebase_web_messaging_sender_id', 'FIREBASE_WEB_MESSAGING_SENDER_ID'),
         'appId' => $value('firebase_web_app_id', 'FIREBASE_WEB_APP_ID'),
         'measurementId' => $value('firebase_web_measurement_id', 'FIREBASE_WEB_MEASUREMENT_ID'),
-        'clientStreamEnabled' => true,
-        'clientWriteEnabled' => in_array(strtolower(trim((string) bx_setting('firebase_client_write_enabled', '0'))), ['1', 'true', 'yes', 'enabled'], true),
-        'mode' => 'custom_token_required',
+        'clientStreamEnabled' => $clientStreamEnabled,
+        'clientWriteEnabled' => in_array(strtolower(trim((string) bx_setting('firebase_client_write_enabled', '0'))), ['1', 'true', 'yes', 'enabled'], true)
+            || in_array($clientWriteEnv, ['1', 'true', 'yes', 'enabled'], true),
+        'mode' => 'firebase_auth',
+        'authEnabled' => true,
     ];
 
     return array_filter($config, static fn ($item): bool => is_string($item) ? $item !== '' : true) + [
-        'enabled' => $config['projectId'] !== '',
+        'enabled' => $config['projectId'] !== '' && $config['apiKey'] !== '',
+        'authEnabled' => $config['projectId'] !== '' && $config['apiKey'] !== '',
     ];
+}
+
+function bx_portal_firebase_custom_token(array $authorization): string
+{
+    $userKey = trim((string) ($authorization['user']['user_key'] ?? ''));
+    if ($userKey === '' || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/', $userKey)) {
+        throw new RuntimeException('Firebase portal authentication is unavailable.');
+    }
+
+    $projectId = bx_messenger_firebase_project_id();
+    $serviceAccountPath = bx_messenger_firebase_service_account_path();
+    $scriptPath = __DIR__ . '/scripts/firebase-auth-custom-token.mjs';
+    if ($projectId === '' || $serviceAccountPath === '' || !is_readable($serviceAccountPath) || !is_readable($scriptPath)) {
+        throw new RuntimeException('Firebase portal authentication is unavailable.');
+    }
+
+    $projectKeys = array_values(array_filter(array_map('strval', is_array($authorization['projectKeys'] ?? null) ? $authorization['projectKeys'] : [])));
+    $firebaseGroupKeys = array_values(array_unique(array_filter(array_map(
+        'strval',
+        is_array($authorization['groupKeys'] ?? null) ? $authorization['groupKeys'] : []
+    ))));
+
+    $payload = json_encode([
+        'project_id' => $projectId,
+        'service_account_path' => $serviceAccountPath,
+        'user_key' => $userKey,
+        'tenant_key' => $projectId,
+        'project_keys' => $projectKeys,
+        'group_keys' => $firebaseGroupKeys,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($payload)) {
+        throw new RuntimeException('Firebase portal authentication is unavailable.');
+    }
+
+    $process = proc_open(
+        'node ' . escapeshellarg($scriptPath),
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        __DIR__
+    );
+    if (!is_resource($process)) {
+        throw new RuntimeException('Firebase portal authentication is unavailable.');
+    }
+
+    fwrite($pipes[0], $payload);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $result = json_decode((string) $stdout, true);
+    if ($exitCode !== 0 || !is_array($result) || ($result['ok'] ?? false) !== true || trim((string) ($result['token'] ?? '')) === '') {
+        error_log('RBMS portal Firebase custom token failed: ' . trim((string) $stderr));
+        throw new RuntimeException('Firebase portal authentication is unavailable.');
+    }
+
+    return trim((string) $result['token']);
 }
 
 function bx_portal_date_or_null(string $value, array &$errors, string $label): ?string
@@ -656,7 +1073,7 @@ function bx_portal_operational_workspace(?array $user, array $members): array
         ];
     }
 
-    $authorization = bx_authorization_guard(['requireAuthenticated' => true]);
+    $authorization = bx_portal_authorization_guard(['requireAuthenticated' => true]);
     $branchKey = (string) (($authorization['branchKeys'][0] ?? '') ?: '');
     $projectKey = (string) (($authorization['projectKeys'][0] ?? '') ?: '');
     $branch = $branchKey !== ''
@@ -805,7 +1222,7 @@ function bx_portal_operational_workspace(?array $user, array $members): array
             ['label' => 'Assigned tasks', 'value' => count($assignedTasks)],
             ['label' => 'Source tables', 'value' => count(array_filter($sources, static fn (array $source): bool => (bool) $source['available']))],
         ],
-        'canCreateCommonTask' => bx_is_admin($user) || bx_user_has_permission($user, 'records.create'),
+        'canCreateCommonTask' => false,
         'writeActionsAvailable' => false,
     ];
 }
@@ -815,76 +1232,134 @@ if ($requestMethod === 'POST') {
     bx_verify_csrf();
     $action = (string) ($_POST['action'] ?? '');
 
-    if ($action === 'login_portal') {
-        if (bx_login(trim((string) ($_POST['login'] ?? '')), (string) ($_POST['password'] ?? ''))) {
-            bx_flash('Signed in to the User Portal.', 'success');
-        } else {
-            bx_flash('Invalid user portal login or password.', 'error');
+    if ($action === 'firebase_login_portal') {
+        try {
+            $identity = bx_admin_verify_firebase_id_token((string) ($_POST['firebase_id_token'] ?? ''), false);
+            $context = bx_portal_firebase_identity_context($identity);
+            bx_portal_login_with_firebase_identity($context, $identity);
+            bx_portal_json_response([
+                'ok' => true,
+                'data' => [
+                    'administrator_group_member' => !empty($context['administratorGroupMember']),
+                    'auth_audience' => 'rbms-portal',
+                ],
+                'message' => 'Signed in to the User Portal.',
+            ]);
+        } catch (Throwable $error) {
+            bx_portal_json_response(['ok' => false, 'message' => 'Portal sign-in could not be completed.'], 401);
         }
+    }
+
+    if ($action === 'portal_resolve_login') {
+        try {
+            bx_portal_json_response([
+                'ok' => true,
+                'data' => [
+                    'firebase_identifier' => bx_portal_resolve_firebase_identifier((string) ($_POST['login'] ?? '')),
+                ],
+            ]);
+        } catch (Throwable $error) {
+            bx_portal_json_response(['ok' => false, 'message' => 'Portal sign-in could not be completed.'], 401);
+        }
+    }
+
+    if ($action === 'record_portal_login_failure') {
+        $login = strtolower(trim((string) ($_POST['login'] ?? '')));
+        $reason = trim((string) ($_POST['reason'] ?? 'firebase_auth_failed'));
+        if ($login !== '' && preg_match('/^[a-z0-9_\/-]{1,80}$/', $reason) === 1) {
+            bx_project_user_activity_history(null, $login, 'LOGIN', 'FAILED', $reason);
+        }
+        bx_portal_json_response(['ok' => true]);
+    }
+
+    if ($action === 'login_portal') {
+        bx_flash('Portal sign-in now uses Firebase Authentication. Please use the Firebase sign-in form.', 'error');
         bx_portal_redirect();
     }
 
     if ($action === 'logout_portal') {
-        bx_logout();
+        bx_portal_logout();
         bx_flash('Signed out of the User Portal.', 'success');
         bx_portal_redirect();
     }
 
-    if ($action === 'create_project_bed_task') {
+    if ($action === 'save_portal_task_notification_sound') {
         try {
-            $authorization = bx_portal_require_authorization();
-            $createdBedTask = bx_create_project_bed_task($_POST, $authorization['user']);
-            $firebaseSync = bx_sync_project_bed_task_to_firebase((string) ($createdBedTask['bed_task_key'] ?? ''));
-            $firebaseSynced = ($firebaseSync['ok'] ?? false) === true;
-            bx_flash($firebaseSynced ? 'Bed task request submitted and synced.' : 'Bed task request submitted. Firebase sync is pending review.', $firebaseSynced ? 'success' : 'warning', $firebaseSynced ? null : (string) ($firebaseSync['message'] ?? 'Firebase sync did not complete.'), [
-                'status' => $firebaseSynced ? 'synced' : 'pending',
-                'steps' => [
-                    ['label' => 'Task request saved', 'status' => 'completed'],
-                    ['label' => 'Task log created', 'status' => 'completed'],
-                    ['label' => 'Firebase sync', 'status' => $firebaseSynced ? 'completed' : 'failed'],
-                ],
-            ]);
-        } catch (Throwable $error) {
-            bx_flash('Bed task request could not be submitted.', 'error', $error->getMessage());
-        }
-        bx_portal_bed_management_redirect();
-    }
-
-    if ($action === 'messenger_load_messages') {
-        $groupKey = trim((string) ($_POST['group_key'] ?? ''));
-        $directUserKey = trim((string) ($_POST['direct_user_key'] ?? ''));
-        $limit = (int) ($_POST['limit'] ?? 20);
-        $beforeChatKey = trim((string) ($_POST['before_chat_key'] ?? ''));
-        try {
-            $currentUserForAction = bx_current_user();
-            $members = bx_messenger_group_users($groupKey);
-            if ($directUserKey !== '' && $currentUserForAction === null) {
-                bx_portal_json_response([
-                    'ok' => true,
-                    'data' => [
-                        'messages' => [],
-                        'members' => $members,
-                        'pagination' => [
-                            'limit' => max(1, min(50, $limit)),
-                            'has_more' => false,
-                            'before_chat_key' => $beforeChatKey,
-                            'oldest_chat_key' => '',
-                        ],
-                        'firebase_collection' => 'project_messenger_chat',
-                        'direct_auth_required' => true,
-                        'message' => 'Sign in before opening direct messages.',
-                    ],
-                ]);
+            $authorization = bx_portal_require_authorization([], true);
+            $taskSoundKey = trim((string) ($_POST['task_sound_key'] ?? $_POST['sound_key'] ?? ''));
+            $messengerSoundKey = trim((string) ($_POST['messenger_sound_key'] ?? ''));
+            if (!preg_match('/^ding_sound_(0[1-9]|1[0-2])$/', $taskSoundKey)) {
+                throw new RuntimeException('Invalid task notification sound.');
+            }
+            if (!preg_match('/^ding_sound_(0[1-9]|1[0-2])$/', $messengerSoundKey)) {
+                throw new RuntimeException('Invalid Messenger notification sound.');
+            }
+            $taskVolumePercent = (int) ($_POST['task_volume_percent'] ?? $_POST['volume_percent'] ?? 100);
+            $messengerVolumePercent = (int) ($_POST['messenger_volume_percent'] ?? 100);
+            if (!in_array($taskVolumePercent, [25, 50, 75, 100], true)) {
+                throw new RuntimeException('Invalid task notification volume.');
+            }
+            if (!in_array($messengerVolumePercent, [25, 50, 75, 100], true)) {
+                throw new RuntimeException('Invalid Messenger notification volume.');
             }
 
-            $messagePage = bx_messenger_messages_page($groupKey, $limit, $beforeChatKey, $currentUserForAction, $directUserKey);
+            $userKey = trim((string) ($authorization['user']['user_key'] ?? ''));
+            bx_db()->Execute(
+                'UPDATE project_user SET user_task_notification_sound = ?, user_task_notification_volume = ?, user_messenger_notification_sound = ?, user_messenger_notification_volume = ?, user_updated_at = CURRENT_TIMESTAMP WHERE user_key = ? AND user_status = \'ACTIVE\'',
+                [$taskSoundKey, $taskVolumePercent, $messengerSoundKey, $messengerVolumePercent, $userKey, $userKey]
+            );
+            $savedPreference = bx_db()->GetRow(
+                'SELECT user_task_notification_sound, user_task_notification_volume, user_messenger_notification_sound, user_messenger_notification_volume FROM project_user WHERE user_key = ? AND user_status = \'ACTIVE\' LIMIT 1',
+                [$userKey]
+            );
+            $savedTaskSoundKey = (string) ($savedPreference['user_task_notification_sound'] ?? '');
+            $savedTaskVolumePercent = (int) ($savedPreference['user_task_notification_volume'] ?? 0);
+            $savedMessengerSoundKey = (string) ($savedPreference['user_messenger_notification_sound'] ?? '');
+            $savedMessengerVolumePercent = (int) ($savedPreference['user_messenger_notification_volume'] ?? 0);
+            if ($savedTaskSoundKey !== $taskSoundKey || $savedTaskVolumePercent !== $taskVolumePercent || $savedMessengerSoundKey !== $messengerSoundKey || $savedMessengerVolumePercent !== $messengerVolumePercent) {
+                throw new RuntimeException('The notification preferences could not be read back after saving.');
+            }
+
             bx_portal_json_response([
                 'ok' => true,
                 'data' => [
-                    'messages' => $messagePage['messages'],
+                    'task_notification_sound' => $savedTaskSoundKey,
+                    'task_notification_volume' => $savedTaskVolumePercent,
+                    'messenger_notification_sound' => $savedMessengerSoundKey,
+                    'messenger_notification_volume' => $savedMessengerVolumePercent,
+                ],
+                'message' => 'Notification preferences saved.',
+            ]);
+        } catch (Throwable $error) {
+            bx_portal_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
+        }
+    }
+
+    if ($action === 'portal_firebase_custom_token') {
+        try {
+            $authorization = bx_portal_require_authorization([], true);
+            $firebaseConfig = bx_portal_firebase_web_config();
+            if (($firebaseConfig['enabled'] ?? false) !== true || ($firebaseConfig['clientStreamEnabled'] ?? false) !== true) {
+                throw new RuntimeException('Firebase portal streaming is disabled.');
+            }
+
+            bx_portal_json_response([
+                'ok' => true,
+                'data' => ['custom_token' => bx_portal_firebase_custom_token($authorization)],
+            ]);
+        } catch (Throwable $error) {
+            bx_portal_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
+        }
+    }
+
+    if ($action === 'messenger_load_members') {
+        $groupKey = trim((string) ($_POST['group_key'] ?? ''));
+        try {
+            $members = bx_messenger_group_users($groupKey);
+            bx_portal_json_response([
+                'ok' => true,
+                'data' => [
                     'members' => $members,
-                    'pagination' => $messagePage['pagination'],
-                    'firebase_collection' => 'project_messenger_chat',
                 ],
             ]);
         } catch (Throwable $error) {
@@ -898,74 +1373,6 @@ if ($requestMethod === 'POST') {
                 'ok' => true,
                 'data' => [
                     'stream_status' => bx_messenger_stream_service_status(),
-                ],
-            ]);
-        } catch (Throwable $error) {
-            bx_portal_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
-        }
-    }
-
-    if ($action === 'messenger_send_message') {
-        $groupKey = trim((string) ($_POST['group_key'] ?? ''));
-        $directUserKey = trim((string) ($_POST['direct_user_key'] ?? ''));
-        $messageText = (string) ($_POST['message_text'] ?? '');
-        $replyToChatKey = trim((string) ($_POST['reply_to_chat_key'] ?? ''));
-        $attachmentsJson = trim((string) ($_POST['attachments_json'] ?? '[]'));
-        $attachments = json_decode($attachmentsJson !== '' ? $attachmentsJson : '[]', true);
-        if (!is_array($attachments)) {
-            $attachments = [];
-        }
-
-        try {
-            $currentUserForAction = bx_portal_require_authorization([], true)['user'];
-            $message = bx_messenger_send_message($groupKey, $messageText, $replyToChatKey, $attachments, $currentUserForAction, $directUserKey);
-            $firebaseSync = bx_messenger_sync_message_to_firebase($message);
-            bx_portal_json_response([
-                'ok' => true,
-                'data' => [
-                    'message' => $message,
-                    'messages' => bx_messenger_messages($groupKey, 20, $currentUserForAction, $directUserKey),
-                    'firebase_collection' => 'project_messenger_chat',
-                    'firebase_sync' => $firebaseSync,
-                ],
-            ], 201);
-        } catch (Throwable $error) {
-            bx_portal_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
-        }
-    }
-
-    if ($action === 'messenger_remove_message') {
-        $chatKey = trim((string) ($_POST['chat_key'] ?? ''));
-        $directUserKey = trim((string) ($_POST['direct_user_key'] ?? ''));
-        try {
-            $currentUserForAction = bx_portal_require_authorization([], true)['user'];
-            $message = bx_messenger_remove_message($chatKey, $currentUserForAction);
-            $firebaseSync = bx_messenger_sync_message_to_firebase($message);
-            bx_portal_json_response([
-                'ok' => true,
-                'data' => [
-                    'message' => $message,
-                    'messages' => bx_messenger_messages((string) ($message['group_key'] ?? ''), 20, $currentUserForAction, $directUserKey),
-                    'firebase_collection' => 'project_messenger_chat',
-                    'firebase_sync' => $firebaseSync,
-                ],
-            ]);
-        } catch (Throwable $error) {
-            bx_portal_json_response(['ok' => false, 'message' => $error->getMessage()], 422);
-        }
-    }
-
-    if ($action === 'messenger_toggle_reaction') {
-        $chatKey = trim((string) ($_POST['chat_key'] ?? ''));
-        $reactionValue = trim((string) ($_POST['reaction_value'] ?? ''));
-        try {
-            $currentUserForAction = bx_portal_require_authorization([], true)['user'];
-            $message = bx_messenger_toggle_reaction($chatKey, $reactionValue, $currentUserForAction);
-            bx_portal_json_response([
-                'ok' => true,
-                'data' => [
-                    'message' => $message,
-                    'firebase_collection' => 'project_messenger_chat_reaction',
                 ],
             ]);
         } catch (Throwable $error) {
@@ -1210,9 +1617,10 @@ if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'ai_special
 
 $softwareName = bx_setting('software_name', 'BuilderX');
 $hasAdministrator = bx_count('builder_user') > 0;
-$currentUser = bx_current_user();
-$isAdmin = $currentUser ? bx_is_admin($currentUser) : false;
-$flash = bx_take_flash();
+    $currentUser = bx_portal_current_user();
+    $isAdmin = false;
+    $portalAuthorization = bx_portal_authorization_guard(['requireAuthenticated' => false, 'requireTenant' => false]);
+$portalMediaProjectKey = (string) (($portalAuthorization['projectKeys'][0] ?? '') ?: '');
 $projectBasePath = rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/'))), '/');
 $projectBasePath = ($projectBasePath === '' ? '' : $projectBasePath) . '/';
 $portalMode = builderxConfigValue('portal_mode');
@@ -1225,15 +1633,24 @@ if ($portalMode === '') {
     $portalMode = 'starter';
 }
 $requestedPortalView = (string) ($_GET['portal_view'] ?? 'dashboard');
-$portalView = in_array($requestedPortalView, ['dashboard', 'bed-management'], true) ? $requestedPortalView : 'dashboard';
+$portalView = in_array($requestedPortalView, ['dashboard', 'bed-management', 'signin'], true) ? $requestedPortalView : 'dashboard';
 $bedLookupFilters = bx_bed_lookup_filters_from_request();
+
+if ($requestMethod === 'GET' && (string) ($_GET['action'] ?? '') === 'portal_bed_lookup_refresh') {
+    bx_portal_require_authorization([], true);
+    bx_portal_json_response([
+        'ok' => true,
+        'data' => bx_portal_bed_lookup_payload($bedLookupFilters),
+    ]);
+}
+
+$flash = bx_take_flash();
 
 $manifestPath = __DIR__ . '/frontend/dist/.vite/manifest.json';
 $manifest = file_exists($manifestPath) ? json_decode((string) file_get_contents($manifestPath), true) : [];
 $entry = is_array($manifest) ? ($manifest['index.html'] ?? null) : null;
 $assetsBase = './frontend/dist/';
 bx_ensure_project_messenger_schema();
-bx_ensure_project_bed_task_schema();
 $projectGroups = bx_db()->GetAll("
     SELECT
         g.group_key,
@@ -1275,13 +1692,25 @@ $portalProjectTasks = bx_db()->GetAll("
         task_can_run_if_bed_occupied,
         task_requires_bed_treatment,
         task_requires_admission_source,
-        task_priority
+        task_priority,
+        COALESCE(task_group_keys, '[]') AS task_group_keys,
+        COALESCE(task_color_hex, '#00000000') AS task_color_hex,
+        COALESCE(task_sort_order, 0) AS task_sort_order
     FROM project_task
     WHERE task_type IN ('PRIMARY', 'SECONDARY')
       AND task_status = 'ACTIVE'
       AND task_can_run_manually = 1
     ORDER BY task_sort_order ASC, updated_at DESC, x_id DESC
 ");
+$portalProjectTasks = array_map(static function (array $task): array {
+    $firstStage = bx_project_task_first_active_stage((string) ($task['task_key'] ?? ''));
+    return $task + [
+        'current_task_stage_key' => (string) ($firstStage['task_stage_key'] ?? ''),
+        'current_stage_label' => (string) ($firstStage['stage_label'] ?? ''),
+        'current_stage_color_hex' => (string) ($firstStage['stage_color_hex'] ?? '#00000000'),
+    ];
+}, is_array($portalProjectTasks) ? $portalProjectTasks : []);
+$portalBedLookupPayload = bx_portal_bed_lookup_payload($bedLookupFilters);
 
 $payload = [
     'csrf' => bx_csrf_token(),
@@ -1294,16 +1723,18 @@ $payload = [
     'sharinganEnabled' => bx_setting('sharingan_enabled', '0') === '1',
     'bedMasterListSummary' => bx_bed_master_list_summary(),
     'bedLookupFilters' => $bedLookupFilters,
-    'bedLookupOptions' => bx_project_bed_lookup_options($bedLookupFilters),
-    'bedLookupRows' => bx_project_bed_lookup_rows($bedLookupFilters),
+    'bedLookupOptions' => $portalBedLookupPayload['bedLookupOptions'],
+    'bedLookupRows' => $portalBedLookupPayload['bedLookupRows'],
+    'projectBedTasks' => $portalBedLookupPayload['projectBedTasks'],
+    'projectBedTaskLogs' => $portalBedLookupPayload['projectBedTaskLogs'],
     'bedTreatments' => bx_project_bed_treatment_rows(true),
     'bedSources' => bx_project_bed_source_rows(true),
     'projectTasks' => is_array($portalProjectTasks) ? $portalProjectTasks : [],
     'projectGroups' => is_array($projectGroups) ? $projectGroups : [],
     'messengerSenderKey' => bx_messenger_sender_key($currentUser ?: null),
     'firebaseConfig' => bx_portal_firebase_web_config(),
-    'mediaUploaderTargetUrl' => bx_setting('media_uploader_target_url', 'http://localhost/rbms.com/upload-image.php'),
-    'mediaImageViewerUrl' => bx_setting('media_image_viewer_url', 'http://localhost/rbms.com/view.php'),
+    'mediaUploaderTargetUrl' => bx_project_media_setting($portalMediaProjectKey, 'media_uploader_target_url', ''),
+    'mediaImageViewerUrl' => bx_project_media_setting($portalMediaProjectKey, 'media_image_viewer_url', ''),
     'flash' => $flash,
     'currentUser' => bx_user_public_projection($currentUser),
     'familyMembers' => bx_portal_family_members($currentUser ?: null),

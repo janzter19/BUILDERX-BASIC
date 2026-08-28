@@ -2,6 +2,7 @@ import process from 'node:process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import dotenv from 'dotenv'
 import mysql from 'mysql2/promise'
 import { cert, getApps, initializeApp } from 'firebase-admin/app'
@@ -10,9 +11,12 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 dotenv.config({ path: path.join(rootDir, '.env'), quiet: true })
 
-const allowedStatuses = new Set(['ACTIVE', 'REMOVED'])
-const allowedTypes = new Set(['text', 'image', 'mixed'])
+const pollMs = Math.max(500, Number(process.env.FIREBASE_MESSENGER_QUEUE_POLL_MS || 2000))
+const batchSize = Math.max(1, Math.min(100, Number(process.env.FIREBASE_MESSENGER_QUEUE_BATCH_SIZE || 25)))
+const claimTimeoutMinutes = Math.max(5, Number(process.env.FIREBASE_MESSENGER_QUEUE_CLAIM_TIMEOUT_MINUTES || 10))
+const workerKey = `firebase_queue_${process.pid}_${crypto.randomBytes(8).toString('hex')}`
 const builderxDatabaseConfig = loadBuilderXDatabaseConfig()
+let shuttingDown = false
 
 function loadBuilderXDatabaseConfig() {
   const configPath = path.join(rootDir, 'phases', 'config.local.php')
@@ -46,35 +50,6 @@ function requiredEnv(name, fallback = '') {
   return value
 }
 
-function optionalEnv(name, fallback = '') {
-  return String(process.env[name] || fallback).trim()
-}
-
-function safeString(value, maxLength, fallback = '') {
-  return String(value ?? fallback).trim().slice(0, maxLength)
-}
-
-function mysqlTimestamp(value) {
-  const text = String(value || '').trim()
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) return text
-  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
-    const date = new Date(text)
-    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 19).replace('T', ' ')
-  }
-  return new Date().toISOString().slice(0, 19).replace('T', ' ')
-}
-
-function initializeFirebase() {
-  if (getApps().length > 0) return
-  const projectId = requiredEnv('FIREBASE_PROJECT_ID', 'rbmsv4-vrp')
-  const serviceAccountPath = optionalEnv('GOOGLE_APPLICATION_CREDENTIALS', optionalEnv('FIREBASE_SERVICE_ACCOUNT_PATH'))
-  if (serviceAccountPath === '') throw new Error('GOOGLE_APPLICATION_CREDENTIALS_required')
-  initializeApp({
-    credential: cert(serviceAccountPath),
-    projectId,
-  })
-}
-
 function mysqlConfig() {
   return {
     host: requiredEnv('DB_HOST', String(builderxDatabaseConfig.host || 'localhost')),
@@ -83,284 +58,227 @@ function mysqlConfig() {
     password: String(process.env.DB_PASSWORD || process.env.DB_PASS || builderxDatabaseConfig.password || ''),
     database: requiredEnv('DB_DATABASE', process.env.DB_NAME || String(builderxDatabaseConfig.database || '')),
     waitForConnections: true,
-    connectionLimit: Number(process.env.FIREBASE_STREAM_MYSQL_CONNECTIONS || 4),
+    connectionLimit: Number(process.env.FIREBASE_QUEUE_MYSQL_CONNECTIONS || 4),
     charset: 'utf8mb4',
   }
 }
 
-async function activeGroup(pool, groupKey, projectKey) {
-  const [rows] = await pool.execute(
-    "SELECT group_key, project_key FROM project_user_group WHERE group_key = ? AND project_key = ? AND group_status = 'ACTIVE' LIMIT 1",
-    [groupKey, projectKey],
+function initializeFirebase() {
+  if (getApps().length > 0) return
+  const projectId = requiredEnv('FIREBASE_PROJECT_ID', 'rbmsv4-vrp')
+  const serviceAccountPath = requiredEnv(
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    String(process.env.FIREBASE_SERVICE_ACCOUNT_PATH || ''),
   )
-  return Array.isArray(rows) && rows.length === 1
+  initializeApp({ credential: cert(serviceAccountPath), projectId })
 }
 
-async function knownSender(pool, senderUserKey, projectKey) {
-  if (senderUserKey.startsWith('portal_')) return true
-  const [projectRows] = await pool.execute(
-    "SELECT user_key FROM project_user WHERE user_key = ? AND project_key = ? AND user_status = 'ACTIVE' LIMIT 1",
-    [senderUserKey, projectKey],
-  )
-  if (Array.isArray(projectRows) && projectRows.length === 1) return true
-  const [builderRows] = await pool.execute(
-    "SELECT user_key FROM builder_user WHERE user_key = ? AND user_status = 'ACTIVE' LIMIT 1",
-    [senderUserKey],
-  )
-  return Array.isArray(builderRows) && builderRows.length === 1
+function safeString(value, maxLength, fallback = '') {
+  return String(value ?? fallback).trim().slice(0, maxLength)
 }
 
-function normalizeMessage(snapshot) {
-  const data = snapshot.data() || {}
-  const chatKey = safeString(data.chat_key || snapshot.id, 40)
-  const projectKey = safeString(data.project_key, 80)
-  const groupKey = safeString(data.group_key, 40)
-  const senderUserKey = safeString(data.sender_user_key, 80)
-  const senderName = safeString(data.sender_name, 160, 'Firebase User')
-  const messageStatus = allowedStatuses.has(String(data.message_status || 'ACTIVE')) ? String(data.message_status || 'ACTIVE') : 'ACTIVE'
-  const messageType = allowedTypes.has(String(data.message_type || 'text')) ? String(data.message_type || 'text') : 'text'
+function cleanObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined))
+}
 
+function eventPayload(event) {
+  try {
+    const value = JSON.parse(String(event.payload_json || '{}'))
+    if (!value || typeof value !== 'object') throw new Error('payload_not_object')
+    return value
+  } catch (error) {
+    throw new Error(error instanceof Error ? `messenger_event_payload_invalid:${error.message}` : 'messenger_event_payload_invalid')
+  }
+}
+
+function messageDocument(message) {
+  const chatKey = safeString(message.chat_key, 40)
+  if (chatKey === '') throw new Error('messenger_event_chat_key_required')
+  const status = String(message.message_status || 'ACTIVE') === 'REMOVED' ? 'REMOVED' : 'ACTIVE'
   return {
-    chatKey,
-    projectKey,
-    groupKey,
-    replyToChatKey: safeString(data.reply_to_chat_key, 40),
-    senderUserKey,
-    senderName,
-    messageText: messageStatus === 'REMOVED' ? '' : String(data.message_text || '').slice(0, 8000),
-    messageType,
-    messageStatus,
-    removedAt: messageStatus === 'REMOVED' ? mysqlTimestamp(data.removed_at || data.updated_at) : null,
-    createdAt: mysqlTimestamp(data.mysql_created_at || data.created_at),
+    collection: 'project_messenger_chat',
+    id: chatKey,
+    data: cleanObject({
+      chat_key: chatKey,
+      project_key: safeString(message.project_key, 80),
+      group_key: safeString(message.group_key, 40),
+      conversation_type: safeString(message.conversation_type, 20, 'group'),
+      direct_recipient_user_key: safeString(message.direct_recipient_user_key, 80),
+      reply_to_chat_key: safeString(message.reply_to_chat_key, 40),
+      sender_user_key: safeString(message.sender_user_key, 80),
+      sender_name: safeString(message.sender_name, 160, 'Portal User'),
+      message_text: status === 'REMOVED' ? '' : String(message.message_text || '').slice(0, 8000),
+      message_type: safeString(message.message_type, 20, 'text'),
+      message_status: status,
+      removed_at: safeString(message.removed_at, 32),
+      removed_by_user_key: safeString(message.removed_by_user_key, 80),
+      firebase_collection: 'project_messenger_chat',
+      mysql_created_at: safeString(message.created_at, 32),
+      mysql_updated_at: safeString(message.updated_at, 32),
+      mysql_sync_status: 'PENDING',
+      mysql_synced_at: null,
+      mysql_deleted_at: status === 'REMOVED' ? safeString(message.removed_at, 32) : null,
+      mysql_sync_error: FieldValue.delete(),
+      server_synced_at: FieldValue.serverTimestamp(),
+      created_at: safeString(message.created_at, 32),
+      updated_at: safeString(message.updated_at, 32),
+    }),
   }
 }
 
-function normalizeAttachment(snapshot) {
-  const data = snapshot.data() || {}
+function attachmentDocument(attachment) {
+  const attachmentKey = safeString(attachment.attachment_key, 40)
+  if (attachmentKey === '') throw new Error('messenger_event_attachment_key_required')
   return {
-    attachmentKey: safeString(data.attachment_key || snapshot.id, 40),
-    chatKey: safeString(data.chat_key, 40),
-    projectKey: safeString(data.project_key, 80),
-    groupKey: safeString(data.group_key, 40),
-    uploadedImageUrl: safeString(data.uploaded_image_url, 500),
-    imageOriginalName: safeString(data.image_original_name, 255),
-    imageMimeType: safeString(data.image_mime_type, 100),
-    imageByteSize: Math.max(0, Number(data.image_byte_size || 0)),
-    imageSha256: safeString(data.image_sha256, 128),
-    sortOrder: Math.max(0, Number(data.sort_order || 0)),
-    attachmentStatus: String(data.attachment_status || 'ACTIVE') === 'REMOVED' ? 'REMOVED' : 'ACTIVE',
-    createdAt: mysqlTimestamp(data.mysql_created_at || data.created_at),
+    collection: 'project_messenger_chat_attachment',
+    id: attachmentKey,
+    data: cleanObject({
+      attachment_key: attachmentKey,
+      chat_key: safeString(attachment.chat_key, 40),
+      project_key: safeString(attachment.project_key, 80),
+      group_key: safeString(attachment.group_key, 40),
+      uploaded_image_url: safeString(attachment.uploaded_image_url, 500),
+      image_original_name: safeString(attachment.image_original_name, 255),
+      image_mime_type: safeString(attachment.image_mime_type, 100),
+      image_byte_size: Math.max(0, Number(attachment.image_byte_size || 0)),
+      image_sha256: safeString(attachment.image_sha256, 128),
+      sort_order: Math.max(0, Number(attachment.sort_order || 0)),
+      attachment_status: String(attachment.attachment_status || 'ACTIVE') === 'REMOVED' ? 'REMOVED' : 'ACTIVE',
+      firebase_collection: 'project_messenger_chat_attachment',
+      mysql_created_at: safeString(attachment.created_at, 32),
+      mysql_updated_at: safeString(attachment.updated_at, 32),
+      mysql_sync_status: 'PENDING',
+      mysql_synced_at: null,
+      mysql_deleted_at: String(attachment.attachment_status || 'ACTIVE') === 'REMOVED' ? safeString(attachment.updated_at, 32) : null,
+      mysql_sync_error: FieldValue.delete(),
+      server_synced_at: FieldValue.serverTimestamp(),
+      created_at: safeString(attachment.created_at, 32),
+    }),
   }
 }
 
-function alreadySyncedToMysql(snapshot) {
-  const data = snapshot.data() || {}
-  return String(data.mysql_sync_status || '').toUpperCase() === 'SYNCED'
+function reactionDocument(reaction) {
+  const reactionKey = safeString(reaction.reaction_key, 40)
+  if (reactionKey === '') throw new Error('messenger_event_reaction_key_required')
+  return {
+    collection: 'project_messenger_chat_reaction',
+    id: reactionKey,
+    data: cleanObject({
+      reaction_key: reactionKey,
+      chat_key: safeString(reaction.chat_key, 40),
+      project_key: safeString(reaction.project_key, 80),
+      group_key: safeString(reaction.group_key, 40),
+      user_key: safeString(reaction.user_key, 80),
+      reaction_value: safeString(reaction.reaction_value, 40),
+      reaction_status: String(reaction.reaction_status || 'REMOVED') === 'ACTIVE' ? 'ACTIVE' : 'REMOVED',
+      firebase_collection: 'project_messenger_chat_reaction',
+      mysql_created_at: safeString(reaction.created_at, 32),
+      mysql_updated_at: safeString(reaction.updated_at, 32),
+      mysql_sync_status: 'PENDING',
+      mysql_synced_at: null,
+      mysql_deleted_at: String(reaction.reaction_status || 'REMOVED') === 'REMOVED' ? safeString(reaction.updated_at, 32) : null,
+      mysql_sync_error: FieldValue.delete(),
+      server_synced_at: FieldValue.serverTimestamp(),
+      created_at: safeString(reaction.created_at, 32),
+      updated_at: safeString(reaction.updated_at, 32),
+    }),
+  }
 }
 
-function syncedDocumentKey(snapshot, fieldName) {
-  const data = snapshot.data() || {}
-  const key = safeString(data[fieldName] || snapshot.id, 40)
-  if (!/^[A-Za-z0-9]{1,40}$/.test(key)) {
-    throw new Error('messenger_removed_document_invalid_key')
+function documentsForEvent(event) {
+  const payload = eventPayload(event)
+  const eventType = String(event.event_type || '')
+  if (eventType === 'MESSAGE_CREATED' || eventType === 'MESSAGE_REMOVED') {
+    const documents = [messageDocument(payload.message || {})]
+    for (const attachment of Array.isArray(payload.attachments) ? payload.attachments : []) {
+      documents.push(attachmentDocument(attachment))
+    }
+    return documents
   }
-  return key
+  if (eventType === 'REACTION_CHANGED') {
+    return (Array.isArray(payload.reactions) ? payload.reactions : []).map(reactionDocument)
+  }
+  throw new Error(`messenger_event_type_unsupported:${eventType}`)
 }
 
-async function upsertMessage(pool, snapshot) {
-  const message = normalizeMessage(snapshot)
-  if (message.chatKey === '' || message.projectKey === '' || message.groupKey === '' || message.senderUserKey === '') {
-    throw new Error('messenger_document_missing_required_fields')
-  }
-  if (!/^[A-Za-z0-9]{1,40}$/.test(message.chatKey) || !/^[A-Za-z0-9-]{1,80}$/.test(message.projectKey) || !/^[A-Za-z0-9]{1,40}$/.test(message.groupKey)) {
-    throw new Error('messenger_document_invalid_keys')
-  }
-  if (!(await activeGroup(pool, message.groupKey, message.projectKey))) {
-    throw new Error('messenger_document_group_not_active')
-  }
-  if (!(await knownSender(pool, message.senderUserKey, message.projectKey))) {
-    throw new Error('messenger_document_sender_not_active')
-  }
-
-  await pool.execute(
-    `INSERT INTO project_messenger_chat (
-      chat_key, project_key, group_key, reply_to_chat_key, sender_user_key, sender_name,
-      message_text, message_type, message_status, removed_at, removed_by_user_key,
-      firebase_collection, firebase_sync_status, firebase_synced_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'project_messenger_chat', 'SYNCED', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
-    ON DUPLICATE KEY UPDATE
-      project_key = VALUES(project_key),
-      group_key = VALUES(group_key),
-      reply_to_chat_key = VALUES(reply_to_chat_key),
-      sender_user_key = VALUES(sender_user_key),
-      sender_name = VALUES(sender_name),
-      message_text = VALUES(message_text),
-      message_type = VALUES(message_type),
-      message_status = VALUES(message_status),
-      removed_at = VALUES(removed_at),
-      removed_by_user_key = VALUES(removed_by_user_key),
-      firebase_sync_status = 'SYNCED',
-      firebase_synced_at = CURRENT_TIMESTAMP,
-      updated_at = CURRENT_TIMESTAMP`,
-    [
-      message.chatKey,
-      message.projectKey,
-      message.groupKey,
-      message.replyToChatKey || null,
-      message.senderUserKey,
-      message.senderName,
-      message.messageText,
-      message.messageType,
-      message.messageStatus,
-      message.removedAt,
-      message.messageStatus === 'REMOVED' ? message.senderUserKey : null,
-      message.createdAt,
-    ],
-  )
-
-  await snapshot.ref.set({
-    mysql_sync_status: 'SYNCED',
-    mysql_synced_at: FieldValue.serverTimestamp(),
-    mysql_sync_error: FieldValue.delete(),
-  }, { merge: true })
-
-  return message
-}
-
-async function removeMessageFromMysql(pool, snapshot) {
-  const data = snapshot.data() || {}
-  const chatKey = syncedDocumentKey(snapshot, 'chat_key')
-  const removedBy = safeString(data.removed_by_user_key || data.sender_user_key || 'firebase_delete', 80)
+async function claimEvents(pool) {
   const connection = await pool.getConnection()
-
   try {
     await connection.beginTransaction()
-    const [result] = await connection.execute(
-      `UPDATE project_messenger_chat
-      SET message_status = 'REMOVED',
-        message_text = '',
-        removed_at = COALESCE(removed_at, CURRENT_TIMESTAMP),
-        removed_by_user_key = COALESCE(removed_by_user_key, ?),
-        firebase_sync_status = 'SYNCED',
-        firebase_synced_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE chat_key = ?`,
-      [removedBy, chatKey],
-    )
-
     await connection.execute(
-      `UPDATE project_messenger_chat_attachment
-      SET attachment_status = 'REMOVED',
-        firebase_sync_status = 'SYNCED',
-        firebase_synced_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE chat_key = ?`,
-      [chatKey],
+      `UPDATE project_messenger_sync_event
+       SET status = 'FAILED', claim_key = NULL, available_at = CURRENT_TIMESTAMP,
+           last_error = 'worker_recovered_stale_claim'
+       WHERE target = 'firebase' AND status = 'PROCESSING'
+         AND updated_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ${claimTimeoutMinutes} MINUTE)`,
     )
-
-    if (!result || Number(result.affectedRows || 0) < 1) {
-      throw new Error('messenger_removed_document_not_found')
+    const [rows] = await connection.query(
+      `SELECT x_id, event_key, event_type, project_key, group_key, chat_key, payload_json,
+          status, attempt_count
+       FROM project_messenger_sync_event
+       WHERE target = 'firebase'
+         AND status IN ('PENDING','FAILED')
+         AND available_at <= CURRENT_TIMESTAMP
+       ORDER BY x_id ASC
+       LIMIT ${batchSize}
+       FOR UPDATE`,
+    )
+    if (Array.isArray(rows) && rows.length > 0) {
+      const ids = rows.map((row) => Number(row.x_id)).filter((value) => Number.isInteger(value) && value > 0)
+      const placeholders = ids.map(() => '?').join(',')
+      await connection.execute(
+        `UPDATE project_messenger_sync_event
+         SET status = 'PROCESSING', claim_key = ?, attempt_count = attempt_count + 1,
+             last_error = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE x_id IN (${placeholders})`,
+        [workerKey, ...ids],
+      )
+      await connection.commit()
+      return rows
     }
-
     await connection.commit()
+    return []
   } catch (error) {
     await connection.rollback().catch(() => {})
     throw error
   } finally {
     connection.release()
   }
-
-  return { chatKey }
 }
 
-async function upsertAttachment(pool, snapshot) {
-  const attachment = normalizeAttachment(snapshot)
-  if (attachment.attachmentKey === '' || attachment.chatKey === '' || attachment.projectKey === '' || attachment.groupKey === '' || attachment.uploadedImageUrl === '') {
-    throw new Error('messenger_attachment_missing_required_fields')
-  }
-  if (!/^[A-Za-z0-9]{1,40}$/.test(attachment.attachmentKey) || !/^[A-Za-z0-9]{1,40}$/.test(attachment.chatKey)) {
-    throw new Error('messenger_attachment_invalid_keys')
-  }
-  if (!/^https?:\/\/[^\s]+$/i.test(attachment.uploadedImageUrl)) {
-    throw new Error('messenger_attachment_invalid_url')
-  }
-  if (!(await activeGroup(pool, attachment.groupKey, attachment.projectKey))) {
-    throw new Error('messenger_attachment_group_not_active')
-  }
-  const [messageRows] = await pool.execute(
-    'SELECT chat_key FROM project_messenger_chat WHERE chat_key = ? AND group_key = ? AND project_key = ? LIMIT 1',
-    [attachment.chatKey, attachment.groupKey, attachment.projectKey],
-  )
-  if (!Array.isArray(messageRows) || messageRows.length !== 1) {
-    throw new Error('messenger_attachment_chat_not_synced')
-  }
-
-  await pool.execute(
-    `INSERT INTO project_messenger_chat_attachment (
-      attachment_key, chat_key, project_key, group_key, uploaded_image_url,
-      image_original_name, image_mime_type, image_byte_size, image_sha256,
-      sort_order, attachment_status, firebase_collection, firebase_sync_status,
-      firebase_synced_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'project_messenger_chat_attachment', 'SYNCED', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
-    ON DUPLICATE KEY UPDATE
-      chat_key = VALUES(chat_key),
-      project_key = VALUES(project_key),
-      group_key = VALUES(group_key),
-      uploaded_image_url = VALUES(uploaded_image_url),
-      image_original_name = VALUES(image_original_name),
-      image_mime_type = VALUES(image_mime_type),
-      image_byte_size = VALUES(image_byte_size),
-      image_sha256 = VALUES(image_sha256),
-      sort_order = VALUES(sort_order),
-      attachment_status = VALUES(attachment_status),
-      firebase_sync_status = 'SYNCED',
-      firebase_synced_at = CURRENT_TIMESTAMP,
-      updated_at = CURRENT_TIMESTAMP`,
-    [
-      attachment.attachmentKey,
-      attachment.chatKey,
-      attachment.projectKey,
-      attachment.groupKey,
-      attachment.uploadedImageUrl,
-      attachment.imageOriginalName,
-      attachment.imageMimeType,
-      attachment.imageByteSize,
-      attachment.imageSha256,
-      attachment.sortOrder,
-      attachment.attachmentStatus,
-      attachment.createdAt,
-    ],
-  )
-
-  await snapshot.ref.set({
-    mysql_sync_status: 'SYNCED',
-    mysql_synced_at: FieldValue.serverTimestamp(),
-    mysql_sync_error: FieldValue.delete(),
-  }, { merge: true })
-
-  return attachment
-}
-
-async function removeAttachmentFromMysql(pool, snapshot) {
-  const attachmentKey = syncedDocumentKey(snapshot, 'attachment_key')
+async function markSynced(pool, event) {
   const connection = await pool.getConnection()
-
   try {
     await connection.beginTransaction()
-    const [result] = await connection.execute(
-      `UPDATE project_messenger_chat_attachment
-      SET attachment_status = 'REMOVED',
-        firebase_sync_status = 'SYNCED',
-        firebase_synced_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE attachment_key = ?`,
-      [attachmentKey],
+    await connection.execute(
+      `UPDATE project_messenger_sync_event
+       SET status = 'SYNCED', processed_at = CURRENT_TIMESTAMP, claim_key = NULL,
+           last_error = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE x_id = ? AND claim_key = ?`,
+      [event.x_id, workerKey],
     )
-
-    if (!result || Number(result.affectedRows || 0) < 1) {
-      throw new Error('messenger_removed_attachment_not_found')
+    if (event.chat_key) {
+      await connection.execute(
+        `UPDATE project_messenger_chat
+         SET firebase_sync_status = 'SYNCED', firebase_synced_at = CURRENT_TIMESTAMP
+         WHERE chat_key = ?`,
+        [event.chat_key],
+      )
+      await connection.execute(
+        `UPDATE project_messenger_chat_attachment
+         SET firebase_sync_status = 'SYNCED', firebase_synced_at = CURRENT_TIMESTAMP
+         WHERE chat_key = ?`,
+        [event.chat_key],
+      )
+      if (String(event.event_type || '') === 'REACTION_CHANGED') {
+        await connection.execute(
+          `UPDATE project_messenger_chat_reaction
+           SET firebase_sync_status = 'SYNCED', firebase_synced_at = CURRENT_TIMESTAMP
+           WHERE chat_key = ?`,
+          [event.chat_key],
+        )
+      }
     }
-
     await connection.commit()
   } catch (error) {
     await connection.rollback().catch(() => {})
@@ -368,93 +286,82 @@ async function removeAttachmentFromMysql(pool, snapshot) {
   } finally {
     connection.release()
   }
-
-  return { attachmentKey }
 }
 
-async function markFailed(snapshot, error) {
-  await snapshot.ref.set({
-    mysql_sync_status: 'FAILED',
-    mysql_sync_error: error instanceof Error ? error.message : 'mysql_sync_failed',
-    mysql_synced_at: FieldValue.serverTimestamp(),
-  }, { merge: true })
+async function markFailed(pool, event, error) {
+  const attempt = Math.max(1, Number(event.attempt_count || 1) + 1)
+  const delaySeconds = Math.min(3600, 5 * (2 ** Math.min(attempt, 8)))
+  const message = String(error instanceof Error ? error.message : 'firebase_sync_failed').slice(0, 1000)
+  await pool.execute(
+    `UPDATE project_messenger_sync_event
+     SET status = 'FAILED', claim_key = NULL, last_error = ?,
+         available_at = DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ${delaySeconds} SECOND),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE x_id = ? AND claim_key = ?`,
+    [message, event.x_id, workerKey],
+  )
+  if (event.chat_key) {
+    await pool.execute(
+      'UPDATE project_messenger_chat SET firebase_sync_status = \'FAILED\' WHERE chat_key = ?',
+      [event.chat_key],
+    )
+  }
+}
+
+async function writeEvent(db, event) {
+  const documents = documentsForEvent(event)
+  const batch = db.batch()
+  for (const document of documents) {
+    batch.set(db.collection(document.collection).doc(document.id), document.data, { merge: true })
+  }
+  await batch.commit()
+  return documents.length
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
 async function main() {
   initializeFirebase()
   const pool = mysql.createPool(mysqlConfig())
   const db = getFirestore()
-  const collectionName = optionalEnv('FIREBASE_MESSENGER_COLLECTION', 'project_messenger_chat')
-  const attachmentCollectionName = optionalEnv('FIREBASE_MESSENGER_ATTACHMENT_COLLECTION', 'project_messenger_chat_attachment')
-
-  console.log(JSON.stringify({ ok: true, status: 'listening', collections: [collectionName, attachmentCollectionName] }))
-  const unsubscribeMessages = db.collection(collectionName).onSnapshot((snapshot) => {
-    for (const change of snapshot.docChanges()) {
-      if (change.type === 'removed') {
-        void removeMessageFromMysql(pool, change.doc)
-          .then((message) => {
-            console.log(JSON.stringify({ ok: true, removed: message.chatKey }))
-          })
-          .catch((error) => {
-            console.error(JSON.stringify({ ok: false, document: change.doc.id, message: error instanceof Error ? error.message : 'mysql_remove_sync_failed' }))
-          })
-        continue
-      }
-      if (alreadySyncedToMysql(change.doc)) continue
-      void upsertMessage(pool, change.doc)
-        .then((message) => {
-          console.log(JSON.stringify({ ok: true, synced: message.chatKey, group_key: message.groupKey }))
-        })
-        .catch((error) => {
-          console.error(JSON.stringify({ ok: false, document: change.doc.id, message: error instanceof Error ? error.message : 'mysql_sync_failed' }))
-          void markFailed(change.doc, error).catch(() => {})
-        })
-    }
-  }, (error) => {
-    console.error(JSON.stringify({ ok: false, listener: collectionName, message: error.message }))
-    process.exitCode = 1
-    void pool.end().finally(() => process.exit(1))
-  })
-
-  const unsubscribeAttachments = db.collection(attachmentCollectionName).onSnapshot((snapshot) => {
-    for (const change of snapshot.docChanges()) {
-      if (change.type === 'removed') {
-        void removeAttachmentFromMysql(pool, change.doc)
-          .then((attachment) => {
-            console.log(JSON.stringify({ ok: true, removed_attachment: attachment.attachmentKey }))
-          })
-          .catch((error) => {
-            console.error(JSON.stringify({ ok: false, document: change.doc.id, message: error instanceof Error ? error.message : 'mysql_attachment_remove_sync_failed' }))
-          })
-        continue
-      }
-      if (alreadySyncedToMysql(change.doc)) continue
-      void upsertAttachment(pool, change.doc)
-        .then((attachment) => {
-          console.log(JSON.stringify({ ok: true, synced_attachment: attachment.attachmentKey, chat_key: attachment.chatKey }))
-        })
-        .catch((error) => {
-          console.error(JSON.stringify({ ok: false, document: change.doc.id, message: error instanceof Error ? error.message : 'mysql_attachment_sync_failed' }))
-          void markFailed(change.doc, error).catch(() => {})
-        })
-    }
-  }, (error) => {
-    console.error(JSON.stringify({ ok: false, listener: attachmentCollectionName, message: error.message }))
-    process.exitCode = 1
-    void pool.end().finally(() => process.exit(1))
-  })
+  console.log(JSON.stringify({ ok: true, status: 'queue_listening', target: 'firebase', batch_size: batchSize, poll_ms: pollMs }))
 
   const shutdown = async () => {
-    unsubscribeMessages()
-    unsubscribeAttachments()
+    if (shuttingDown) return
+    shuttingDown = true
     await pool.end()
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown())
   process.on('SIGTERM', () => void shutdown())
+
+  while (!shuttingDown) {
+    try {
+      const events = await claimEvents(pool)
+      if (events.length === 0) {
+        await sleep(pollMs)
+        continue
+      }
+      for (const event of events) {
+        try {
+          const documentCount = await writeEvent(db, event)
+          await markSynced(pool, event)
+          console.log(JSON.stringify({ ok: true, synced: event.event_key, event_type: event.event_type, documents: documentCount }))
+        } catch (error) {
+          await markFailed(pool, event, error).catch(() => {})
+          console.error(JSON.stringify({ ok: false, event: event.event_key, event_type: event.event_type, message: error instanceof Error ? error.message : 'firebase_event_sync_failed' }))
+        }
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ ok: false, worker: 'firebase_queue', message: error instanceof Error ? error.message : 'queue_poll_failed' }))
+      await sleep(Math.max(pollMs, 5000))
+    }
+  }
 }
 
 main().catch((error) => {
-  console.error(JSON.stringify({ ok: false, message: error instanceof Error ? error.message : 'firebase_stream_start_failed' }))
+  console.error(JSON.stringify({ ok: false, message: error instanceof Error ? error.message : 'firebase_queue_start_failed' }))
   process.exit(1)
 })

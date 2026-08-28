@@ -3,8 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sync:messenger": "node scripts/firebase-messenger-sync.mjs",
-    "sync:bed-task": "php scripts/sync-bed-task-pending.php",
+    "sync:messenger": "php scripts/sync-messenger-pending.php",
+    "worker:messenger": "node scripts/firebase-messenger-stream.mjs",
+    "worker:firebase-sync": "node scripts/firebase-sync.mjs",
+    "worker:traverse": "node scripts/TRAVERSE.mjs",
+    "worker:firebase-mysql-sync": "node scripts/firebase-mysql-sync-master.mjs",
+    "test:firebase-mysql-sync": "node --test tests/firebase-mysql-sync-master.test.mjs",
+    "archive:messenger": "php scripts/archive-messenger-chat.php",
     "stream:messenger": "node scripts/firebase-messenger-stream.mjs"
   },
   "dependencies": {
